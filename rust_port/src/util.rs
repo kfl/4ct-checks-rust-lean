@@ -132,6 +132,7 @@ pub fn get_objects<T: FromFile>(dir: &Path, extension: &str) -> Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quickcheck_macros::quickcheck;
 
     #[test]
     fn unionfind_basic() {
@@ -177,6 +178,20 @@ mod tests {
         assert!(lex_min(&[5])); // single element
     }
 
+    /// Property (self-contained oracle): `lex_min(v)` agrees with the brute-force
+    /// definition -- `v` is minimal iff no rotation of `v` is strictly smaller.
+    /// The right-hand side is computed independently (generate every rotation and
+    /// compare), so nothing here is transcribed from the C++.
+    #[quickcheck]
+    fn prop_lex_min_matches_bruteforce(v: Vec<i8>) -> bool {
+        let n = v.len();
+        let is_min = (0..n).all(|k| {
+            let rot: Vec<i8> = (0..n).map(|j| v[(j + k) % n]).collect();
+            v.as_slice() <= rot.as_slice()
+        });
+        lex_min(&v) == is_min
+    }
+
     struct Line(String);
     impl FromFile for Line {
         fn from_file(path: &Path) -> Self {
@@ -186,18 +201,15 @@ mod tests {
 
     #[test]
     fn get_objects_filters_and_sorts() {
-        let dir = std::env::temp_dir().join(format!("combine_p1_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
         // Create out of order, with a non-matching extension mixed in.
-        std::fs::write(dir.join("b.rule"), "B").unwrap();
-        std::fs::write(dir.join("a.rule"), "A").unwrap();
-        std::fs::write(dir.join("c.other"), "C").unwrap();
+        std::fs::write(dir.path().join("b.rule"), "B").unwrap();
+        std::fs::write(dir.path().join("a.rule"), "A").unwrap();
+        std::fs::write(dir.path().join("c.other"), "C").unwrap();
 
-        let objs: Vec<Line> = get_objects(&dir, ".rule");
+        let objs: Vec<Line> = get_objects(dir.path(), ".rule");
         let got: Vec<&str> = objs.iter().map(|l| l.0.as_str()).collect();
         assert_eq!(got, vec!["A", "B"]); // sorted by path, ".other" excluded
-
-        std::fs::remove_dir_all(&dir).unwrap();
+        // `dir` auto-removes on drop.
     }
 }

@@ -27,6 +27,15 @@ structure OptIdx where
   raw : Nat
 deriving DecidableEq, Repr, Inhabited, BEq, Hashable
 
+/-- The derived `BEq` is lawful (it is `Nat` equality on `raw`). Not provided by
+`deriving BEq` upstream, but needed to reason about the `!=` consistency test in
+the homomorphism BFS loop. -/
+instance : LawfulBEq OptIdx where
+  eq_of_beq {a b} h := by
+    have hr : a.raw = b.raw := eq_of_beq (show (a.raw == b.raw) = true from h)
+    cases a; cases b; simp_all
+  rfl {a} := by show (a.raw == a.raw) = true; simp
+
 namespace OptIdx
 
 /-- `none` (unmapped). -/
@@ -59,6 +68,13 @@ get? ∘ Option.map f`). -/
 @[inline] def map (f : Nat → Nat) (o : OptIdx) : OptIdx :=
   if o.raw == 0 then none else «some» (f (o.raw - 1))
 
+/-- Decode an optional index into an optional finite index, given a bound proof. -/
+def toFin? (o : OptIdx) (h : ∀ j, o.get? = Option.some j → j < n) :
+    Option (Fin n) :=
+  match hj : o.get? with
+  | Option.none => Option.none
+  | Option.some j => Option.some ⟨j, h j hj⟩
+
 /-! ### Soundness: `OptIdx` carries exactly the data of `Option Nat`.
 
 These discharge R1 by proof — the compact encoding is verified equivalent to
@@ -68,6 +84,24 @@ These discharge R1 by proof — the compact encoding is verified equivalent to
 
 @[simp] theorem get?_some (i : Nat) : (OptIdx.«some» i).get? = Option.some i := by
   simp [OptIdx.«some», get?]
+
+@[simp] theorem idx!_some (i : Nat) : (OptIdx.«some» i).idx! = i := by
+  simp [OptIdx.«some», idx!]
+
+@[simp] theorem idx!_raw_succ (i : Nat) : ({ raw := i + 1 } : OptIdx).idx! = i := by
+  simp [idx!]
+
+@[simp] theorem isNone_some (i : Nat) : (OptIdx.«some» i).isNone = false := by
+  simp [OptIdx.«some», isNone]
+
+@[simp] theorem isNone_raw_succ (i : Nat) : ({ raw := i + 1 } : OptIdx).isNone = false := by
+  simp [isNone]
+
+@[simp] theorem isSome_some (i : Nat) : (OptIdx.«some» i).isSome := by
+  simp [OptIdx.«some», isSome]
+
+@[simp] theorem isSome_raw_succ (i : Nat) : ({ raw := i + 1 } : OptIdx).isSome := by
+  simp [isSome]
 
 @[simp] theorem isSome_eq (o : OptIdx) : o.isSome = o.get?.isSome := by
   simp [isSome, get?]; split <;> simp_all
@@ -89,6 +123,44 @@ theorem get?_ofOption (o : OptIdx) : ofOption o.get? = o := by
   cases raw with
   | zero => rfl
   | succ n => simp [get?, ofOption, OptIdx.«some»]
+
+/-- A mapped `get?` pins down the value: `some` is the only preimage. -/
+theorem get?_eq_some_iff {o : OptIdx} {j : Nat} :
+    o.get? = Option.some j ↔ o = OptIdx.«some» j := by
+  obtain ⟨raw⟩ := o
+  cases raw <;> simp [get?, OptIdx.«some»] <;> omega
+
+/-- Raw bounds are exactly bounds on the decoded value, when present. -/
+theorem raw_le_iff_get?_lt {o : OptIdx} {bound : Nat} :
+    o.raw ≤ bound ↔ ∀ j, o.get? = Option.some j → j < bound := by
+  obtain ⟨raw⟩ := o
+  cases raw with
+  | zero => simp [get?]
+  | succ k => simp [get?]; omega
+
+/-- `toFin?` is the decoded optional index under `Fin.val`. -/
+@[simp] theorem toFin?_val {o : OptIdx} (h : ∀ j, o.get? = Option.some j → j < n) :
+    (o.toFin? h).map Fin.val = o.get? := by
+  unfold toFin?
+  split <;> simp_all
+
+@[simp] theorem toFin?_isSome {o : OptIdx} (h : ∀ j, o.get? = Option.some j → j < n) :
+    (o.toFin? h).isSome = o.get?.isSome := by
+  unfold toFin?
+  split <;> simp_all
+
+/-- `isNone` under the `Option Nat` view. -/
+theorem isNone_iff_get? {o : OptIdx} : o.isNone ↔ o.get? = Option.none := by
+  obtain ⟨raw⟩ := o
+  cases raw <;> simp [isNone, get?]
+
+/-- The `!`-discharge converter: a `get?` fact justifies the panicking read. -/
+theorem idx!_of_get?_some {o : OptIdx} {j : Nat} (h : o.get? = Option.some j) :
+    o.idx! = j := by
+  obtain ⟨raw⟩ := o
+  cases raw with
+  | zero => simp [get?] at h
+  | succ n => simp [get?] at h; simp [idx!, h]
 
 end OptIdx
 end NearLinear4ct

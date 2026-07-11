@@ -39,3 +39,7 @@ pub mod cartwheel;
 
 // --- Phase 6: drivers (combine_rules, enum_*, check_*) -----------------------
 pub mod combine_cartwheel;
+
+// --- shared test fixtures/helpers (test builds only) ------------------------
+#[cfg(test)]
+mod test_support;

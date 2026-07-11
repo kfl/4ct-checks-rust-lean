@@ -319,38 +319,15 @@ fn parse_i32(tok: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::test_support::{RULE1, RULE2, RULE3, d, temp_with};
 
-    fn d(head: i32, rev: i32, succ: i32, pred: i32) -> Dart {
-        let opt = |x: i32| if x == -1 { None } else { Some(x as usize) };
-        Dart::new(head as usize, rev as usize, opt(succ), opt(pred))
-    }
-
-    fn temp_rule(tag: &str, content: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "combine_p4rule_{}_{}_{}.rule",
-            std::process::id(),
-            tag,
-            content.len()
-        ));
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(content.as_bytes()).unwrap();
-        path
-    }
-
-    const RULE1: &str = "\n2 1 2 2\n1 5 5 2 -1\n2 5 0 1 -1\n";
-    const RULE2: &str = "\n6 1 2 1\n1 7 7 5 4 3 2 6 -1\n2 7 0 1 3 -1 6\n3 5 5 2 1 4 -1\n4 5 6 3 1 5 -1\n5 5 5 4 1 -1\n6 5 5 1 2 -1\n";
-    const RULE3: &str = "\n6 1 2 1\n1 7 7 4 6 2 3 -1\n2 7 0 3 1 6 -1\n3 5 5 1 2 -1\n4 6 6 5 6 1 -1\n5 5 5 6 4 -1\n6 5 5 2 1 4 5 -1\n";
-
-    // Port of RuleFiles.ReadRuleFile.
+    // from_file parses a .rule into its dart structure and per-vertex degree ranges.
     #[test]
     fn read_rule_file() {
-        let f1 = temp_rule("r1", RULE1);
-        let f2 = temp_rule("r2", RULE2);
-        let rule1 = Rule::from_file(&f1);
-        let rule2 = Rule::from_file(&f2);
-        std::fs::remove_file(&f1).unwrap();
-        std::fs::remove_file(&f2).unwrap();
+        let f1 = temp_with(RULE1, ".rule");
+        let f2 = temp_with(RULE2, ".rule");
+        let rule1 = Rule::from_file(f1.path());
+        let rule2 = Rule::from_file(f2.path());
 
         let rule1_expected = Rule::new(
             1,
@@ -399,10 +376,9 @@ mod tests {
     // R7: the write output is byte-exact (including trailing spaces per line).
     #[test]
     fn write_is_byte_exact() {
-        let f1 = temp_rule("rw1", RULE1);
-        let rule1 = Rule::from_file(&f1);
-        std::fs::remove_file(&f1).unwrap();
-        // Same as input but with the C++ trailing space after each vertex line.
+        let f1 = temp_with(RULE1, ".rule");
+        let rule1 = Rule::from_file(f1.path());
+        // Same as input but with the trailing space after each vertex line.
         assert_eq!(rule1.write(), "\n2 1 2 2\n1 5 5 2 -1 \n2 5 0 1 -1 \n");
     }
 
@@ -417,32 +393,28 @@ mod tests {
     // is what makes the Rust output byte-match the C++ output in P7.
     #[test]
     fn rule_write_is_idempotent() {
-        for (tag, content) in [("rt1", RULE1), ("rt2", RULE2), ("rt3", RULE3)] {
-            let f = temp_rule(tag, content);
-            let w1 = Rule::from_file(&f).write();
-            std::fs::remove_file(&f).unwrap();
+        for content in [RULE1, RULE2, RULE3] {
+            let f = temp_with(content, ".rule");
+            let w1 = Rule::from_file(f.path()).write();
 
-            let f2 = temp_rule(&format!("{tag}b"), &w1);
-            let w2 = Rule::from_file(&f2).write();
-            std::fs::remove_file(&f2).unwrap();
+            let f2 = temp_with(&w1, ".rule");
+            let w2 = Rule::from_file(f2.path()).write();
             assert_eq!(w1, w2);
         }
     }
 
-    // Port of RuleFiles.CombineRules.
+    // combine_rules produces the pairwise-combined rule set (each tagged with the
+    // combined_flag bitvector recording which inputs it merges).
     #[test]
     fn combine_rules_test() {
-        let f1 = temp_rule("cr1", RULE1);
-        let f2 = temp_rule("cr2", RULE2);
-        let f3 = temp_rule("cr3", RULE3);
+        let f1 = temp_with(RULE1, ".rule");
+        let f2 = temp_with(RULE2, ".rule");
+        let f3 = temp_with(RULE3, ".rule");
         let rules = vec![
-            Rule::from_file(&f1),
-            Rule::from_file(&f2),
-            Rule::from_file(&f3),
+            Rule::from_file(f1.path()),
+            Rule::from_file(f2.path()),
+            Rule::from_file(f3.path()),
         ];
-        for f in [&f1, &f2, &f3] {
-            std::fs::remove_file(f).unwrap();
-        }
 
         let combined = combine_rules(&rules, &[]);
         let expected = [

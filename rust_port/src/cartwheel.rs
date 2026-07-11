@@ -599,67 +599,26 @@ pub fn run_enum_cartwheels(
 mod tests {
     use super::*;
     use crate::rule::combine_rules;
-    use std::io::Write;
-
-    fn d(head: i32, rev: i32, succ: i32, pred: i32) -> Dart {
-        let opt = |x: i32| if x == -1 { None } else { Some(x as usize) };
-        Dart::new(head as usize, rev as usize, opt(succ), opt(pred))
-    }
-
-    fn exact(xs: &[i32]) -> Vec<Degree> {
-        xs.iter().map(|&x| Degree::exact(x)).collect()
-    }
-
-    fn temp_file(tag: &str, ext: &str, content: &str) -> std::path::PathBuf {
-        // Unique per call: tests run in parallel and several reuse the same
-        // contents, so a name keyed only on (pid, tag, len) would collide.
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "combine_p5_{}_{}_{}.{ext}",
-            std::process::id(),
-            tag,
-            id
-        ));
-        std::fs::File::create(&path)
-            .unwrap()
-            .write_all(content.as_bytes())
-            .unwrap();
-        path
-    }
-
-    const CW1: &str = "8 1\n1 7 7 2 3 4 5 6 7 8\n2 5 5 3 1 8 -1\n3 5 5 4 1 2 -1\n4 6 6 5 1 3 -1\n5 5 5 6 1 4 -1\n6 5 5 7 1 5 -1\n7 5 5 8 1 6 -1\n8 9 9 2 1 7 -1\n";
-    const CW2: &str = "18 1\n1 7 7 2 3 4 5 6 7 8\n2 5 5 1 8 9 10 3\n3 7 7 1 2 10 11 12 13 4\n4 5 5 1 3 13 14 5\n5 5 5 1 4 14 15 6\n6 9 9 16 7 1 5 15 -1\n7 5 5 1 6 16 17 8\n8 6 6 2 1 7 17 18 9\n9 5 9 10 2 8 18 -1\n10 5 9 11 3 2 9 -1\n11 5 9 12 3 10 -1\n12 5 9 13 3 11 -1\n13 5 9 14 4 3 12 -1\n14 5 9 15 5 4 13 -1\n15 5 9 6 5 14 -1\n16 5 9 17 7 6 -1\n17 5 9 18 8 7 16 -1\n18 5 9 9 8 17 -1\n";
-
-    const RULE1: &str = "\n2 1 2 2\n1 5 5 2 -1\n2 5 0 1 -1\n";
-    const RULE2: &str = "\n6 1 2 1\n1 7 7 5 4 3 2 6 -1\n2 7 0 1 3 -1 6\n3 5 5 2 1 4 -1\n4 5 6 3 1 5 -1\n5 5 5 4 1 -1\n6 5 5 1 2 -1\n";
-    const RULE3: &str = "\n6 1 2 1\n1 7 7 4 6 2 3 -1\n2 7 0 3 1 6 -1\n3 5 5 1 2 -1\n4 6 6 5 6 1 -1\n5 5 5 6 4 -1\n6 5 5 2 1 4 5 -1\n";
-    const RULE4: &str = "\n8 1 2 1\n1 7 7 3 4 2 6 -1\n2 7 7 7 6 1 4 5 -1\n3 5 5 4 1 -1\n4 7 7 5 2 1 3 -1\n5 6 0 2 4 -1\n6 5 5 1 2 7 8 -1\n7 6 6 8 6 2 -1\n8 7 0 6 7 -1\n";
-
-    const CONF1: &str = "\n17 10\n11 5 1 12 17 9 10\n12 5 1 2 13 17 11\n13 6 2 14 16 7 17 12\n14 5 2 3 15 16 13\n15 5 3 4 5 16 14\n16 6 5 6 7 13 14 15\n17 6 7 8 9 11 12 13\n";
-    const CONF2: &str =
-        "\n11 7\n8 5 1 2 9 11 7\n9 6 2 3 4 10 11 8\n10 5 4 5 6 11 9\n11 5 6 7 8 9 10\n";
+    use crate::test_support::{
+        CONF1, CONF2, CW1, CW2, RULE1, RULE2, RULE3, RULE4, d, exact, temp_with,
+    };
 
     fn load_rules(contents: &[&str]) -> Vec<Rule> {
         contents
             .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let f = temp_file(&format!("rule{i}"), "rule", c);
-                let r = Rule::from_file(&f);
-                std::fs::remove_file(&f).unwrap();
-                r
+            .map(|c| {
+                let f = temp_with(c, ".rule");
+                Rule::from_file(f.path())
             })
             .collect()
     }
 
-    // Port of CartWheelFiles.FromFile (cw1 fully; cw2 structurally).
+    // from_file parses a .cartwheel: cw1 is checked exactly, cw2 structurally +
+    // via write-idempotence (too large to transcribe by hand).
     #[test]
     fn from_file() {
-        let f1 = temp_file("cw1", "cartwheel", CW1);
-        let cw1 = CartWheel::from_file(&f1);
-        std::fs::remove_file(&f1).unwrap();
+        let f1 = temp_with(CW1, ".cartwheel");
+        let cw1 = CartWheel::from_file(f1.path());
         let expected_cw1 = CartWheel::new(
             0,
             vec![0, 1, 2, 3, 4, 5, 6],
@@ -699,21 +658,20 @@ mod tests {
         assert_eq!(cw1, expected_cw1);
 
         // cw2: too large to transcribe by hand; check structure + write idempotence.
-        let f2 = temp_file("cw2", "cartwheel", CW2);
-        let cw2 = CartWheel::from_file(&f2);
-        std::fs::remove_file(&f2).unwrap();
+        let f2 = temp_with(CW2, ".cartwheel");
+        let cw2 = CartWheel::from_file(f2.path());
         assert_eq!(cw2.center, 0);
         assert_eq!(cw2.pc.tri.n, 18);
         assert_eq!(cw2.center_darts, vec![0, 1, 2, 3, 4, 5, 6]);
         let mut deg2 = exact(&[7, 5, 7, 5, 5, 9, 5, 6]);
         deg2.extend(std::iter::repeat_n(Degree::new(5, 9), 10));
         assert_eq!(cw2.pc.degrees, deg2);
-        let f3 = temp_file("cw2b", "cartwheel", &cw2.write());
-        assert_eq!(cw2.write(), CartWheel::from_file(&f3).write());
-        std::fs::remove_file(&f3).unwrap();
+        let f3 = temp_with(&cw2.write(), ".cartwheel");
+        assert_eq!(cw2.write(), CartWheel::from_file(f3.path()).write());
     }
 
-    // Port of CartWheelTest.EnumWheels (counts via Burnside's lemma).
+    // enum_wheels enumerates all wheels of a given centre degree (up to rotation);
+    // the counts match the Burnside's-lemma predictions.
     #[test]
     fn enum_wheels_counts() {
         assert_eq!(CartWheel::enum_wheels(5).len(), 629);
@@ -721,7 +679,7 @@ mod tests {
         assert_eq!(CartWheel::enum_wheels(7).len(), 11165);
     }
 
-    // Port of RuleFiles.Charge.
+    // amount_of_charge_send summed over a wheel's spokes gives its total (out, in) charge.
     #[test]
     fn charge() {
         let rules = load_rules(&[RULE1, RULE2, RULE3]);
@@ -743,7 +701,7 @@ mod tests {
         }
     }
 
-    // Port of RuleFiles.PruneByCharge.
+    // a wheel that no rule prunes keeps a positive charge upper bound.
     #[test]
     fn prune_by_charge() {
         let rules = load_rules(&[RULE1, RULE2, RULE3]);
@@ -770,7 +728,7 @@ mod tests {
         assert!(wheel.upper_bound_of_charge(&spokes3, &rules, &combined) > 0);
     }
 
-    // Port of RuleFiles.refinement1.
+    // should_refine + refinement split a spoke into its 4 degree-refined children.
     #[test]
     fn refinement1() {
         let mut cw = CartWheel::generate_cartwheel(7, &[7, 7, 5, 5, 9, 6, 5]);
@@ -796,7 +754,7 @@ mod tests {
         assert_eq!(refinements, expected);
     }
 
-    // Port of RuleFiles.refinement2.
+    // a spoke that no rule can refine yields should_refine == false.
     #[test]
     fn refinement2() {
         let cw = CartWheel::generate_cartwheel(7, &[7, 7, 5, 5, 9, 6, 5]);
@@ -804,7 +762,7 @@ mod tests {
         assert!(!cw.should_refine(1, &rule4));
     }
 
-    // Port of RuleFiles.enumBadCartWheels1.
+    // enum_bad_cartwheels drives a wheel to its single surviving fully-refined bad cartwheel.
     #[test]
     fn enum_bad_cartwheels1() {
         let rules = load_rules(&[RULE1, RULE2, RULE3, RULE4]);
@@ -820,7 +778,7 @@ mod tests {
         assert_eq!(enumerated[0], expected);
     }
 
-    // Port of RuleFiles.enumBadCartWheels2.
+    // enum_bad_cartwheels: one survivor initially; after fixing a degree, three refined survivors.
     #[test]
     fn enum_bad_cartwheels2() {
         let rules = load_rules(&[RULE1, RULE2, RULE3, RULE4]);
@@ -845,21 +803,20 @@ mod tests {
         assert_eq!(enumerated2, expected2);
     }
 
-    // Port of PseudoConfigurationTest.Contain1 / Contain2 (need CartWheel).
+    // blocked_by_reducible_configuration detects when a reducible config is
+    // contained in a wheel.
     #[test]
     fn contain() {
-        let cf1 = temp_file("conf1", "conf", CONF1);
-        let confs1 = Configuration::from_file(&cf1);
-        std::fs::remove_file(&cf1).unwrap();
+        let cf1 = temp_with(CONF1, ".conf");
+        let confs1 = Configuration::from_file(cf1.path());
         let mut cw = CartWheel::generate_cartwheel(7, &[6, 6, 6, 6, 6, 6, 6]);
         for v in [9, 10, 12, 13] {
             cw.pc.degrees[v] = Degree::exact(5);
         }
         assert!(cw.pc.blocked_by_reducible_configuration(cw.center, &confs1));
 
-        let cf2 = temp_file("conf2", "conf", CONF2);
-        let confs2 = Configuration::from_file(&cf2);
-        std::fs::remove_file(&cf2).unwrap();
+        let cf2 = temp_with(CONF2, ".conf");
+        let confs2 = Configuration::from_file(cf2.path());
         let mut cw = CartWheel::generate_cartwheel(7, &[5, 6, 6, 6, 6, 6, 5]);
         cw.pc.degrees[8] = Degree::exact(6);
         assert!(!cw.pc.blocked_by_reducible_configuration(cw.center, &confs2));
@@ -867,7 +824,8 @@ mod tests {
         assert!(cw.pc.blocked_by_reducible_configuration(cw.center, &confs2));
     }
 
-    // Port of PseudoConfigurationTest.AmountChargeSend.
+    // amount_of_charge_send returns the charge a rule sends across a dart
+    // (each assertion annotated with its (head_deg, tail_deg)).
     #[test]
     fn amount_charge_send() {
         let rules = load_rules(&[RULE1, RULE2, RULE3]);
@@ -881,7 +839,8 @@ mod tests {
         assert_eq!(cw.pc.amount_of_charge_send(0, &rules), 2); // (0,1)
     }
 
-    // Port of PseudoConfigurationTest.AmountPossibleChargeSend.
+    // amount_of_possible_charge_send bounds the charge across a dart over all
+    // matching combined rules.
     #[test]
     fn amount_possible_charge_send() {
         let rules = load_rules(&[RULE1, RULE2, RULE3]);

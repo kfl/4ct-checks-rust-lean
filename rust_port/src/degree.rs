@@ -74,8 +74,9 @@ impl From<i32> for Degree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quickcheck_macros::quickcheck;
 
-    // Port of `../test/degree_test.cpp` :: DegreeTest.Compare.
+    // Degrees order lexicographically by (lower, upper).
     #[test]
     fn compare() {
         let d1 = Degree::new(5, 6);
@@ -112,5 +113,32 @@ mod tests {
 
         assert!(Degree::includes(&Degree::new(5, 9), &Degree::new(6, 8)));
         assert!(!Degree::includes(&Degree::new(6, 8), &Degree::new(5, 9)));
+    }
+
+    /// Property (self-contained oracle): the algebraic laws of `Degree` ranges,
+    /// checked against independently-computed expectations (no transcribed
+    /// constants). `mk` builds a valid non-empty range from any `i8` pair.
+    #[quickcheck]
+    fn prop_degree_algebra(a: i8, b: i8, c: i8, e: i8) -> bool {
+        let mk = |x: i8, y: i8| Degree::new(x.min(y) as i32, x.max(y) as i32);
+        let da = mk(a, b);
+        let db = mk(c, e);
+        // has_intersection is symmetric and is exactly the negation of is_disjoint.
+        let sym = Degree::has_intersection(&da, &db) == Degree::has_intersection(&db, &da);
+        let disj = Degree::has_intersection(&da, &db) != Degree::is_disjoint(&da, &db);
+        // includes is reflexive.
+        let refl = Degree::includes(&da, &da) && Degree::includes(&db, &db);
+        // when they intersect, the intersection is [max(lowers), min(uppers)],
+        // non-empty, and contained in both operands.
+        let inter_ok = if Degree::has_intersection(&da, &db) {
+            let i = Degree::intersection(&da, &db);
+            i.lower <= i.upper
+                && i == Degree::new(da.lower.max(db.lower), da.upper.min(db.upper))
+                && Degree::includes(&da, &i)
+                && Degree::includes(&db, &i)
+        } else {
+            true
+        };
+        sym && disj && refl && inter_ok
     }
 }

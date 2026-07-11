@@ -62,6 +62,8 @@ impl OptIdx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quickcheck::TestResult;
+    use quickcheck_macros::quickcheck;
 
     #[test]
     fn round_trips() {
@@ -84,5 +86,40 @@ mod tests {
     #[should_panic(expected = "exceeds compact optional index range")]
     fn rejects_out_of_range() {
         OptIdx::some(u32::MAX as usize);
+    }
+
+    /// Property (R1): `OptIdx` round-trips `Option<usize>` for every encodable
+    /// value across the whole `u32` range -- `from_option(o).get() == o`. This
+    /// fuzzes the `i + 1` / `NonZeroU32` encoding far beyond the handful of
+    /// fixed values in `round_trips`.
+    #[quickcheck]
+    fn prop_round_trips(x: Option<u32>) -> TestResult {
+        if x == Some(u32::MAX) {
+            // one value past the encodable range; the panic is covered by
+            // `rejects_out_of_range`.
+            return TestResult::discard();
+        }
+        let o = x.map(|v| v as usize);
+        TestResult::from_bool(OptIdx::from_option(o).get() == o)
+    }
+
+    /// Property (R1 niche soundness): the `None` sentinel -- the compact
+    /// stand-in for the C++ `-1` -- is distinct from *every* present index,
+    /// including `some(0)`, which a naive all-zero sentinel would swallow; and
+    /// `is_some`/`is_none` agree with `get`.
+    #[quickcheck]
+    fn prop_none_distinct_from_every_some(x: u32) -> TestResult {
+        if x == u32::MAX {
+            return TestResult::discard();
+        }
+        let s = OptIdx::some(x as usize);
+        TestResult::from_bool(
+            s != OptIdx::NONE
+                && s.is_some()
+                && !s.is_none()
+                && s.get().is_some()
+                && OptIdx::NONE.is_none()
+                && OptIdx::NONE.get().is_none(),
+        )
     }
 }

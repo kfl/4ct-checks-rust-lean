@@ -2,7 +2,9 @@
 import NearLinear4ct.OptIdx
 import NearLinear4ct.SmallNatPair
 import NearLinear4ct.Util
+import NearLinear4ct.UtilProofs
 import NearLinear4ct.Mapping
+import NearLinear4ct.MappingProofs
 import NearLinear4ct.Degree
 
 -- Phase 2: combinatorial map
@@ -13,6 +15,10 @@ import NearLinear4ct.PseudoConfiguration
 
 -- Phase 4: file-backed types
 import NearLinear4ct.Configuration
+-- graph well-formedness (after Configuration: proves `mirror` preserves WF)
+import NearLinear4ct.PseudoTriangulationProofs
+-- homomorphism BFS: structural well-formedness of `homCoreGo`'s output
+import NearLinear4ct.HomomorphismProofs
 import NearLinear4ct.Rule
 
 -- Phase 5: the enumeration engine

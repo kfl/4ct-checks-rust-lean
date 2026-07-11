@@ -565,18 +565,10 @@ impl PseudoConfiguration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{d, imap};
 
-    /// Build a `Dart` from the C++ test's `int` quad, mapping `-1` -> `None`.
-    fn d(head: i32, rev: i32, succ: i32, pred: i32) -> Dart {
-        let opt = |x: i32| if x == -1 { None } else { Some(x as usize) };
-        Dart::new(head as usize, rev as usize, opt(succ), opt(pred))
-    }
-
-    fn imap(xs: &[usize]) -> Vec<Option<usize>> {
-        xs.iter().map(|&x| Some(x)).collect()
-    }
-
-    // Port of PseudoConfigurationTest.Identify1.
+    // free_homomorphism_pair glues two copies along a dart pair; the quotient
+    // carries both index maps (vmap/dmap) onto it.
     #[test]
     fn identify1() {
         let rotation = vec![vec![1, 2, -1], vec![2, 0, -1], vec![0, 1, -1]];
@@ -614,7 +606,9 @@ mod tests {
         assert_eq!(m1.dmap, imap(&[4, 5, 6, 7, 8, 9]));
     }
 
-    // Port of PseudoConfigurationTest.findHomomorphism.
+    // homomorphism finds a degree-compatible embedding of pc0 into pc1 from a
+    // start dart (Some), or None when the target dart's neighbourhood is
+    // degree-incompatible.
     #[test]
     fn find_homomorphism() {
         let pc0 = PseudoConfiguration::from_v_rotations(
@@ -662,7 +656,8 @@ mod tests {
         assert!(PseudoConfiguration::homomorphism(&pc0, 0, &pc1, 8, has_intersection).is_none());
     }
 
-    // Port of PseudoConfigurationTest.resolveDegreeIssues1.
+    // resolve_degree_issues splits a centre whose degree range is not yet fixed
+    // into its concrete completions -- here [5,8] yields 3 results.
     #[test]
     fn resolve_degree_issues1() {
         let rotation = vec![
@@ -821,7 +816,7 @@ mod tests {
         );
     }
 
-    // Port of PseudoConfigurationTest.resolveDegreeIssues2.
+    // resolve_degree_issues on a range that admits a single completion (one result).
     #[test]
     fn resolve_degree_issues2() {
         let rotation = vec![
@@ -888,7 +883,8 @@ mod tests {
         assert_eq!(pcs[0].1.dmap, imap(&(0..24).collect::<Vec<_>>()));
     }
 
-    // Port of PseudoConfigurationTest.resolveDegreeIssues3 (icosahedral graph).
+    // resolve_degree_issues on the icosahedron (all degrees already fixed at 5):
+    // no split is needed, so the input is returned as the single result.
     #[test]
     fn resolve_degree_issues3() {
         let rotations = vec![
@@ -978,7 +974,7 @@ mod tests {
         assert_eq!(pcs[0].0, expected);
     }
 
-    // Port of PseudoConfigurationTest.Identify2.
+    // free_homomorphism_pair on a larger pair with a single valid gluing.
     #[test]
     fn identify2() {
         let pc0 = PseudoConfiguration::from_v_rotations(

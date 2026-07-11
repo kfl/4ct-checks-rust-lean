@@ -141,6 +141,10 @@ def ofArray (xs : Array α) : Queue α := ⟨xs, 0⟩
 /-- Whether the queue is exhausted (pseudocode `Q.empty()`). -/
 def isEmpty (q : Queue α) : Bool := q.head ≥ q.items.size
 
+/-- Number of not-yet-popped elements (`push` +1, `pop!` −1). Used as a
+termination measure in the proofs. -/
+def live (q : Queue α) : Nat := q.items.size - q.head
+
 /-- Enqueue `x` (pseudocode `Q.push(x)`). `@[inline]` so the wrapper `Queue`
 rebuild is visible to the caller's reuse analysis (Perceus cannot reuse
 constructors across a call boundary). -/

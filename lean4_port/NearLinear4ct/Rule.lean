@@ -94,6 +94,13 @@ def write (rule : Rule) : String := Id.run do
 def toFile (rule : Rule) (path : System.FilePath) : IO Unit :=
   IO.FS.writeFile path rule.write
 
+/-- Validate at the I/O boundary that the charge dart is in bounds: every
+consumer dereferences `darts[stId]` (`write`, homomorphism seeding,
+`addRuleToCombination`). -/
+def assertStIdValid (rule : Rule) (ctx : String) : IO Unit :=
+  proofAssert (rule.stId < rule.darts.size)
+    s!"{ctx}: charge dart {rule.stId} out of bounds (|darts| = {rule.darts.size})"
+
 end Rule
 
 instance : FromFile Rule where
@@ -104,7 +111,10 @@ instance : FromFile Rule where
 /-- Load every `.rule` file in `ruledir`, sorted by filename (C++ `get_rules`). -/
 def getRules (ruledir : System.FilePath) : IO (Array Rule) := do
   let rules ← getObjects Rule ruledir ".rule"
-  for r in rules do Configuration.assertDegreesValid r.degrees "rule"
+  for r in rules do
+    Configuration.assertDegreesValid r.degrees "rule"
+    r.assertStIdValid "rule"
+    Configuration.assertDartCountPackable r.darts "rule"
   IO.println s!"Total {rules.size} rules loaded."
   return rules
 
@@ -163,6 +173,9 @@ instance : FromFile CombinedRule where
 `get_combined_rules`). -/
 def getCombinedRules (combinedRuledir : System.FilePath) : IO (Array CombinedRule) := do
   let crs ← getObjects CombinedRule combinedRuledir ".combined_rule"
+  for cr in crs do
+    cr.toRule.assertStIdValid "combined rule"
+    Configuration.assertDartCountPackable cr.darts "combined rule"
   IO.println s!"Total {crs.size} combined rules loaded."
   return crs
 

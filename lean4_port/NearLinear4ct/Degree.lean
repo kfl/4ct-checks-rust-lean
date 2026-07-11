@@ -13,8 +13,7 @@ return an empty range with `lower > upper`, both `Nat`). The *derived* signed
 quantities (curvature `6 − d`, charges) coerce to `Int` at their computation sites.
 This removes the boxed-`Int` handling and `Int.toNat` conversions from the hot
 `containConf` degree-bucket indexing (`dbd[dY][dX]`, ~7% of `combine_rules`). Two
-`degree − 1` refinement sites assume `lower ≥ 1`; that is `proofAssert`-checked
-(static proof recorded in `PROOFS.md`).
+`degree - 1` refinement sites assume `lower ≥ 1`; that is `proofAssert`-checked.
 -/
 
 namespace NearLinear4ct
@@ -67,6 +66,54 @@ instance : LT Degree := ⟨fun a b => compare a b = Ordering.lt⟩
 instance : LE Degree := ⟨fun a b => compare a b ≠ Ordering.gt⟩
 instance (a b : Degree) : Decidable (a < b) := inferInstanceAs (Decidable (_ = _))
 instance (a b : Degree) : Decidable (a ≤ b) := inferInstanceAs (Decidable (_ ≠ _))
+
+/-! ### Algebra laws
+
+Universal correctness facts for the range predicates -- proved for *all* ranges
+(the finite grid these replaced only exercised `1..7`). The intersection
+non-emptiness law needs the ranges to be non-empty (`lower ≤ upper`); an empty
+range like `⟨5, 3⟩` can report `hasIntersection` yet have an empty intersection,
+which is exactly the precondition the proof makes explicit. -/
+
+/-- `hasIntersection` is by definition the negation of `disjoint`. -/
+theorem hasIntersection_eq_not_disjoint (a b : Degree) :
+    hasIntersection a b = !disjoint a b := rfl
+
+/-- `disjoint` is symmetric. -/
+theorem disjoint_comm (a b : Degree) : disjoint a b = disjoint b a := by
+  simp only [disjoint]
+  exact Bool.or_comm _ _
+
+/-- `hasIntersection` is symmetric. -/
+theorem hasIntersection_comm (a b : Degree) :
+    hasIntersection a b = hasIntersection b a := by
+  unfold hasIntersection
+  rw [disjoint_comm]
+
+/-- `includes` is reflexive. -/
+theorem includes_refl (a : Degree) : includes a a = true := by
+  simp [includes]
+
+/-- `intersection` is contained in its left operand. -/
+theorem intersection_includes_left (a b : Degree) :
+    includes a (intersection a b) = true := by
+  simp only [includes, intersection, Bool.and_eq_true, decide_eq_true_eq]
+  omega
+
+/-- `intersection` is contained in its right operand. -/
+theorem intersection_includes_right (a b : Degree) :
+    includes b (intersection a b) = true := by
+  simp only [includes, intersection, Bool.and_eq_true, decide_eq_true_eq]
+  omega
+
+/-- When two *non-empty* ranges intersect, their `intersection` is non-empty. -/
+theorem intersection_nonempty (a b : Degree)
+    (ha : a.lower ≤ a.upper) (hb : b.lower ≤ b.upper)
+    (h : hasIntersection a b = true) :
+    (intersection a b).lower ≤ (intersection a b).upper := by
+  simp [hasIntersection, disjoint] at h
+  simp only [intersection]
+  omega
 
 end Degree
 end NearLinear4ct

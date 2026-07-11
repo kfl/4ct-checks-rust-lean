@@ -196,15 +196,46 @@ def fromFile (path : System.FilePath) : IO (Array Configuration) := do
 /-- Validate at the I/O boundary that every degree lower bound is `≥ 1`. Degrees are
 vertex-degree bounds, never `< 1`; a smaller value means a corrupt input file (or a
 negative that `.toNat` clamped to `0` at the parser). Enforcing it here is what makes
-the `Nat` degree representation sound — in particular it discharges the `lower ≥ 1`
-assumption of the `Cartwheel` `lower - 1` refinement (`PROOFS.md`). `proofAssert`
-aborts (the C++ `assert`), so a bad file fails loudly rather than silently. -/
+the `Nat` degree representation sound -- in particular it discharges the `lower ≥ 1`
+assumption of the `Cartwheel` `lower - 1` refinement. `proofAssert`
+aborts, so a bad file fails loudly rather than silently. -/
 def assertDegreesValid (degrees : Array Degree) (ctx : String) : IO Unit := do
   for d in degrees do
     proofAssert (d.lower ≥ 1)
       s!"{ctx}: degree lower bound must be ≥ 1 (corrupt input?), got {d.lower}"
 
-/-- Load every `.conf` file in `confdir` (C++ `get_confs`).
+/-- Validate at the I/O boundary that the dart count admits the packed BFS
+worklist: `homCoreGo` packs each dart-id pair `(f, f★)` as the single `Nat`
+`f * 2^32 + f★` (`SmallNatPair.pack`). The decode is proved sound under
+`f★ < 2^32` (`SmallNatPair.fst_pack`/`snd_pack`), and the packed value stays a
+pointer-tagged scalar (no allocation) while it is below `2^63`, i.e. `f < 2^31`.
+Dart ids are `< darts.size`, so `darts.size ≤ 2^31` discharges both bounds --
+for the structure as either side of a homomorphism. -/
+def assertDartCountPackable (darts : Array Dart) (ctx : String) : IO Unit :=
+  proofAssert (darts.size ≤ 2147483648)
+    s!"{ctx}: dart count {darts.size} exceeds 2^31 (packed-worklist bound)"
+
+/-- Validate at the I/O boundary that the root dart is sound for `containConf`:
+`dartId` indexes `darts`, the endpoint reads made from it (`head`, `rev`,
+reverse `head`) are in bounds, and the endpoints' lower degrees index the
+`dartsByDegree` bucket table -- `containConf` reads `(dbd[dY]!)[dX]!` with the
+*configuration's* root degrees unguarded (the `> CONF_DEG_MAX` skip filters only
+the host's darts when bucketing). -/
+def assertRootDartValid (c : Configuration) (ctx : String) : IO Unit := do
+  proofAssert (c.dartId < c.darts.size)
+    s!"{ctx}: root dart {c.dartId} out of bounds (|darts| = {c.darts.size})"
+  let f := c.darts[c.dartId]!
+  proofAssert (f.head < c.degrees.size && f.rev < c.darts.size)
+    s!"{ctx}: root dart endpoints out of bounds (head {f.head}, rev {f.rev})"
+  let x := (c.darts[f.rev]!).head
+  proofAssert (x < c.degrees.size)
+    s!"{ctx}: root dart tail vertex {x} out of bounds (n = {c.degrees.size})"
+  proofAssert ((c.degrees[f.head]!).lower ≤ CONF_DEG_MAX)
+    s!"{ctx}: root head degree {(c.degrees[f.head]!).lower} exceeds CONF_DEG_MAX"
+  proofAssert ((c.degrees[x]!).lower ≤ CONF_DEG_MAX)
+    s!"{ctx}: root tail degree {(c.degrees[x]!).lower} exceeds CONF_DEG_MAX"
+
+/-- Load every `.conf` file in `confdir`.
 
 The 8200 files (19754 configurations) are read + parsed in parallel (`parMapM`):
 independent IO + CPU per file, so this overlaps across cores instead of a serial loop.
@@ -222,7 +253,10 @@ def getConfs (confdir : System.FilePath) : IO (Array Configuration) := do
     if entry.path.extension == some "conf" then some entry.path else none
   let perFile ← parMapM paths fromFile
   let confs := perFile.flatten
-  for c in confs do assertDegreesValid c.degrees "configuration"
+  for c in confs do
+    assertDegreesValid c.degrees "configuration"
+    assertRootDartValid c "configuration"
+    assertDartCountPackable c.darts "configuration"
   IO.println s!"Total {confs.size} configurations loaded."
   return confs
 

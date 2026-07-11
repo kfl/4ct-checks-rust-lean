@@ -408,18 +408,10 @@ fn fmt_idx(x: Option<usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{d, imap};
 
-    /// Build a `Dart` from the C++ test's `int` quad, mapping `-1` -> `None`.
-    fn d(head: i32, rev: i32, succ: i32, pred: i32) -> Dart {
-        let opt = |x: i32| if x == -1 { None } else { Some(x as usize) };
-        Dart::new(head as usize, rev as usize, opt(succ), opt(pred))
-    }
-
-    fn map(xs: &[usize]) -> Vec<Option<usize>> {
-        xs.iter().map(|&x| Some(x)).collect()
-    }
-
-    // Port of PseudoTriangulationTest.FromVRotation.
+    // from_v_rotations builds the dart structure from clockwise vertex rotations
+    // (-1 marks a boundary gap).
     #[test]
     fn from_v_rotation() {
         let rotation = vec![vec![1, 2, -1], vec![2, 0, -1], vec![0, 1, -1]];
@@ -438,7 +430,8 @@ mod tests {
         assert_eq!(pt, expected);
     }
 
-    // Port of PseudoTriangulationTest.Identify.
+    // free_homomorphism_pair glues two identical triangles along a matched dart
+    // pair into their quotient, returning the index maps of each input onto it.
     #[test]
     fn identify() {
         let rotation0 = vec![vec![1, 2, -1], vec![2, 0, -1], vec![0, 1, -1]];
@@ -461,14 +454,15 @@ mod tests {
                 d(3, 6, 0, 8),
             ],
         );
-        assert_eq!(mappings0.vmap, map(&[3, 2, 0]));
-        assert_eq!(mappings1.vmap, map(&[1, 2, 3]));
-        assert_eq!(mappings0.dmap, map(&[9, 0, 1, 6, 2, 3]));
-        assert_eq!(mappings1.dmap, map(&[4, 5, 6, 7, 8, 9]));
+        assert_eq!(mappings0.vmap, imap(&[3, 2, 0]));
+        assert_eq!(mappings1.vmap, imap(&[1, 2, 3]));
+        assert_eq!(mappings0.dmap, imap(&[9, 0, 1, 6, 2, 3]));
+        assert_eq!(mappings1.dmap, imap(&[4, 5, 6, 7, 8, 9]));
         assert_eq!(pt, expected);
     }
 
-    // Port of PseudoTriangulationTest.Identify2.
+    // free_homomorphism_pair on a larger asymmetric pair: the glued quotient
+    // collapses to 3 vertices.
     #[test]
     fn identify2() {
         let pt0 = PseudoTriangulation::from_v_rotations(

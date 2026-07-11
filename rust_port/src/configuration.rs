@@ -301,39 +301,16 @@ fn next_usize<'a>(it: &mut impl Iterator<Item = &'a str>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::test_support::{CONF1, CONF2, d, temp_with};
 
-    fn d(head: i32, rev: i32, succ: i32, pred: i32) -> Dart {
-        let opt = |x: i32| if x == -1 { None } else { Some(x as usize) };
-        Dart::new(head as usize, rev as usize, opt(succ), opt(pred))
-    }
-
-    /// Write `content` to a uniquely-named temp file and return its path.
-    fn temp_file(tag: &str, content: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "combine_p4_{}_{}_{}.conf",
-            std::process::id(),
-            tag,
-            content.len()
-        ));
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(content.as_bytes()).unwrap();
-        path
-    }
-
-    const CONF1: &str = "\n17 10\n11 5 1 12 17 9 10\n12 5 1 2 13 17 11\n13 6 2 14 16 7 17 12\n14 5 2 3 15 16 13\n15 5 3 4 5 16 14\n16 6 5 6 7 13 14 15\n17 6 7 8 9 11 12 13\n";
-    const CONF2: &str =
-        "\n11 7\n8 5 1 2 9 11 7\n9 6 2 3 4 10 11 8\n10 5 4 5 6 11 9\n11 5 6 7 8 9 10\n";
-
-    // Port of ConfFiles.ReadFile.
+    // from_file parses a .conf into configurations, expanding cut-vertices and
+    // pairing each with its mirror.
     #[test]
     fn read_file() {
-        let f1 = temp_file("c1", CONF1);
-        let f2 = temp_file("c2", CONF2);
-        let confs1 = Configuration::from_file(&f1);
-        let confs2 = Configuration::from_file(&f2);
-        std::fs::remove_file(&f1).unwrap();
-        std::fs::remove_file(&f2).unwrap();
+        let f1 = temp_with(CONF1, ".conf");
+        let f2 = temp_with(CONF2, ".conf");
+        let confs1 = Configuration::from_file(f1.path());
+        let confs2 = Configuration::from_file(f2.path());
 
         let deg8 = || {
             vec![

@@ -75,13 +75,14 @@ the `whileM` closure the `do` loop desugars to (which also carried a per-iterati
 heartbeat): `maps.set!` stays in place, `q` is threaded, and `src`/`dst`/`degreeTest`
 are read-only so they pass borrowed (no per-iteration RC).
 
-`partial` (L5): the worklist `q` *grows* (each visit pushes ≤ 3 darts), so this is not
-structural. Termination argument (to be formalised — see `PROOFS.md` §3): each dart is
-*expanded* (the `dmap[f] = none` branch) at most once, so on a **well-formed** graph
-the measure `(# unmapped dart cells, q.size)` strictly decreases — a re-pop of a mapped
-dart shrinks `q`, a first visit drops the unmapped count. (It is *not* total on
-malformed input: an out-of-bounds dart index makes `set!` a no-op and can loop. The
-real inputs are well-formed; the byte-exact differential is the current evidence.)
+`partial_fixpoint`: the worklist `q` *grows* (each visit pushes ≤ 3 darts), so the
+recursion is not structural. `partial_fixpoint` gives the fixpoint a statable
+unfolding equation and a partial-correctness principle (`HomomorphismProofs.lean`)
+without a termination proof -- soundness/output-WF are partial correctness. It
+compiles to the same code as `partial def` (only SSA temp names differ). The
+function is *not* total on malformed input: an out-of-bounds dart index makes
+`set!` a no-op and can loop; totality is conditional on `WF` (the measure
+`(# unmapped dart cells, q.size)` strictly decreases when every index is in bounds).
 
 The two maps are `Array OptIdx` — the verified-unboxed `Option Nat` (`OptIdx.lean`),
 read in `none`/`some` terms yet stored unboxed (no `some`-cell allocation per `set`).
@@ -90,7 +91,7 @@ pack of two dart indices (`SmallNatPair.lean`; a `Nat × Nat` ctor costs a heap
 allocation + free per element, and those pairs were the prune pipeline's dominant
 RC/free churn). `@[specialize]` monomorphises `degreeTest` per call site
 (`Degree.includes` etc.), eliminating the indirect `lean_apply_2` in the loop. -/
-@[specialize] private partial def homCoreGo (src dst : PseudoConfiguration)
+@[specialize] def homCoreGo (src dst : PseudoConfiguration)
     (degreeTest : Degree → Degree → Bool)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Option (IndexMap × IndexMap) :=
   if q.isEmpty then some (vmap, dmap)
@@ -122,11 +123,14 @@ RC/free churn). `@[specialize]` monomorphises `degreeTest` per call site
           let q := if srcD.succ.isSome then q.push (SmallNatPair.pack srcD.succ.idx! dstD.succ.idx!) else q
           let q := if srcD.pred.isSome then q.push (SmallNatPair.pack srcD.pred.idx! dstD.pred.idx!) else q
           homCoreGo src dst degreeTest q vmap dmap
+partial_fixpoint
 
-/-- Shared BFS core for `homomorphism` / `homomorphismExists` (C++ templated
-`homomorphism`, A.2). Seeds the worklist + the vertex (`[0,n)`) and dart
-(`[0,darts.size)`) scratch maps and runs `homCoreGo`. -/
-@[specialize] private def homCore (src : PseudoConfiguration) (dartFrom : Nat)
+/-- Shared BFS core for `homomorphism` / `homomorphismExists` (A.2). Seeds the
+worklist + the vertex (`[0,n)`) and dart
+(`[0,darts.size)`) scratch maps and runs `homCoreGo`.
+`homCoreGo`/`homCore` are internal to the BFS (not part of the public surface);
+they are non-`private` only so `HomomorphismProofs.lean` can reason about them. -/
+@[specialize] def homCore (src : PseudoConfiguration) (dartFrom : Nat)
     (dst : PseudoConfiguration) (dartTo : Nat)
     (degreeTest : Degree → Degree → Bool) : Option (IndexMap × IndexMap) :=
   homCoreGo src dst degreeTest

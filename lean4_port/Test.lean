@@ -19,18 +19,18 @@ def expect (c : Counter) (name : String) (cond : Bool) : IO Unit := do
     IO.eprintln s!"FAIL - {name}"
     c.modify (· + 1)
 
-/-- Port of `../test/degree_test.cpp` :: `DegreeTest.Compare`, plus the extra
-predicate coverage the Rust port added. -/
+/-- Degree ordering (lexicographic by lower then upper) plus the range
+predicates (intersection / disjoint / includes). -/
 def degreeTests (c : Counter) : IO Unit := do
   let d1 := Degree.mk 5 6
   let d2 := Degree.mk 5 6
   let d3 := Degree.mk 5 7
   let d4 := Degree.mk 6 7
-  expect c "degree EXPECT_EQ d1 d2" (d1 == d2)
-  expect c "degree EXPECT_LT d1 d3" (d1 < d3)
-  expect c "degree EXPECT_LT d1 d4" (d1 < d4)
-  expect c "degree EXPECT_GT d3 d1" (d3 > d1)
-  expect c "degree EXPECT_GT d4 d1" (d4 > d1)
+  expect c "degree d1 == d2" (d1 == d2)
+  expect c "degree d1 < d3" (d1 < d3)
+  expect c "degree d1 < d4" (d1 < d4)
+  expect c "degree d3 > d1" (d3 > d1)
+  expect c "degree d4 > d1" (d4 > d1)
   -- fixed / exact
   expect c "degree exact is fixed" (Degree.exact 7).fixed
   expect c "degree range not fixed" (!(Degree.mk 5 6).fixed)
@@ -92,6 +92,13 @@ def utilTests (c : Counter) : IO Unit := do
   let relabel := composeMap each uf2.indexRoots
   expect c "uf relabel total" (relabel.all (·.isSome))
   expect c "uf relabel size" (relabel.size == 4)
+  -- Bool analogue of `Unionfind.RootsWF` (`UtilProofs.lean`): every
+  -- representative lands in range, on a root.
+  let rootsWF (u : Unionfind) : Bool :=
+    (List.range u.n).all fun i =>
+      decide (u.root i < u.n) && u.parents[u.root i]!.isNone
+  expect c "uf RootsWF check" (rootsWF uf)
+  expect c "uf RootsWF check (relabel fixture)" (rootsWF uf2)
   -- lexMin
   expect c "lexMin [1,2,3]" (lexMin #[1, 2, 3])
   expect c "lexMin not [2,3,1]" (!lexMin #[2, 3, 1])
@@ -105,8 +112,9 @@ def dt (head rev : Nat) (succ pred : Int) : Dart :=
   let o : Int → OptIdx := fun x => if x == -1 then OptIdx.none else OptIdx.some x.toNat
   ⟨head, rev, o succ, o pred⟩
 
-/-- Ports of `../test/pseudo_triangulation_test.cpp` (FromVRotation, Identify,
-Identify2) — exact-equality oracles on the dart structures and mapping vectors. -/
+/-- fromVRotations builds the dart structure from clockwise vertex rotations;
+freeHomomorphismPair glues two triangulations, returning the quotient and each
+input's index maps onto it. -/
 def ptTests (c : Counter) : IO Unit := do
   let rotation : Array (Array Int) := #[#[1, 2, -1], #[2, 0, -1], #[0, 1, -1]]
   -- FromVRotation
@@ -115,6 +123,7 @@ def ptTests (c : Counter) : IO Unit := do
     dt 0 3 1 (-1), dt 0 4 (-1) 0, dt 1 5 3 (-1),
     dt 1 0 (-1) 2, dt 2 1 5 (-1), dt 2 2 (-1) 4]
   expect c "pt FromVRotation" (pt == expected)
+  expect c "pt FromVRotation wfCheck" pt.wfCheck
   -- Identify: glue (0,1) and (2,1)
   let pt0 := PseudoTriangulation.fromVRotations 3 rotation
   let pt1 := PseudoTriangulation.fromVRotations 3 rotation
@@ -128,6 +137,7 @@ def ptTests (c : Counter) : IO Unit := do
   expect c "pt Identify dmap0" (m0.dmap == im [9, 0, 1, 6, 2, 3])
   expect c "pt Identify dmap1" (m1.dmap == im [4, 5, 6, 7, 8, 9])
   expect c "pt Identify structure" (ptI == expectedI)
+  expect c "pt Identify wfCheck" ptI.wfCheck
   -- Identify2: 5-wheel+1 with 7-wheel+1, glue (1,5) and (1,7)
   let pt0b := PseudoTriangulation.fromVRotations 7 #[
     #[1, 2, 3, 4, 5], #[2, 0, 5, -1], #[3, 0, 1, -1], #[4, 0, 2, -1],
@@ -141,12 +151,14 @@ def ptTests (c : Counter) : IO Unit := do
     dt 1 6 5 0, dt 1 2 6 4, dt 1 4 3 5, dt 2 3 1 (-1)]
   expect c "pt Identify2 structure" (ptI2 == expectedI2)
 
-def dg (l u : Nat) : Degree := ⟨l, u⟩
-def dgx (x : Nat) : Degree := ⟨x, x⟩
+/-- Terse aliases for the `Degree` constructors used across the fixtures. -/
+abbrev dg := Degree.mk
+abbrev dgx := Degree.exact
 
-/-- Ports of `../test/pseudo_configuration_test.cpp` self-contained-core cases
-(Identify1/2, resolveDegreeIssues1-3, findHomomorphism). The Contain/charge cases
-need derived types and land in P5. -/
+/-- freeHomomorphismPair (gluing), resolveDegreeIssues (splitting an unfixed
+centre-degree range into its concrete completions), and homomorphism (the
+degree-compatible embedding search). The containment/charge cases need derived
+types and live in `cartwheelTests`. -/
 def pcTests (c : Counter) : IO Unit := do
   -- Identify1: identify (2,1) and (2,0)
   let rot3 : Array (Array Int) := #[#[1, 2, -1], #[2, 0, -1], #[0, 1, -1]]
@@ -161,6 +173,7 @@ def pcTests (c : Counter) : IO Unit := do
     dt 1 8 2 4, dt 2 9 7 (-1), dt 2 4 (-1) 6, dt 3 5 9 3, dt 3 6 (-1) 8]
     #[dg 5 6, dgx 6, dg 6 7, dgx 7]
   expect c "pc Identify1 structure" (pcR == exp1)
+  expect c "pc Identify1 wfCheck" pcR.wfCheck
   expect c "pc Identify1 vmap0" (m0.vmap == im [0, 1, 3])
   expect c "pc Identify1 dmap0" (m0.dmap == im [0, 1, 5, 2, 3, 8])
   expect c "pc Identify1 vmap1" (m1.vmap == im [1, 2, 3])
@@ -246,6 +259,7 @@ def pcTests (c : Counter) : IO Unit := do
     dt 11 51 53 56, dt 1 59 5 8, dt 2 58 9 12]
     (Array.replicate 12 (dgx 5))
   expect c "pc rdi3 icosahedral" (rdi3[0]!.1 == e3)
+  expect c "pc rdi3 wfCheck" (rdi3[0]!.1.wfCheck)
 
   -- Identify2: 6-vertex + 10-vertex, identify (4,5) and (3,2)
   let pc0b := PseudoConfiguration.fromVRotations 6 #[
@@ -292,16 +306,15 @@ def pcTests (c : Counter) : IO Unit := do
   expect c "pc findHom (0,1)->(6,1) none"
     (PseudoConfiguration.homomorphism fh0 0 fh1 8 Degree.hasIntersection).isNone
 
-/-- Write `content` to a uniquely-named temp file (per-call counter to avoid
-collisions between parallel-ish reuse), returning its path. -/
-def tempFile (c : Counter) (tag ext content : String) : IO System.FilePath := do
-  let n ← c.get
-  let dir ← IO.currentDir
-  let path := dir / s!"test_tmp_{tag}_{n}_{content.length}.{ext}"
+/-- Write `content` to a freshly-created temp file (secure, race-free, unique
+name in the system temp dir, via `IO.FS.createTempFile`) and return its path. The
+caller removes it; prefer `IO.FS.withTempFile` where RAII cleanup fits (`mkRule`). -/
+def tempFile (content : String) : IO System.FilePath := do
+  let (_, path) ← IO.FS.createTempFile
   IO.FS.writeFile path content
   return path
 
--- C++ test fixtures (verbatim from test/common.hpp).
+-- On-disk fixtures in the FORMAT.md text encoding.
 def conf1 : String := "\n17 10\n11 5 1 12 17 9 10\n12 5 1 2 13 17 11\n13 6 2 14 16 7 17 12\n14 5 2 3 15 16 13\n15 5 3 4 5 16 14\n16 6 5 6 7 13 14 15\n17 6 7 8 9 11 12 13\n"
 def conf2 : String := "\n11 7\n8 5 1 2 9 11 7\n9 6 2 3 4 10 11 8\n10 5 4 5 6 11 9\n11 5 6 7 8 9 10\n"
 def rule1 : String := "\n2 1 2 2\n1 5 5 2 -1\n2 5 0 1 -1\n"
@@ -310,12 +323,11 @@ def rule3 : String := "\n6 1 2 1\n1 7 7 4 6 2 3 -1\n2 7 0 3 1 6 -1\n3 5 5 1 2 -1
 def rule4 : String := "\n8 1 2 1\n1 7 7 3 4 2 6 -1\n2 7 7 7 6 1 4 5 -1\n3 5 5 4 1 -1\n4 7 7 5 2 1 3 -1\n5 6 0 2 4 -1\n6 5 5 1 2 7 8 -1\n7 6 6 8 6 2 -1\n8 7 0 6 7 -1\n"
 def cw1str : String := "8 1\n1 7 7 2 3 4 5 6 7 8\n2 5 5 3 1 8 -1\n3 5 5 4 1 2 -1\n4 6 6 5 1 3 -1\n5 5 5 6 1 4 -1\n6 5 5 7 1 5 -1\n7 5 5 8 1 6 -1\n8 9 9 2 1 7 -1\n"
 
-/-- Load a `Rule` from a fixture string via a temp file. -/
-def mkRule (c : Counter) (tag content : String) : IO Rule := do
-  let f ← tempFile c tag "rule" content
-  let r ← (FromFile.fromFile f : IO Rule)
-  IO.FS.removeFile f
-  return r
+/-- Load a `Rule` from a fixture string via a temporary file (auto-removed). -/
+def mkRule (content : String) : IO Rule :=
+  IO.FS.withTempFile fun _ path => do
+    IO.FS.writeFile path content
+    (FromFile.fromFile path : IO Rule)
 
 def exA (xs : List Nat) : Array Degree := (xs.map dgx).toArray
 
@@ -326,8 +338,9 @@ def setDeg (cw : CartWheel) (mods : List (Nat × Nat)) : CartWheel := Id.run do
     c := { c with degrees := c.degrees.set! v (dgx d) }
   return c
 
-/-- Ports of `cartwheel_test.cpp` + the 4 deferred `pseudo_configuration_test`
-cases (Contain1/2, AmountChargeSend, AmountPossibleChargeSend). -/
+/-- Cartwheel FromFile / enumWheels / charge / pruning / refinement /
+enumBadCartwheels, plus the containment and charge-amount cases that need the
+CartWheel type. -/
 def cartwheelTests (c : Counter) : IO Unit := do
   -- FromFile (cw1 full structure; cw2 structural — too large to transcribe)
   let cw1 := CartWheel.ofString cw1str
@@ -346,7 +359,7 @@ def cartwheelTests (c : Counter) : IO Unit := do
   expect c "enumWheels 7 = 11165" ((CartWheel.enumWheels 7).size == 11165)
 
   -- charge (sum over center darts)
-  let rules3 := #[(← mkRule c "ch1" rule1), (← mkRule c "ch2" rule2), (← mkRule c "ch3" rule3)]
+  let rules3 := #[(← mkRule rule1), (← mkRule rule2), (← mkRule rule3)]
   let chWheels := #[
     (CartWheel.generateCartwheel 7 #[5, 7, 5, 5, 9, 5, 6], (1, 8)),
     (CartWheel.generateCartwheel 7 #[5, 5, 7, 5, 7, 5, 7], (0, 8))]
@@ -388,7 +401,7 @@ def cartwheelTests (c : Counter) : IO Unit := do
   expect c "prune2 ubc > 0" (decide (pcWheel.upperBoundOfCharge spokes2 rules3 combined3 > 0))
 
   -- refinement1 / refinement2
-  let rule4v ← mkRule c "ref4" rule4
+  let rule4v ← mkRule rule4
   let refCw := setDeg (CartWheel.generateCartwheel 7 #[7, 7, 5, 5, 9, 6, 5]) [(14, 6)]
   expect c "refinement1 shouldRefine" (refCw.shouldRefine 1 rule4v)
   let refinements := refCw.refinement 1 rule4v
@@ -406,8 +419,8 @@ def cartwheelTests (c : Counter) : IO Unit := do
   expect c "refinement2 not shouldRefine" (!refCw2.shouldRefine 1 rule4v)
 
   -- enumBadCartwheels1
-  let rules4 := #[(← mkRule c "eb1" rule1), (← mkRule c "eb2" rule2),
-                 (← mkRule c "eb3" rule3), (← mkRule c "eb4" rule4)]
+  let rules4 := #[(← mkRule rule1), (← mkRule rule2),
+                 (← mkRule rule3), (← mkRule rule4)]
   let combined4 := combineRules rules4 #[]
   let ebCw := CartWheel.generateCartwheel 7 #[5, 7, 5, 7, 5, 8, 9]
   let enumerated ← ebCw.enumBadCartwheels rules4 combined4 #[]
@@ -428,12 +441,12 @@ def cartwheelTests (c : Counter) : IO Unit := do
   expect c "enumBadCartwheels2b structures" (enum2 == eb2Exp2)
 
   -- Contain1 / Contain2 (need conf files)
-  let cf1 ← tempFile c "ctn1" "conf" conf1
+  let cf1 ← tempFile conf1
   let confs1 ← Configuration.fromFile cf1
   IO.FS.removeFile cf1
   let ctnCw := setDeg (CartWheel.generateCartwheel 7 #[6, 6, 6, 6, 6, 6, 6]) [(9, 5), (10, 5), (12, 5), (13, 5)]
   expect c "Contain1" (ctnCw.toPseudoConfiguration.blockedByReducibleConfiguration ctnCw.center confs1)
-  let cf2 ← tempFile c "ctn2" "conf" conf2
+  let cf2 ← tempFile conf2
   let confs2 ← Configuration.fromFile cf2
   IO.FS.removeFile cf2
   let ctn2Cw := setDeg (CartWheel.generateCartwheel 7 #[5, 6, 6, 6, 6, 6, 5]) [(8, 6)]
@@ -443,10 +456,11 @@ def cartwheelTests (c : Counter) : IO Unit := do
   expect c "Contain2 blocked"
     (ctn2Cw'.toPseudoConfiguration.blockedByReducibleConfiguration ctn2Cw'.center confs2)
 
-/-- Ports of `configuration_test.cpp::ReadFile`. -/
+/-- fromFile parses a .conf into configurations (cut-vertices expanded, each
+paired with its mirror). -/
 def configTests (c : Counter) : IO Unit := do
-  let f1 ← tempFile c "conf1" "conf" conf1
-  let f2 ← tempFile c "conf2" "conf" conf2
+  let f1 ← tempFile conf1
+  let f2 ← tempFile conf2
   let confs1 ← Configuration.fromFile f1
   let confs2 ← Configuration.fromFile f2
   IO.FS.removeFile f1; IO.FS.removeFile f2
@@ -495,11 +509,11 @@ def configTests (c : Counter) : IO Unit := do
   expect c "conf2[0]" (confs2[0]! == c2e0)
   expect c "conf2[1]" (confs2[1]! == c2e1)
 
-/-- Ports of `rule_test.cpp` (ReadRuleFile, CombineRules) + R7 write checks. -/
+/-- Rule parsing, byte-exact + idempotent write, and combineRules. -/
 def ruleTests (c : Counter) : IO Unit := do
-  let f1 ← tempFile c "rule1" "rule" rule1
-  let f2 ← tempFile c "rule2" "rule" rule2
-  let f3 ← tempFile c "rule3" "rule" rule3
+  let f1 ← tempFile rule1
+  let f2 ← tempFile rule2
+  let f3 ← tempFile rule3
   let r1 ← (FromFile.fromFile f1 : IO Rule)
   let r2 ← (FromFile.fromFile f2 : IO Rule)
   let r3 ← (FromFile.fromFile f3 : IO Rule)
@@ -517,10 +531,10 @@ def ruleTests (c : Counter) : IO Unit := do
   expect c "rule1 write byte-exact" (r1.write == "\n2 1 2 2\n1 5 5 2 -1 \n2 5 0 1 -1 \n")
   -- R7: write is idempotent
   for (tag, content) in [("rt1", rule1), ("rt2", rule2), ("rt3", rule3)] do
-    let fa ← tempFile c tag "rule" content
+    let fa ← tempFile content
     let w1 := (← (FromFile.fromFile fa : IO Rule)).write
     IO.FS.removeFile fa
-    let fb ← tempFile c (tag ++ "b") "rule" w1
+    let fb ← tempFile w1
     let w2 := (← (FromFile.fromFile fb : IO Rule)).write
     IO.FS.removeFile fb
     expect c s!"rule write idempotent {tag}" (w1 == w2)
@@ -556,8 +570,8 @@ def ruleTests (c : Counter) : IO Unit := do
   expect c "combined[3]" (combined[3]! == c3)
   expect c "combined[4]" (combined[4]! == c4)
 
-/-- Sanity checks for `CombineCartwheel` (no googletests exist for this module;
-its real validation is the P7 differential run). -/
+/-- Sanity checks for `CombineCartwheel` (get7triangle / getX / deleteDegree);
+its full validation is the differential run. -/
 def combineCartwheelTests (c : Counter) : IO Unit := do
   let t := get7triangle
   expect c "get7triangle n=3" (t.n == 3)
@@ -581,18 +595,131 @@ deriving DecidableEq, Repr
 instance : FromFile Line where
   fromFile p := do return { s := (← IO.FS.readFile p).trimAscii.toString }
 
-def getObjectsTest (c : Counter) : IO Unit := do
-  let dir : System.FilePath := (← IO.currentDir) / "test_tmp_p1"
-  IO.FS.removeDirAll dir <|> pure ()
-  IO.FS.createDirAll dir
-  -- created out of order, with a non-matching extension mixed in
-  IO.FS.writeFile (dir / "b.rule") "B"
-  IO.FS.writeFile (dir / "a.rule") "A"
-  IO.FS.writeFile (dir / "c.other") "C"
-  let objs ← getObjects Line dir ".rule"
-  expect c "getObjects sorted + filtered"
-    (objs.map (·.s) == #["A", "B"])
-  IO.FS.removeDirAll dir
+def getObjectsTest (c : Counter) : IO Unit :=
+  IO.FS.withTempDir fun dir => do
+    -- created out of order, with a non-matching extension mixed in
+    IO.FS.writeFile (dir / "b.rule") "B"
+    IO.FS.writeFile (dir / "a.rule") "A"
+    IO.FS.writeFile (dir / "c.other") "C"
+    let objs ← getObjects Line dir ".rule"
+    expect c "getObjects sorted + filtered"
+      (objs.map (·.s) == #["A", "B"])
+
+/-! ### Self-contained property oracles (checked at build time via `#guard`)
+
+Each compares a function against an *independently computed* expectation over a
+bounded set of inputs -- nothing is transcribed from the C++. A failing `#guard`
+fails the build, so these cannot be skipped. -/
+
+/-- Strict lexicographic `<` on `Array Int`, computed directly -- an oracle
+independent of `lexMin`'s own comparison. -/
+def lexLt (a b : Array Int) : Bool := Id.run do
+  let n := min a.size b.size
+  for i in [0:n] do
+    if a[i]! < b[i]! then return true
+    if a[i]! > b[i]! then return false
+  return decide (a.size < b.size)
+
+/-- Brute-force spec: `v` is lex-minimal iff no rotation of `v` is strictly
+smaller. -/
+def isLexMinBrute (v : Array Int) : Bool :=
+  let n := v.size
+  (List.range n).all fun k =>
+    let rot := (Array.range n).map fun j => v[(j + k) % n]!
+    !lexLt rot v
+
+/-- Every sequence of length 1..4 over the alphabet {0,1,2} (120 arrays). -/
+def lexMinOracleCases : List (Array Int) := Id.run do
+  let alphabet := 3
+  let mut out : List (Array Int) := []
+  for len in [1, 2, 3, 4] do
+    let hi := alphabet ^ len
+    for code in [0:hi] do
+      let mut a : Array Int := #[]
+      let mut c := code
+      for _ in [0:len] do
+        a := a.push (Int.ofNat (c % alphabet))
+        c := c / alphabet
+      out := a :: out
+  return out
+
+/-- `lexMin` agrees with the brute-force spec on every bounded case. -/
+def lexMinOracleOk : Bool := lexMinOracleCases.all fun v => lexMin v == isLexMinBrute v
+#guard lexMinOracleOk
+
+/-! #### `lexMin = isLexMinBrute`, universally -- the `#guard` above, as a theorem
+
+Proved for *all* `Array Int` (not just the 120 bounded cases) from the
+machine-checked `lexMin_true_iff` in `UtilProofs.lean`. The `#guard` is kept
+as an executable tripwire. The only new work here is relating `lexLt` (this
+file's independent oracle comparison) to the port's `arrCompare`: both are
+`List.findSome?` scans, and `lexLt`'s probe is `arrCompare`'s post-composed
+with `(· == .lt)`, so `lexLt_eq_arrCompare_beq` is a functional identity
+(`Option.map` commutes through `findSome?` and `getD`) rather than a
+first-difference argument. -/
+
+/-- `lexLt`'s probe: the verdict at index `j`, if the elements differ. -/
+private def lexLtP (a b : Array Int) (j : Nat) : Option Bool :=
+  if a[j]! < b[j]! then some true
+  else if a[j]! > b[j]! then some false
+  else none
+
+/-- `lexLtP` is `arrCompare`'s probe post-composed with `(· == .lt)`: the
+three verdicts are exactly "does the position's comparison equal `lt`". -/
+private theorem lexLtP_eq_map_cmp (a b : Array Int) (j : Nat) :
+    lexLtP a b j
+      = Option.map (· == Ordering.lt)
+          (if compare a[j]! b[j]! != Ordering.eq then some (compare a[j]! b[j]!)
+           else none) := by
+  grind [lexLtP, Int.compare_eq_lt, Int.compare_eq_eq, Int.compare_eq_gt]
+
+/-- Unfold `lexLt`'s `Id.run do` loop to a `findSome?` scan. -/
+private theorem lexLt_eq_findSome? (a b : Array Int) :
+    lexLt a b
+      = ((List.range' 0 (min a.size b.size)).findSome? (lexLtP a b)).getD
+          (decide (a.size < b.size)) := by
+  unfold lexLt
+  simp only [Id.run, pure_bind]
+  rw [forIn_range_eq_loopGo (min a.size b.size) _ (scanStep (lexLtP a b))
+        (fun i s => by
+          by_cases h1 : a[i]! < b[i]!
+          · simp [scanStep, lexLtP, h1]
+          · by_cases h2 : a[i]! > b[i]! <;> simp [scanStep, lexLtP, h1, h2]),
+      loopGo_scan_eq_findSome?]
+  cases (List.range' 0 (min a.size b.size)).findSome? (lexLtP a b) <;> rfl
+
+/-- `lexLt` (this file's oracle `<`) *is* the port's `arrCompare`
+post-composed with `(· == .lt)` -- a functional identity (`Option.map`
+commutes through `findSome?` and `getD`), so no first-difference reasoning
+is needed. -/
+private theorem lexLt_eq_arrCompare_beq (a b : Array Int) :
+    lexLt a b = (arrCompare a b == Ordering.lt) := by
+  have hp : lexLtP a b
+      = Option.map (· == Ordering.lt) ∘ fun j =>
+          if compare a[j]! b[j]! != Ordering.eq then some (compare a[j]! b[j]!)
+          else none :=
+    funext (lexLtP_eq_map_cmp a b)
+  rw [lexLt_eq_findSome?, arrCompare_eq_findSome?, hp, ← List.map_findSome?,
+      show decide (a.size < b.size) = (compare a.size b.size == Ordering.lt) by
+        rw [Bool.eq_iff_iff]; simp [Nat.compare_eq_lt],
+      Option.getD_map]
+
+/-- `isLexMinBrute`, decoded to the `lexMin_true_iff` vocabulary: no rotation
+`0..v.size - 1` compares below `v`. -/
+private theorem isLexMinBrute_true_iff (v : Array Int) :
+    isLexMinBrute v ↔
+      ∀ k, k < v.size → arrCompare (rotateLeftN v k) v ≠ Ordering.lt := by
+  unfold isLexMinBrute
+  simp only [List.all_eq_true, List.mem_range, ← rotateLeftN_eq_map,
+    Bool.not_eq_true', ← Bool.not_eq_true, lexLt_eq_arrCompare_beq, beq_iff_eq]
+
+/-- **The `#guard` oracle as a universal theorem**: `lexMin` agrees with the
+brute-force "no rotation is strictly smaller" spec on every `Array Int`. -/
+theorem lexMin_eq_brute (v : Array Int) : lexMin v = isLexMinBrute v := by
+  rw [Bool.eq_iff_iff, lexMin_true_iff, isLexMinBrute_true_iff]
+
+-- The Degree algebra laws are proved universally as theorems in
+-- `NearLinear4ct/Degree.lean` (stronger than the finite grid they replaced).
 
 def main : IO UInt32 := do
   let c ← IO.mkRef 0

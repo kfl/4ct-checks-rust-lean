@@ -177,6 +177,21 @@ def ofString (content : String) : CartWheel := Id.run do
   let pc := PseudoConfiguration.fromVRotations n rotationVertices degrees
   return { toPseudoConfiguration := pc, center := center, centerDarts := centerDartsOf pc center }
 
+/-- Validate at the I/O boundary that the centre structure is coherent: `center`
+indexes `degrees` (and `n`), every centre dart indexes `darts`, and the centre's
+lower degree is at most the spoke count -- the spoke loops (`fixInRules`,
+`upperBoundOfCharge`, `firstRefinable`/`refinement`) walk
+`centerDarts[0 : degrees[center].lower]` and dereference each entry in
+`darts`. -/
+def assertCenterValid (cw : CartWheel) (ctx : String) : IO Unit := do
+  proofAssert (cw.center < cw.n && cw.center < cw.degrees.size)
+    s!"{ctx}: center {cw.center} out of bounds (n = {cw.n})"
+  proofAssert (cw.centerDarts.all (· < cw.darts.size))
+    s!"{ctx}: a centre dart is out of bounds (|darts| = {cw.darts.size})"
+  proofAssert ((cw.degrees[cw.center]!).lower ≤ cw.centerDarts.size)
+    s!"{ctx}: centre lower degree {(cw.degrees[cw.center]!).lower} exceeds \
+      spoke count {cw.centerDarts.size}"
+
 end CartWheel
 
 instance : FromFile CartWheel where
@@ -185,6 +200,7 @@ instance : FromFile CartWheel where
 /-- Load every `.cartwheel` file in `cartwheeldir` (C++ `get_cartwheels`). -/
 def getCartwheels (cartwheeldir : System.FilePath) : IO (Array CartWheel) := do
   let cws ← getObjects CartWheel cartwheeldir ".cartwheel"
+  for cw in cws do cw.assertCenterValid "cartwheel"
   IO.println s!"Total {cws.size} cartwheels loaded."
   return cws
 
@@ -481,6 +497,7 @@ def runEnumWheels (centerDegree : Nat) (confdir ruledir combinedRuledir outdir :
 def runEnumCartwheels (wheelFile confdir ruledir combinedRuledir outdir : System.FilePath) :
     IO Unit := do
   let cartwheel := CartWheel.ofString (← IO.FS.readFile wheelFile)
+  cartwheel.assertCenterValid "cartwheel"
   let confs ← Configuration.getConfs confdir
   let rules ← getRules ruledir
   let combinedRules ← getCombinedRules combinedRuledir
