@@ -1,0 +1,201 @@
+//! Phase 1 — shared helpers. Port of `../src/util.hpp`.
+//!
+//! Contains `Unionfind`, `lex_min` (lexicographically-minimal rotation test),
+//! the `FromFile` trait (replacing the C++ `HasFromFile` concept), and the
+//! `get_objects` directory loader.
+
+use std::path::{Path, PathBuf};
+
+/// Disjoint-set forest (union-find) without path compression or union-by-rank,
+/// matching `../src/util.hpp`'s `Unionfind`.
+///
+/// R1: the C++ stores `parents[x] < 0` to mark a root (with the value `-1`).
+/// Here a root is `None`; an interior node is `Some(parent)`.
+pub struct Unionfind {
+    pub n: usize,
+    parents: Vec<Option<usize>>,
+}
+
+impl Unionfind {
+    pub fn new(n: usize) -> Self {
+        Unionfind {
+            n,
+            parents: vec![None; n],
+        }
+    }
+
+    /// Representative of `x` (C++ `root`). Iterative; the C++ recurses but does
+    /// no path compression, so this is behaviourally identical.
+    pub fn root(&self, mut x: usize) -> usize {
+        while let Some(p) = self.parents[x] {
+            x = p;
+        }
+        x
+    }
+
+    /// Attach `x`'s tree under `y`'s root (C++ `unite`: `parents[root(x)] = root(y)`).
+    pub fn unite(&mut self, x: usize, y: usize) {
+        let x = self.root(x);
+        let y = self.root(y);
+        if x == y {
+            return;
+        }
+        self.parents[x] = Some(y);
+    }
+
+    pub fn same(&self, x: usize, y: usize) -> bool {
+        self.root(x) == self.root(y)
+    }
+
+    /// `root(i)` for every `i` (C++ `each_root`). Always total.
+    pub fn each_root(&self) -> Vec<usize> {
+        (0..self.n).map(|i| self.root(i)).collect()
+    }
+
+    /// The indices that are roots (C++ `all_roots`).
+    pub fn all_roots(&self) -> Vec<usize> {
+        (0..self.n).filter(|&i| self.parents[i].is_none()).collect()
+    }
+
+    /// A relabelling map: each root gets a fresh sequential index; non-roots map
+    /// to `None` (the C++ `-1`). Composes with [`each_root`](Self::each_root) via
+    /// [`crate::mapping::compose_map`] to renumber a quotient (see P2
+    /// `disjoint_union`).
+    pub fn index_roots(&self) -> Vec<Option<usize>> {
+        let mut index = 0;
+        self.parents
+            .iter()
+            .map(|parent| {
+                if parent.is_some() {
+                    return None;
+                }
+                let id = Some(index);
+                index += 1;
+                id
+            })
+            .collect()
+    }
+
+    pub fn num_roots(&self) -> usize {
+        (0..self.n).filter(|&i| self.parents[i].is_none()).count()
+    }
+}
+
+/// Whether `a` is lexicographically minimal among all its rotations
+/// (C++ `lex_min`).
+pub fn lex_min<T: Ord + Clone>(a: &[T]) -> bool {
+    let mut rotated = a.to_vec();
+    for _ in 0..a.len() {
+        rotated.rotate_left(1);
+        if rotated.as_slice() < a {
+            return false;
+        }
+    }
+    true
+}
+
+/// A type that can be loaded from a single file (replaces the C++ `HasFromFile`
+/// concept). Like the C++ `from_file`, implementations may panic on malformed
+/// input — that mirrors the C++ behaviour of throwing/aborting.
+pub trait FromFile: Sized {
+    fn from_file(path: &Path) -> Self;
+}
+
+/// Load every regular file in `dir` whose extension matches `extension`
+/// (e.g. `".rule"`), as `T`, **sorted by path** (C++ `get_objects`).
+///
+/// R3: ordering is observable (it defines the `combined_flag` rule order, see
+/// `../FORMAT.md`), so we sort explicitly rather than rely on filesystem order.
+pub fn get_objects<T: FromFile>(dir: &Path, extension: &str) -> Vec<T> {
+    // `Path::extension` yields the suffix without the leading dot; the C++
+    // `fs::path::extension` includes it. Normalise so callers can pass ".rule".
+    let want = extension.trim_start_matches('.');
+
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot read directory {}: {e}", dir.display()))
+        .map(|entry| entry.expect("directory entry").path())
+        .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some(want))
+        .collect();
+    paths.sort();
+
+    paths
+        .iter()
+        .map(|p| {
+            tracing::debug!("Loading from file: {}", p.display());
+            T::from_file(p)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unionfind_basic() {
+        let mut uf = Unionfind::new(5);
+        assert_eq!(uf.num_roots(), 5);
+        uf.unite(0, 1);
+        uf.unite(3, 4);
+        assert!(uf.same(0, 1));
+        assert!(!uf.same(0, 2));
+        assert!(uf.same(3, 4));
+        assert_eq!(uf.num_roots(), 3);
+
+        // Roots are 1, 2, 4 (unite attaches root(x) under root(y)).
+        assert_eq!(uf.all_roots(), vec![1, 2, 4]);
+        assert_eq!(uf.each_root(), vec![1, 1, 2, 4, 4]);
+        // index_roots numbers the roots in order; non-roots are None.
+        assert_eq!(
+            uf.index_roots(),
+            vec![None, Some(0), Some(1), None, Some(2)]
+        );
+    }
+
+    #[test]
+    fn unionfind_relabel_composes() {
+        // The disjoint_union pattern: compose_map(each_root, index_roots) yields
+        // a total map onto the compacted root indices.
+        let mut uf = Unionfind::new(4);
+        uf.unite(0, 2);
+        let each: Vec<Option<usize>> = uf.each_root().into_iter().map(Some).collect();
+        let relabel = crate::mapping::compose_map(&each, &uf.index_roots());
+        // No None survives: each_root always points at a root.
+        assert!(relabel.iter().all(|x| x.is_some()));
+        assert_eq!(relabel.len(), 4);
+    }
+
+    #[test]
+    fn lex_min_detects_minimal_rotation() {
+        assert!(lex_min(&[1, 2, 3]));
+        assert!(!lex_min(&[2, 3, 1])); // rotation [1,2,3] is smaller
+        assert!(!lex_min(&[3, 1, 2]));
+        assert!(lex_min(&[1, 1, 2]));
+        assert!(lex_min::<i32>(&[])); // vacuously minimal
+        assert!(lex_min(&[5])); // single element
+    }
+
+    struct Line(String);
+    impl FromFile for Line {
+        fn from_file(path: &Path) -> Self {
+            Line(std::fs::read_to_string(path).unwrap().trim().to_string())
+        }
+    }
+
+    #[test]
+    fn get_objects_filters_and_sorts() {
+        let dir = std::env::temp_dir().join(format!("combine_p1_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Create out of order, with a non-matching extension mixed in.
+        std::fs::write(dir.join("b.rule"), "B").unwrap();
+        std::fs::write(dir.join("a.rule"), "A").unwrap();
+        std::fs::write(dir.join("c.other"), "C").unwrap();
+
+        let objs: Vec<Line> = get_objects(&dir, ".rule");
+        let got: Vec<&str> = objs.iter().map(|l| l.0.as_str()).collect();
+        assert_eq!(got, vec!["A", "B"]); // sorted by path, ".other" excluded
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

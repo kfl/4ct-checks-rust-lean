@@ -1,0 +1,34 @@
+[package]
+name = "combine"
+version = "0.1.0"
+edition = "2024"
+description = "Rust port of the near-linear 4CT computer checks (combinatorial-map discharging verifier)"
+license = "MIT"
+
+# Library crate (the port) plus a thin CLI binary mirroring the C++ `main`.
+[lib]
+name = "combine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "main"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }   # replaces boost::program_options
+rayon = "1"                                        # replaces boost::asio::thread_pool
+tracing = "0.1"                                    # replaces spdlog (logging)
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"                                        # top-level error handling in the binary
+thiserror = "2"                                     # typed library errors
+
+[dev-dependencies]
+proptest = "1"                                      # property tests for the index/sentinel logic (R1)
+
+# Asserts are the proof obligations (risk R5). Note `assert!`/`assert_eq!`/
+# `assert_ne!` are ALWAYS compiled in (no profile/flag disables them) — the code
+# uses only those, never `debug_assert!`, so R5 needs nothing here. The setting
+# below is unrelated: integer overflow checks ARE off by default in release, so
+# we turn them on for extra safety during the differential runs.
+[profile.release]
+overflow-checks = true     # revisit if it costs too much in P7

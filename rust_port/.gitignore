@@ -1,0 +1,10 @@
+/target
+Cargo.lock        # this is a library crate; don't pin downstream
+
+# Data repos cloned for differential testing (P7) and their outputs:
+/reducible-configurations
+/discharging-rules
+/log
+/wheels
+/combined_rules
+/empty
