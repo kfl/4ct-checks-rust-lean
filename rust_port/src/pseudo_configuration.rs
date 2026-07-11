@@ -1,23 +1,21 @@
-//! Phase 3 — configuration with degrees. Port of
-//! `../src/pseudo_configuration.{hpp,cpp}`.
+//! Configuration with degrees.
 //!
-//! R6: in C++ this *inherits* from `PseudoTriangulation`. Here it embeds one
-//! (`tri`) and accesses it directly (`self.tri.darts`, `self.tri.first_dart(v)`,
-//! …) — no `Deref`. A shared trait is deferred until P4/P5, when `Configuration`,
-//! `Rule`, and `CartWheel` need to share these methods.
+//! This embeds a `PseudoTriangulation` (`tri`) and accesses it directly
+//! (`self.tri.darts`, `self.tri.first_dart(v)`, …) rather than inheriting from
+//! it -- no `Deref`. A shared trait is deferred until `Configuration`, `Rule`,
+//! and `CartWheel` need to share these methods.
 //!
-//! R1: the BFS `homomorphism` is the highest-risk port — it initialises the
+//! The BFS `homomorphism` is the trickiest method -- it initialises the
 //! vertex/dart maps to "unmapped" (`None`, the C++ `-1`) and branches on the
-//! sentinel. See `PORTING_PLAN.md`.
+//! sentinel.
 //!
-//! Scope note: methods that consume derived types are split out by phase. Rust
-//! *does* allow the mutual module reference C++ achieved via forward
-//! declarations (modules in one crate may reference each other), so these live
-//! here in extra `impl` blocks as their dependencies land:
-//! - P4 (this file, below): the reducible-configuration cluster — `contain_conf`,
+//! Scope note: methods that consume derived types are split into separate `impl`
+//! blocks (modules in one crate may reference each other freely), so they live
+//! here as their dependencies land:
+//! - the reducible-configuration cluster -- `contain_conf`,
 //!   `darts_by_degree`, `rooted_contain_conf`, `blocked_by_reducible_configuration`,
-//!   `representative_degree` — needed so `rule::combine_rules` compiles.
-//! - P5: the charge methods (`always_apply`, `never_apply`, `amount_of_*`,
+//!   `representative_degree` -- needed so `rule::combine_rules` compiles.
+//! - the charge methods (`always_apply`, `never_apply`, `amount_of_*`,
 //!   `dominantly_apply`) and the cartwheel-combination methods
 //!   (`combine_each_cartwheel`, `combine_each_cartwheel_twice`), whose tests need
 //!   `CartWheel`.
@@ -39,7 +37,7 @@ pub struct PseudoConfiguration {
 }
 
 impl PseudoConfiguration {
-    /// C++ `PseudoConfiguration(N, darts, degrees)`.
+    /// Construct from `(N, darts, degrees)`.
     pub fn new(n: usize, darts: Vec<Dart>, degrees: Vec<Degree>) -> Self {
         PseudoConfiguration {
             tri: PseudoTriangulation::new(n, darts),
@@ -47,7 +45,7 @@ impl PseudoConfiguration {
         }
     }
 
-    /// Multi-line dump (C++ `debug`).
+    /// Multi-line dump.
     pub fn debug(&self) -> String {
         let mut res = self.tri.debug();
         for deg in &self.degrees {
@@ -56,7 +54,7 @@ impl PseudoConfiguration {
         res
     }
 
-    /// Human-readable rotation view with degrees (C++ `to_string`).
+    /// Human-readable rotation view with degrees.
     pub fn show(&self) -> String {
         let mut res = format!("N: {}\n", self.tri.n);
         let edges: Vec<(usize, usize)> = self
@@ -82,14 +80,14 @@ impl PseudoConfiguration {
         res
     }
 
-    /// Build from vertex rotations + degrees (C++ `from_v_rotations`).
+    /// Build from vertex rotations + degrees.
     pub fn from_v_rotations(n: usize, v_rotations: &[Vec<i32>], degrees: Vec<Degree>) -> Self {
         assert_eq!(degrees.len(), n);
         let tri = PseudoTriangulation::from_v_rotations(n, v_rotations);
         PseudoConfiguration { tri, degrees }
     }
 
-    /// Side-by-side union (C++ `disjoint_union`).
+    /// Side-by-side union.
     pub fn disjoint_union(l: &PseudoConfiguration, r: &PseudoConfiguration) -> PseudoConfiguration {
         let tri = PseudoTriangulation::disjoint_union(&l.tri, &r.tri);
         let mut degrees = l.degrees.clone();
@@ -98,11 +96,10 @@ impl PseudoConfiguration {
     }
 
     /// BFS graph homomorphism rooted at a dart pair, accepting a vertex degree
-    /// compatibility test (C++ templated `homomorphism`). Returns the index maps
-    /// if a homomorphism exists.
+    /// compatibility test. Returns the index maps if a homomorphism exists.
     ///
-    /// R1: `vmap`/`dmap` start all-`None` ("unmapped", the C++ `-1`) and the
-    /// boundary branches mirror the C++ `succ != nil && succ_star == nil` exactly.
+    /// `vmap`/`dmap` start all-`None` ("unmapped", the C++ `-1`) and the boundary
+    /// branches turn on `succ` being present while `succ_star` is `None`.
     /// The returned `Mappings` may be *partial*. The scratch maps use the compact
     /// 4-byte [`OptIdx`] (same `None`-is-unmapped semantics as the C++ `-1`), and
     /// are decoded to the public `Option<usize>` representation at the return.
@@ -164,7 +161,7 @@ impl PseudoConfiguration {
     }
 
     /// Glue the dart pairs as a combinatorial map and reconcile degrees, if the
-    /// result is loop-free and degree-consistent (C++ `dart_identification`).
+    /// result is loop-free and degree-consistent.
     pub fn dart_identification(
         &self,
         dart_pairs: &[(usize, usize)],
@@ -190,8 +187,7 @@ impl PseudoConfiguration {
         Some((pc, mappings))
     }
 
-    /// Identify the dart pairs and resolve any resulting degree issues
-    /// (C++ member `free_homomorphism`).
+    /// Identify the dart pairs and resolve any resulting degree issues.
     pub fn free_homomorphism(
         &self,
         dart_pairs: &[(usize, usize)],
@@ -211,7 +207,7 @@ impl PseudoConfiguration {
 
     /// Free homomorphism over the disjoint union of `pc0`, `pc1`, identifying
     /// `dart_id0` (in `pc0`) with `dart_id1` (in `pc1`); returns each result with
-    /// the two index maps restricted to each side (C++ static `free_homomorphism`).
+    /// the two index maps restricted to each side.
     pub fn free_homomorphism_pair(
         pc0: &PseudoConfiguration,
         pc1: &PseudoConfiguration,
@@ -235,8 +231,8 @@ impl PseudoConfiguration {
     }
 
     /// Enumerate the configurations obtained by resolving every degree issue
-    /// (over-incident fixed vertices, boundary closures, degree splits) via BFS
-    /// (C++ `resolve_degree_issues`). Result order matches the C++ FIFO queue.
+    /// (over-incident fixed vertices, boundary closures, degree splits) via BFS.
+    /// Results come back in FIFO (queue) order.
     pub fn resolve_degree_issues(&self) -> Vec<(PseudoConfiguration, Mappings)> {
         let mut z = Vec::new();
         let mut q: VecDeque<(PseudoConfiguration, Mappings)> = VecDeque::new();
@@ -265,15 +261,14 @@ impl PseudoConfiguration {
     }
 
     /// Whether an interior vertex has fewer incident darts than its lower degree
-    /// bound (C++ `inner_subdegree_error`).
+    /// bound.
     pub fn inner_subdegree_error(&self) -> bool {
         let n_incident = self.tri.n_incident_darts();
         let is_boundary = self.tri.is_boundary();
         (0..self.tri.n).any(|v| !is_boundary[v] && (n_incident[v] as i32) < self.degrees[v].lower)
     }
 
-    /// Find a fixed-degree vertex whose incidences need adjusting
-    /// (C++ `vertex_single_degree_issue`).
+    /// Find a fixed-degree vertex whose incidences need adjusting.
     pub fn vertex_single_degree_issue(&self) -> Option<usize> {
         let n_incident = self.tri.n_incident_darts();
         let is_boundary = self.tri.is_boundary();
@@ -286,7 +281,7 @@ impl PseudoConfiguration {
         })
     }
 
-    /// Resolve the single degree issue at `v` (C++ `fix_single_degree_issue`).
+    /// Resolve the single degree issue at `v`.
     pub fn fix_single_degree_issue(&self, v: usize) -> Option<(PseudoConfiguration, Mappings)> {
         assert!(self.degrees[v].is_fixed());
         let n_incident = self.tri.n_incident_darts();
@@ -318,7 +313,7 @@ impl PseudoConfiguration {
     }
 
     /// Close a boundary fan at `v` by adding the two darts of a new edge
-    /// (C++ `add_boundary_darts`). `None` on a boundary error (`u == w`).
+    ///. `None` on a boundary error (`u == w`).
     pub fn add_boundary_darts(&self, v: usize) -> Option<PseudoConfiguration> {
         let mut z = self.clone();
         let e_first = z
@@ -346,8 +341,7 @@ impl PseudoConfiguration {
         Some(z)
     }
 
-    /// Split the first range-valued vertex into its lowest degree vs. the rest
-    /// (C++ `single_out_lower_degree`).
+    /// Split the first range-valued vertex into its lowest degree vs. the rest.
     pub fn single_out_lower_degree(&self) -> Option<(PseudoConfiguration, PseudoConfiguration)> {
         let n_incident = self.tri.n_incident_darts();
         let v = (0..self.tri.n).find(|&v| {
@@ -363,10 +357,9 @@ impl PseudoConfiguration {
     }
 }
 
-// --- P4: reducible-configuration cluster (consumes `Configuration`) ----------
+// --- reducible-configuration cluster (consumes `Configuration`) --------------
 impl PseudoConfiguration {
-    /// Whether this configuration contains any reducible configuration in `confs`
-    /// (C++ `contain_conf`).
+    /// Whether this configuration contains any reducible configuration in `confs`.
     pub fn contain_conf(&self, center: usize, confs: &[Configuration]) -> bool {
         let darts_by_degree = self.darts_by_degree();
         for conf in confs {
@@ -388,7 +381,7 @@ impl PseudoConfiguration {
     }
 
     /// Bucket darts by the fixed (head-degree, tail-degree) of their endpoints,
-    /// dropping endpoints above `CONF_DEG_MAX` (C++ `darts_by_degree`).
+    /// dropping endpoints above `CONF_DEG_MAX`.
     pub fn darts_by_degree(&self) -> Vec<Vec<Vec<usize>>> {
         let size = CONF_DEG_MAX as usize + 1;
         let mut buckets = vec![vec![Vec::new(); size]; size];
@@ -408,7 +401,7 @@ impl PseudoConfiguration {
     }
 
     /// Whether `conf` embeds into `self` rooted at `dart_id`, with the
-    /// configuration's degrees included in `self`'s (C++ `rooted_contain_conf`).
+    /// configuration's degrees included in `self`'s.
     pub fn rooted_contain_conf(&self, dart_id: usize, conf: &Configuration) -> bool {
         PseudoConfiguration::homomorphism(&conf.pc, conf.dart_id, self, dart_id, |a, b| {
             Degree::includes(&a, &b)
@@ -417,7 +410,7 @@ impl PseudoConfiguration {
     }
 
     /// Whether every fixed-degree representative contains a reducible
-    /// configuration (C++ `blocked_by_reducible_configuration`).
+    /// configuration.
     pub fn blocked_by_reducible_configuration(
         &self,
         center: usize,
@@ -428,7 +421,7 @@ impl PseudoConfiguration {
             .all(|z| z.contain_conf(center, confs))
     }
 
-    /// Enumerate the fixed-degree representatives (C++ `representative_degree`).
+    /// Enumerate the fixed-degree representatives.
     /// High degrees collapse to a single `exact(upper)` instead of expanding.
     pub fn representative_degree(&self, center: usize) -> Vec<PseudoConfiguration> {
         let n = self.tri.n;
@@ -458,10 +451,10 @@ impl PseudoConfiguration {
     }
 }
 
-// --- P5: charge methods + cartwheel combination (consume `Rule`/`CartWheel`) -
+// --- charge methods + cartwheel combination (consume `Rule`/`CartWheel`) -----
 impl PseudoConfiguration {
-    /// Whether `rule` always applies at `dart_id` — its degrees include this
-    /// configuration's (C++ `always_apply`).
+    /// Whether `rule` always applies at `dart_id` -- its degrees include this
+    /// configuration's.
     pub fn always_apply(&self, dart_id: usize, rule: &Rule) -> bool {
         PseudoConfiguration::homomorphism(&rule.pc, rule.st_id, self, dart_id, |a, b| {
             Degree::includes(&a, &b)
@@ -469,8 +462,8 @@ impl PseudoConfiguration {
         .is_some()
     }
 
-    /// Whether `rule` can never apply at `dart_id` — no degree-overlapping
-    /// homomorphism exists (C++ `never_apply`).
+    /// Whether `rule` can never apply at `dart_id` -- no degree-overlapping
+    /// homomorphism exists.
     pub fn never_apply(&self, dart_id: usize, rule: &Rule) -> bool {
         PseudoConfiguration::homomorphism(&rule.pc, rule.st_id, self, dart_id, |a, b| {
             Degree::has_intersection(&a, &b)
@@ -478,8 +471,7 @@ impl PseudoConfiguration {
         .is_none()
     }
 
-    /// Total charge guaranteed to be sent along `dart_id` (C++
-    /// `amount_of_charge_send`).
+    /// Total charge guaranteed to be sent along `dart_id`.
     pub fn amount_of_charge_send(&self, dart_id: usize, rules: &[Rule]) -> i32 {
         rules
             .iter()
@@ -489,7 +481,7 @@ impl PseudoConfiguration {
     }
 
     /// Maximum charge that could possibly be sent along `dart_id` over the
-    /// applicable combined rules (C++ `amount_of_possible_charge_send`).
+    /// applicable combined rules.
     pub fn amount_of_possible_charge_send(
         &self,
         dart_id: usize,
@@ -505,7 +497,7 @@ impl PseudoConfiguration {
         amount
     }
 
-    /// Whether `rule` dominantly applies at `dart_id` (C++ `dominantly_apply`).
+    /// Whether `rule` dominantly applies at `dart_id`.
     pub fn dominantly_apply(&self, dart_id: usize, rule: &Rule) -> bool {
         let g_dominant = |deg_r: Degree, deg_c: Degree| {
             Degree::has_intersection(&deg_r, &deg_c)
@@ -515,7 +507,7 @@ impl PseudoConfiguration {
     }
 
     /// Glue each cartwheel onto `dart`, keeping results not blocked by a
-    /// reducible configuration (C++ `combine_each_cartwheel`).
+    /// reducible configuration.
     pub fn combine_each_cartwheel(
         &self,
         dart: usize,
@@ -542,8 +534,7 @@ impl PseudoConfiguration {
         zs
     }
 
-    /// Glue cartwheels onto two darts in sequence (C++
-    /// `combine_each_cartwheel_twice`).
+    /// Glue cartwheels onto two darts in sequence.
     pub fn combine_each_cartwheel_twice(
         &self,
         dart1: usize,

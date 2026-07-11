@@ -1,10 +1,9 @@
 import NearLinear4ct
 
 /-!
-Test executable for the Lean port — the analogue of `cargo test` / the C++
-googletests. A tiny `expect` harness counts failures and exits non-zero if any
-fire (so `lake exe test` is a usable CI gate). Each `expect` cites the C++ test
-it mirrors where one exists.
+Test executable for the Lean port. A tiny `expect` harness counts failures and
+exits non-zero if any fire (so `lake exe test` is a usable CI gate). Each
+`expect` cites the `../test` case it mirrors where one exists.
 -/
 
 
@@ -108,7 +107,7 @@ def utilTests (c : Counter) : IO Unit := do
   expect c "lexMin empty" (lexMin ([] : List Nat))
   expect c "lexMin single" (lexMin [5])
 
-/-- Build a `Dart` from the C++ test's `int` quad, mapping `-1` -> `none`. -/
+/-- Build a `Dart` from an `int` quad, mapping `-1` -> `none`. -/
 def dt (head rev : Nat) (succ pred : Int) : Dart :=
   let o : Int → OptIdx := fun x => if x == -1 then OptIdx.none else OptIdx.some x.toNat
   ⟨head, rev, o succ, o pred⟩
@@ -343,7 +342,7 @@ def setDeg (cw : CartWheel) (mods : List (Nat × Nat)) : CartWheel := Id.run do
 enumBadCartwheels, plus the containment and charge-amount cases that need the
 CartWheel type. -/
 def cartwheelTests (c : Counter) : IO Unit := do
-  -- FromFile (cw1 full structure; cw2 structural — too large to transcribe)
+  -- FromFile (cw1 full structure; cw2 structural -- too large to transcribe)
   let cw1 := CartWheel.ofString cw1str
   let cw1exp := CartWheel.new 0 #[0, 1, 2, 3, 4, 5, 6] 8 #[
     dt 0 8 1 6, dt 0 11 2 0, dt 0 14 3 1, dt 0 17 4 2, dt 0 20 5 3, dt 0 23 6 4,
@@ -354,7 +353,7 @@ def cartwheelTests (c : Counter) : IO Unit := do
     dt 7 6 27 25, dt 7 22 (-1) 26] (exA [7, 5, 5, 6, 5, 5, 5, 9])
   expect c "cw1 FromFile" (cw1 == cw1exp)
 
-  -- EnumWheels counts (Burnside) — the P5 gate
+  -- EnumWheels counts (Burnside)
   expect c "enumWheels 5 = 629" ((CartWheel.enumWheels 5).size == 629)
   expect c "enumWheels 6 = 2635" ((CartWheel.enumWheels 6).size == 2635)
   expect c "enumWheels 7 = 11165" ((CartWheel.enumWheels 7).size == 11165)
@@ -528,9 +527,9 @@ def ruleTests (c : Counter) : IO Unit := do
     #[dgx 7, dg 7 INFTY, dgx 5, dg 5 6, dgx 5, dgx 5]
   expect c "rule1 read" (r1 == r1exp)
   expect c "rule2 read" (r2 == r2exp)
-  -- R7: write is byte-exact (trailing space after each vertex line)
+  -- write is byte-exact (trailing space after each vertex line)
   expect c "rule1 write byte-exact" (r1.write == "\n2 1 2 2\n1 5 5 2 -1 \n2 5 0 1 -1 \n")
-  -- R7: write is idempotent
+  -- write is idempotent
   for (tag, content) in [("rt1", rule1), ("rt2", rule2), ("rt3", rule3)] do
     let fa ← tempFile content
     let w1 := (← (FromFile.fromFile fa : IO Rule)).write
@@ -588,7 +587,7 @@ def combineCartwheelTests (c : Counter) : IO Unit := do
   let cw9 := setDeg cw [(8, 9)]
   expect c "deleteDegree removes fixed-9" ((deleteDegreeFromKTo9 #[cw9] 9).isEmpty)
 
-/-- A trivial `FromFile` payload to exercise `getObjects` (R3 sorted load). -/
+/-- A trivial `FromFile` payload to exercise `getObjects` (sorted load). -/
 structure Line where
   s : String
 deriving DecidableEq, Repr

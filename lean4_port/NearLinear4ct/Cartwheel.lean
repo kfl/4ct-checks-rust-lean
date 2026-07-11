@@ -1,8 +1,7 @@
 import NearLinear4ct.Rule
 
 /-!
-Phase 5 — the enumeration engine. Port of `../src/cartwheel.{hpp,cpp}`
-(Appendix A.9).
+The enumeration engine (Appendix A.9).
 
 `CartWheel extends PseudoConfiguration` and adds `center` + `centerDarts` (the
 darts of the centre vertex, in rotation order). Covers wheel/cartwheel
@@ -11,35 +10,33 @@ enumeration, in/out-rule fixing, charge-bound pruning, refinement, and
 
 This file also hosts the remaining **charge methods** on `PseudoConfiguration`
 (`alwaysApply`/`neverApply`/`amountOf*`/`dominantlyApply`) and the
-**cartwheel-combination** methods (`combineEachCartwheel*`) — in C++ these are
-`PseudoConfiguration` members that consume `Rule`/`CartWheel`; Lean has no forward
-declarations, so they live here (after those types exist), exactly as the Rust
-port placed them.
+**cartwheel-combination** methods (`combineEachCartwheel*`). These consume
+`Rule`/`CartWheel`, and Lean has no forward declarations, so they live here (after
+those types exist).
 
-R5: the enumeration relies on `assert`s as invariants — but in `enumBadCartwheels`
+The enumeration relies on `assert`s as invariants -- but in `enumBadCartwheels`
 those are genuine **proof obligations** (the final charge must be 0, etc.), so
-they go through `proofAssert` (L1: must abort). The enumeration-internal sanity
+they go through `proofAssert` (must abort). The enumeration-internal sanity
 `assert`s (`A ≥ 0`, `U_R` non-empty, degree in `[5,9]`) are structural invariants
 of correct input; they use `panic!` (loud, and unreachable on wellformed data).
 -/
 
 namespace NearLinear4ct
 
--- --- P5: charge methods on PseudoConfiguration (consume Rule) -----------------
+-- --- charge methods on PseudoConfiguration (consume Rule) --------------------
 namespace PseudoConfiguration
 
-/-- Whether `rule` always applies at `dartId` — its degrees include this
-configuration's (C++ `always_apply`, A.9.1). -/
+/-- Whether `rule` always applies at `dartId` -- its degrees include this
+configuration's (A.9.1). -/
 def alwaysApply (pc : PseudoConfiguration) (dartId : Nat) (rule : Rule) : Bool :=
   homomorphismExists rule.toPseudoConfiguration rule.stId pc dartId Degree.includes
 
-/-- Whether `rule` can never apply at `dartId` — no degree-overlapping
-homomorphism exists (C++ `never_apply`, A.9.2). -/
+/-- Whether `rule` can never apply at `dartId` -- no degree-overlapping
+homomorphism exists (A.9.2). -/
 def neverApply (pc : PseudoConfiguration) (dartId : Nat) (rule : Rule) : Bool :=
   !homomorphismExists rule.toPseudoConfiguration rule.stId pc dartId Degree.hasIntersection
 
-/-- Total charge guaranteed to be sent along `dartId` (C++ `amount_of_charge_send`,
-A.9.3). -/
+/-- Total charge guaranteed to be sent along `dartId` (A.9.3). -/
 def amountOfChargeSend (pc : PseudoConfiguration) (dartId : Nat) (rules : Array Rule) : Int :=
   Id.run do
   let mut amount : Int := 0
@@ -48,7 +45,7 @@ def amountOfChargeSend (pc : PseudoConfiguration) (dartId : Nat) (rules : Array 
   return amount
 
 /-- Maximum charge that could possibly be sent along `dartId` over the applicable
-combined rules (C++ `amount_of_possible_charge_send`, A.9.4). -/
+combined rules (A.9.4). -/
 def amountOfPossibleChargeSend (pc : PseudoConfiguration) (dartId : Nat)
     (combinedRules : Array CombinedRule) : Int := Id.run do
   let mut amount : Int := 0
@@ -57,8 +54,7 @@ def amountOfPossibleChargeSend (pc : PseudoConfiguration) (dartId : Nat)
     amount := max amount cr.amount
   return amount
 
-/-- Whether `rule` dominantly applies at `dartId` (C++ `dominantly_apply`,
-A.9.15). -/
+/-- Whether `rule` dominantly applies at `dartId` (A.9.15). -/
 def dominantlyApply (pc : PseudoConfiguration) (dartId : Nat) (rule : Rule) : Bool :=
   let gDominant := fun (degR degC : Degree) =>
     Degree.hasIntersection degR degC && (degR.upper == INFTY || decide (degC.upper < CARTWHEEL_DEG_MAX))
@@ -67,7 +63,7 @@ def dominantlyApply (pc : PseudoConfiguration) (dartId : Nat) (rule : Rule) : Bo
 end PseudoConfiguration
 
 /-- A cartwheel: a pseudo-configuration with a distinguished centre vertex and its
-darts in rotation order (C++ `CartWheel`). -/
+darts in rotation order. -/
 structure CartWheel extends PseudoConfiguration where
   center : Nat
   centerDarts : Array Nat
@@ -89,14 +85,14 @@ private def cwLineToks (line : String) : Array String :=
 
 namespace CartWheel
 
-/-- C++ `CartWheel(center, center_darts, N, darts, degrees)`. -/
+/-- Construct from `(center, center_darts, N, darts, degrees)`. -/
 def new (center : Nat) (centerDarts : Array Nat) (n : Nat) (darts : Array Dart)
     (degrees : Array Degree) : CartWheel :=
   { toPseudoConfiguration := PseudoConfiguration.new n darts degrees
     center := center, centerDarts := centerDarts }
 
-/-- Serialise to the `.cartwheel` text format (C++ `to_file`/`write`). The layout
-(incl. the trailing space per vertex line) matches the C++. -/
+/-- Serialise to the `.cartwheel` text format. The layout follows `FORMAT.md`,
+plus the trailing space per vertex line. -/
 def write (cw : CartWheel) : String := Id.run do
   let darts := cw.darts
   let mut res := s!"\n{cw.n} {cw.center + 1}\n"
@@ -115,8 +111,8 @@ def toFile (cw : CartWheel) (path : System.FilePath) : IO Unit :=
   IO.FS.writeFile path cw.write
 
 /-- Build the canonical cartwheel for a centre of degree `d` with the given
-neighbour degrees, expanding second-neighbours (C++ `generate_cartwheel`,
-A.9 generation). The C++ `assert(A >= 0)` is a structural invariant → `panic!`. -/
+neighbour degrees, expanding second-neighbours (A.9 generation). The `A >= 0`
+structural invariant is a `panic!` guard. -/
 def generateCartwheel (d : Nat) (degrees : Array Int) : CartWheel := Id.run do
   let mut rotations : Array (Array Int) := Array.replicate (d + 1) #[]
   -- centre's rotation: 1..d
@@ -150,7 +146,7 @@ def generateCartwheel (d : Nat) (degrees : Array Int) : CartWheel := Id.run do
   let pc := PseudoConfiguration.fromVRotations k rotations allDegrees
   return { toPseudoConfiguration := pc, center := 0, centerDarts := centerDartsOf pc 0 }
 
-/-- Parse one cartwheel from text (C++ `from_file`). Tolerates the leading blank
+/-- Parse one cartwheel from text. Tolerates the leading blank
 line that `write` emits. -/
 def ofString (content : String) : CartWheel := Id.run do
   let lines := (content.splitOn "\n").toArray
@@ -197,7 +193,7 @@ end CartWheel
 instance : FromFile CartWheel where
   fromFile path := do return CartWheel.ofString (← IO.FS.readFile path)
 
-/-- Load every `.cartwheel` file in `cartwheeldir` (C++ `get_cartwheels`). -/
+/-- Load every `.cartwheel` file in `cartwheeldir`. -/
 def getCartwheels (cartwheeldir : System.FilePath) : IO (Array CartWheel) := do
   let cws ← getObjects CartWheel cartwheeldir ".cartwheel"
   for cw in cws do cw.assertCenterValid "cartwheel"
@@ -214,9 +210,8 @@ length-`k` tails of a neighbour-degree tuple, every entry drawn from
 `CARTWHEEL_DEGREES[iLowest:]` (the spec's `ilowest` cut -- a lex-min rotation
 starts at its minimal digit), in the spec's enumeration order (earlier
 positions vary slowest). One prepend-a-digit step iterated `k` times
-(`Nat.repeat`). Lists, not arrays: cons is O(1) and each suffix level is
-shared structurally by all the digits above it; the caller realises each full
-tuple into an `Array` once, at the boundary. -/
+(`Nat.repeat`), on structurally shared lists realised into arrays at the
+boundary. -/
 private def wheelTails (iLowest k : Nat) : List (List Int) :=
   let digits := cartwheelDegreesInt.drop iLowest
   Nat.repeat (fun tails => digits.flatMap fun d => tails.map (d :: ·)) k [[]]
@@ -227,10 +222,9 @@ namespace CartWheel
 in enumeration order (A.9.5's digit enumeration and rotation check). The
 rotation check (`lexMin`, specified against `List.rotateLeft` by
 `lexMin_iff_forall_rotateLeft`) runs on the list itself, so only the surviving
-tuples are realised as arrays. Deviation from A.9.5, which generates each cartwheel at the leaf of
-the recursion: the tuples are enumerated first and `generateCartwheel` applied
-afterwards, so `enumPossibleBadWheels` can parallelise generation + pruning
-per tuple. -/
+tuples are realised as arrays. Deviation from A.9.5, which generates each
+cartwheel at the recursion's leaf: tuples are enumerated first so
+`enumPossibleBadWheels` can parallelise generation + pruning per tuple. -/
 def enumWheelTuples : (centerDegree : Nat) → Array (Array Int)
   | 0 => #[]
   | k + 1 =>
@@ -245,7 +239,7 @@ def enumWheels (centerDegree : Nat) : Array CartWheel :=
   (enumWheelTuples centerDegree).map (generateCartwheel centerDegree)
 
 /-- Enumerate all ways to make every non-tail range degree concrete
-(C++ `concrete_degree_except_tail`, A.9.10). -/
+(A.9.10). -/
 def concreteDegreeExceptTail (cw : CartWheel) : Array CartWheel := Id.run do
   let mut cartwheels : Array CartWheel := #[cw]
   for v in [0:cw.n] do
@@ -262,7 +256,7 @@ def concreteDegreeExceptTail (cw : CartWheel) : Array CartWheel := Id.run do
   return cartwheels
 
 /-- Intersect degrees with a rule applied at `dartId`, then concretise
-(C++ `update_degree_by_rule`, A.9.9). -/
+(A.9.9). -/
 def updateDegreeByRule (cw : CartWheel) (dartId : Nat) (rule : Rule) : Array CartWheel :=
   match PseudoConfiguration.homomorphism rule.toPseudoConfiguration rule.stId
       cw.toPseudoConfiguration dartId Degree.hasIntersection with
@@ -276,7 +270,7 @@ def updateDegreeByRule (cw : CartWheel) (dartId : Nat) (rule : Rule) : Array Car
     return updated.concreteDegreeExceptTail
 
 /-- Prune if a fixed spoke rule applies that the combination doesn't record
-(C++ `prune_by_non_associated_rule`, A.9.12). The C++ `assert` is a real
+(A.9.12). The `assert` is a real
 invariant; it is implied by the same predicate the loop tests, so we keep it as a
 `panic!` guard. -/
 def pruneByNonAssociatedRule (cw : CartWheel) (combinedRuleWithSpokes : Array CombinedRule)
@@ -290,8 +284,7 @@ def pruneByNonAssociatedRule (cw : CartWheel) (combinedRuleWithSpokes : Array Co
         return true
   return false
 
-/-- Upper bound on the final charge at the centre (C++ `upper_bound_of_charge`,
-A.9.13). -/
+/-- Upper bound on the final charge at the centre (A.9.13). -/
 def upperBoundOfCharge (cw : CartWheel) (combinedRuleWithSpokes : Array CombinedRule)
     (rules : Array Rule) (combinedRules : Array CombinedRule) : Int := Id.run do
   let degreeCenter := (cw.degrees[cw.center]!).lower
@@ -308,7 +301,7 @@ def upperBoundOfCharge (cw : CartWheel) (combinedRuleWithSpokes : Array Combined
   let initialCharge : Int := 10 * (6 - (degreeCenter : Int))
   return initialCharge - outChargeSum + inChargeSum
 
-/-- Whether this cartwheel can be discarded (C++ `prune`, A.9.11). -/
+/-- Whether this cartwheel can be discarded (A.9.11). -/
 def prune (cw : CartWheel) (combinedRuleWithSpokes : Array CombinedRule) (rules : Array Rule)
     (combinedRules : Array CombinedRule) (confs : Array Configuration) : Bool :=
   cw.pruneByNonAssociatedRule combinedRuleWithSpokes rules
@@ -318,12 +311,10 @@ def prune (cw : CartWheel) (combinedRuleWithSpokes : Array CombinedRule) (rules 
 /-- Enumerate wheels of the given centre degree that survive the initial pruning
 (A.9.7).
 
-Deviation from A.9.7, which builds every wheel and then prunes in a serial loop:
-generation + pruning run as one order-preserving `parFilterMap` over the tuples.
-The per-tuple work is pure and read-only over the shared
-`rules`/`combinedRules`/`confs`, so the survivor list -- and hence the
-`d{c}_{i}` output files -- is byte-identical (see `FIDELITY.md`, data
-parallelism). -/
+Deviation from A.9.7, which builds every wheel and then prunes in a serial
+loop: generation + pruning run as one order-preserving `parFilterMap` over
+the tuples -- pure, read-only, order-preserving, so the survivor list is the
+serial one by construction. -/
 def enumPossibleBadWheels (centerDegree : Nat) (rules : Array Rule)
     (combinedRules : Array CombinedRule) (confs : Array Configuration) : Array CartWheel :=
   parFilterMap (enumWheelTuples centerDegree) fun degs =>
@@ -331,7 +322,7 @@ def enumPossibleBadWheels (centerDegree : Nat) (rules : Array Rule)
     if wheel.prune #[] rules combinedRules confs then none else some wheel
 
 /-- Fix the rules sent from neighbours to the centre, one spoke at a time, pruning
-in between (C++ `fix_in_rules`, A.9.8). -/
+in between (A.9.8). -/
 def fixInRules (cw : CartWheel) (rules : Array Rule) (combinedRules : Array CombinedRule)
     (confs : Array Configuration) : Array (CartWheel × Array CombinedRule) := Id.run do
   let degreeCenter := (cw.degrees[cw.center]!).lower
@@ -348,14 +339,14 @@ def fixInRules (cw : CartWheel) (rules : Array Rule) (combinedRules : Array Comb
     cartwheels := newCartwheels
   return cartwheels
 
-/-- Whether spoke `i` should be refined for `rule` (C++ `should_refine`, A.9.16). -/
+/-- Whether spoke `i` should be refined for `rule` (A.9.16). -/
 def shouldRefine (cw : CartWheel) (i : Nat) (rule : Rule) : Bool :=
   let fromCenter := (cw.darts[cw.centerDarts[i]!]!).rev
   !cw.toPseudoConfiguration.alwaysApply fromCenter rule
     && cw.toPseudoConfiguration.dominantlyApply fromCenter rule
 
 /-- The refinement where every `U_R` vertex takes the rule's lower bound
-(C++ `refine_always`, A.9.18). -/
+(A.9.18). -/
 def refineAlways (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : Rule) : CartWheel :=
     Id.run do
   let mut cAlways := cw
@@ -366,7 +357,7 @@ def refineAlways (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : 
   return cAlways
 
 /-- The refinements where each `U_R` vertex in turn stays below the rule's lower
-bound (C++ `refine_never`, A.9.19). -/
+bound (A.9.19). -/
 def refineNever (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : Rule) :
     Array CartWheel := Id.run do
   let mut cNever : Array CartWheel := #[]
@@ -378,7 +369,7 @@ def refineNever (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : R
   return cNever
 
 /-- Split into the "always applies" and "never applies" refinements at spoke `i`
-for `rule` (C++ `refinement`, A.9.17). The `U_R`-nonempty `assert` is a structural
+for `rule` (A.9.17). The `U_R`-nonempty `assert` is a structural
 invariant guaranteed by `should_refine` → `panic!`. -/
 def refinement (cw : CartWheel) (i : Nat) (rule : Rule) : Array CartWheel := Id.run do
   let fromCenter := (cw.darts[cw.centerDarts[i]!]!).rev
@@ -395,10 +386,9 @@ def refinement (cw : CartWheel) (i : Nat) (rule : Rule) : Array CartWheel := Id.
   return (cw.refineNever uR rule2cw rule).push cAlways
 
 /-- The first `(spoke i, rule)` pair (spokes outer, rules inner) that should be
-refined, or `none` if the cartwheel is fully fixed. This names what the C++
-`refined_flag` + double-`break` (and the Rust `break 'search`) encode: select the
-first applicable pair. The early `return` inside `Id.run do` exits *both* loops,
-so no flag is needed (cf. the paper's Algorithm A.9.14, lines 8–27). -/
+refined, or `none` if the cartwheel is fully fixed. The early `return` inside
+`Id.run do` exits *both* loops, selecting the first applicable pair with no flag
+needed (cf. the paper's Algorithm A.9.14, lines 8-27). -/
 def firstRefinable (cw : CartWheel) (degreeCenter : Nat) (rules : Array Rule) :
     Option (Nat × Rule) := Id.run do
   for i in [0:degreeCenter] do
@@ -408,7 +398,7 @@ def firstRefinable (cw : CartWheel) (degreeCenter : Nat) (rules : Array Rule) :
   return none
 
 /-- Fix the rules sent from the centre to neighbours by repeated refinement
-(C++ `fix_out_rules`, A.9.14). FIFO worklist matching the C++ `std::queue`. -/
+(A.9.14). FIFO worklist. -/
 def fixOutRules (cw : CartWheel) (cartwheelsInFixed : Array (CartWheel × Array CombinedRule))
     (rules : Array Rule) (combinedRules : Array CombinedRule) (confs : Array Configuration) :
     Array (CartWheel × Array CombinedRule) := Id.run do
@@ -426,7 +416,7 @@ def fixOutRules (cw : CartWheel) (cartwheelsInFixed : Array (CartWheel × Array 
   return cartwheels
 
 /-- Group the centre's darts by the (fixed) degree of the neighbour they point to
-(C++ `center_darts_by_degree`, A.9.22). Returns a length-`CARTWHEEL_DEG_MAX+1`
+(A.9.22). Returns a length-`CARTWHEEL_DEG_MAX+1`
 array. The degree-range `assert` is a structural invariant → `panic!`. -/
 def centerDartsByDegree (cw : CartWheel) : Array (Array Nat) := Id.run do
   let mut byDegree : Array (Array Nat) := Array.replicate (CARTWHEEL_DEG_MAX + 1) #[]
@@ -439,8 +429,8 @@ def centerDartsByDegree (cw : CartWheel) : Array (Array Nat) := Id.run do
   return byDegree
 
 /-- The overall enumeration: fix in-rules, fix out-rules, and keep the surviving
-cartwheels (C++ `enum_bad_cartwheels`, A.9.21). The three trailing `assert`s are
-genuine **proof obligations** (`proofAssert` — must abort, L1). -/
+cartwheels (A.9.21). The three trailing `assert`s are
+genuine **proof obligations** (`proofAssert` -- must abort). -/
 def enumBadCartwheels (cw : CartWheel) (rules : Array Rule) (combinedRules : Array CombinedRule)
     (confs : Array Configuration) : IO (Array CartWheel) := do
   let cartwheelsInFixed := cw.fixInRules rules combinedRules confs
@@ -459,11 +449,11 @@ def enumBadCartwheels (cw : CartWheel) (rules : Array Rule) (combinedRules : Arr
 
 end CartWheel
 
--- --- P5: cartwheel-combination on PseudoConfiguration (consume CartWheel) -----
+-- --- cartwheel-combination on PseudoConfiguration (consume CartWheel) --------
 namespace PseudoConfiguration
 
 /-- Glue each cartwheel onto `dart`, keeping results not blocked by a reducible
-configuration (C++ `combine_each_cartwheel`, A.10.2). -/
+configuration (A.10.2). -/
 def combineEachCartwheel (pc : PseudoConfiguration) (dart : Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : Array (PseudoConfiguration × Mappings) := Id.run do
   let mut zs : Array (PseudoConfiguration × Mappings) := #[]
@@ -475,8 +465,7 @@ def combineEachCartwheel (pc : PseudoConfiguration) (dart : Nat) (cartwheels : A
         zs := zs.push (zStar, mappingsPc)
   return zs
 
-/-- Glue cartwheels onto two darts in sequence (C++ `combine_each_cartwheel_twice`,
-A.10.3). -/
+/-- Glue cartwheels onto two darts in sequence (A.10.3). -/
 def combineEachCartwheelTwice (pc : PseudoConfiguration) (dart1 dart2 : Nat)
     (cartwheels : Array CartWheel) (confs : Array Configuration) :
     Array (PseudoConfiguration × Mappings) := Id.run do
@@ -489,7 +478,7 @@ def combineEachCartwheelTwice (pc : PseudoConfiguration) (dart1 dart2 : Nat)
 
 end PseudoConfiguration
 
-/-- Driver for Lemma A.3 step 1 (C++ `run_enum_wheels`). -/
+/-- Driver for Lemma A.3 step 1. -/
 def runEnumWheels (centerDegree : Nat) (confdir ruledir combinedRuledir outdir : System.FilePath) :
     IO Unit := do
   let confs ← Configuration.getConfs confdir
@@ -500,7 +489,7 @@ def runEnumWheels (centerDegree : Nat) (confdir ruledir combinedRuledir outdir :
   for i in [0:wheels.size] do
     wheels[i]!.toFile (outdir / s!"d{centerDegree}_{i}.cartwheel")
 
-/-- Driver for Lemma A.3 step 2 (C++ `run_enum_cartwheels`). -/
+/-- Driver for Lemma A.3 step 2. -/
 def runEnumCartwheels (wheelFile confdir ruledir combinedRuledir outdir : System.FilePath) :
     IO Unit := do
   let cartwheel := CartWheel.ofString (← IO.FS.readFile wheelFile)

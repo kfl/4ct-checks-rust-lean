@@ -1,4 +1,4 @@
-//! Phase 1 — shared compact optional index.
+//! Shared compact optional index.
 //!
 //! A 4-byte stand-in for `Option<usize>` used in hot data structures (the
 //! `Dart` half-edge links and the `homomorphism` scratch maps), so they keep
@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 /// bytes), and index `0` is a valid `Some`.
 ///
 /// Internally an index `i` is stored as `NonZeroU32(i + 1)`, so
-/// `size_of::<OptIdx>() == 4` while `None` keeps the all-zero representation —
+/// `size_of::<OptIdx>() == 4` while `None` keeps the all-zero representation --
 /// `vec![OptIdx::NONE; n]` therefore lowers to a zeroing allocation. The
 /// `i + 1` encoding is checked once, here, instead of being open-coded at each
 /// call site.

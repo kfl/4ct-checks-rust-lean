@@ -1,12 +1,11 @@
-//! Phase 4 — file-backed reducible configurations. Port of
-//! `../src/configuration.{hpp,cpp}`.
+//! File-backed reducible configurations.
 //!
 //! `Configuration` embeds a `PseudoConfiguration` and adds a root `dart_id`.
 //!
-//! R2 (resolved): the C++ `using std::map/std::set` here are dead — the actual
-//! adjacency scratch (`suc`) is a plain 2D vector with a `-1` sentinel, so no
-//! ordered-container behaviour is observable. We mirror it with `Vec<Vec<i32>>`.
-//! R7: `from_file` parsing must reproduce the C++ structures byte-for-byte.
+//! The adjacency scratch (`suc`) is a plain 2D vector with a `-1` sentinel, so
+//! no ordered-container behaviour is observable; it is a `Vec<Vec<i32>>`.
+//! `from_file` parsing reproduces the structures `FORMAT.md` specifies,
+//! byte-for-byte.
 
 use crate::degree::{CONF_DEG_MAX, Degree, INFTY};
 use crate::pseudo_configuration::PseudoConfiguration;
@@ -26,7 +25,7 @@ pub struct Configuration {
 }
 
 impl Configuration {
-    /// C++ `Configuration(dart_id, N, darts, degrees)`.
+    /// Construct from `(dart_id, N, darts, degrees)`.
     pub fn new(dart_id: usize, n: usize, darts: Vec<Dart>, degrees: Vec<Degree>) -> Self {
         let pc = PseudoConfiguration::new(n, darts, degrees);
         let f = pc.tri.darts[dart_id];
@@ -44,8 +43,7 @@ impl Configuration {
         }
     }
 
-    /// Reflect the configuration by swapping each dart's `succ`/`pred`
-    /// (C++ `mirror`).
+    /// Reflect the configuration by swapping each dart's `succ`/`pred`.
     pub fn mirror(&self) -> Configuration {
         let mut darts = self.pc.tri.darts.clone();
         for d in &mut darts {
@@ -54,7 +52,7 @@ impl Configuration {
         Configuration::new(self.dart_id, self.pc.tri.n, darts, self.pc.degrees.clone())
     }
 
-    /// Parse a `.conf` file into one or more configurations (C++ `from_file`).
+    /// Parse a `.conf` file into one or more configurations.
     ///
     /// Internal vertices list clockwise rotations; the ring vertices' rotations
     /// are reconstructed from the successor relation `suc`. Cut-vertices expand
@@ -113,11 +111,17 @@ impl Configuration {
         configurations
     }
 
-    /// Load every `.conf` file in `confdir` (C++ `get_confs`).
+    /// Load every `.conf` file in `confdir`.
     ///
-    /// The 8200 files are read + parsed in parallel (rayon) — a serial Amdahl floor
-    /// the Lean port found under every driver. Containment is an order-independent
-    /// `any`, so the load order is irrelevant; output is byte-identical.
+    /// The 8200 files (19754 configurations) are read + parsed in parallel (rayon) --
+    /// the parse is otherwise a serial bottleneck. Containment is an
+    /// order-independent `any`, so the load order is irrelevant; output is byte-identical.
+    ///
+    /// The `par_iter` benefits the *single-process* stages (`combine_rules`, `enum_wheels`,
+    /// `check`), which load configs once and fan the parse out across all cores. In the
+    /// per-wheel `enum_cartwheels` stage the driver runs 128 of these processes at once, so
+    /// it caps each to one thread (`RAYON_NUM_THREADS=1`) to avoid oversubscription -- the
+    /// parallelism there comes from running many processes, not many threads per process.
     pub fn get_confs(confdir: &Path) -> Vec<Configuration> {
         let paths: Vec<PathBuf> = std::fs::read_dir(confdir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", confdir.display()))
@@ -136,13 +140,13 @@ impl Configuration {
     }
 }
 
-/// Mirror image of every configuration (C++ `get_mirrors`).
+/// Mirror image of every configuration.
 pub fn get_mirrors(confs: &[Configuration]) -> Vec<Configuration> {
     confs.iter().map(Configuration::mirror).collect()
 }
 
 /// Expand cut-vertices: for each subset of cut-pairs, remove the unselected ring
-/// vertices and build a configuration (C++ `extend_from_cut_vertices`).
+/// vertices and build a configuration.
 pub fn extend_from_cut_vertices(
     n: usize,
     r: usize,
@@ -181,7 +185,7 @@ pub fn extend_from_cut_vertices(
 }
 
 /// Find internal vertices that are cut-vertices, returning their two ring
-/// neighbours (C++ `find_cut_pairs`).
+/// neighbours.
 pub fn find_cut_pairs(n: usize, r: usize, rotations: &[Vec<i32>]) -> Vec<(usize, usize)> {
     let mut p = Vec::new();
     for (offset, rot) in rotations[r..n].iter().enumerate() {
@@ -212,7 +216,7 @@ pub fn find_cut_pairs(n: usize, r: usize, rotations: &[Vec<i32>]) -> Vec<(usize,
 }
 
 /// Remove the `remove`-marked ring vertices, renumber, and rebuild as a
-/// `PseudoConfiguration` (C++ `remove_ring`).
+/// `PseudoConfiguration`.
 pub fn remove_ring(
     n: usize,
     r: usize,
@@ -268,7 +272,7 @@ pub fn remove_ring(
 }
 
 /// The dart whose (head-degree, tail-degree) pair is lexicographically largest
-/// among fixed-degree endpoints (C++ `maximum_degree_dart`).
+/// among fixed-degree endpoints.
 pub fn maximum_degree_dart(z: &PseudoConfiguration) -> usize {
     let mut f: Option<usize> = None;
     let mut d_f = (0, 0);

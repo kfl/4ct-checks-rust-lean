@@ -1,35 +1,29 @@
 import NearLinear4ct.OptIdx
 
 /-!
-Phase 1 — shared helpers. Port of `../src/util.hpp`.
+Shared helpers.
 
-Contains `proofAssert` (the L1 proof-obligation primitive), `Unionfind`, `lexMin`
-(lexicographically-minimal rotation test), the `FromFile` class (replacing the
-C++ `HasFromFile` concept), and the `getObjects` directory loader.
+Contains `proofAssert` (the proof-obligation primitive), `Unionfind`, `lexMin`
+(lexicographically-minimal rotation test), the `FromFile` class, and the
+`getObjects` directory loader.
 -/
 
 namespace NearLinear4ct
 
-/--
-Proof-obligation assert (L1 / R5). **The proof IS the assert**: for the
-`check_*` lemmas, "success" is "no obligation fires and the run completes".
-
-Lean's `panic!` is unusable here: it prints a backtrace but **continues and the
-process still exits 0** (verified empirically) — a swallowed proof failure would
-read as a passed proof. Instead we `throw`, which propagates to `main` and makes
-Lean exit non-zero (code 1), matching the C++ `assert`/`exit(1)` that constitutes
-the proof. Never use bare `panic!` for a proof obligation.
--/
+/-- Proof-obligation assert. **The proof IS the assert**: for the `check_*`
+lemmas, "success" is "no obligation fires and the run completes". Never use
+bare `panic!` for a proof obligation -- it prints but **continues with exit
+code 0**, so a swallowed failure would read as a passed proof; `throw`
+propagates to `main` and exits non-zero. -/
 def proofAssert (cond : Bool) (msg : String) : IO Unit :=
   unless cond do throw (IO.userError s!"proof obligation failed: {msg}")
 
 /-- Disjoint-set forest (union-find) without path compression or union-by-rank,
-matching `../src/util.hpp`'s `Unionfind`.
+matching the C++ `Unionfind`.
 
-R1: the C++ marks a root with `parents[x] < 0` (value `-1`). Here a root is
+The C++ marks a root with `parents[x] < 0` (value `-1`). Here a root is
 `none`; an interior node is `some parent`. Mutating operations return an updated
-`Unionfind` (the underlying `Array.set` is in-place when uniquely referenced — see
-the L3 performance notes). -/
+`Unionfind` (the underlying `Array.set` is in-place when uniquely referenced). -/
 structure Unionfind where
   n : Nat
   parents : Array (Option Nat)
@@ -44,7 +38,7 @@ instance : Inhabited Unionfind := ⟨⟨0, #[], by simp⟩⟩
 
 namespace Unionfind
 
-/-- A fresh forest of `n` singletons (C++ `Unionfind(n)`). Named `new` to avoid
+/-- A fresh forest of `n` singletons. Named `new` to avoid
 clashing with the structure's auto-generated `Unionfind.mk`. -/
 def new (n : Nat) : Unionfind := ⟨n, Array.replicate n none, by grind⟩
 
@@ -88,17 +82,17 @@ def unite (uf : Unionfind) (x y : Nat) : Unionfind :=
 
 def same (uf : Unionfind) (x y : Nat) : Bool := uf.root x == uf.root y
 
-/-- `root(i)` for every `i` (C++ `each_root`). Always total. -/
+/-- `root(i)` for every `i`. Always total. -/
 def eachRoot (uf : Unionfind) : Array Nat :=
   (Array.range uf.n).map (fun i => uf.root i)
 
-/-- The indices that are roots (C++ `all_roots`). -/
+/-- The indices that are roots. -/
 def allRoots (uf : Unionfind) : Array Nat :=
   (Array.range uf.n).filter (fun i => uf.parents[i]!.isNone)
 
 /-- A relabelling map: each root gets a fresh sequential index; non-roots map to
 `OptIdx.none` (the C++ `-1`). Composes with `eachRoot` via `composeMap` to
-renumber a quotient (see P2 `disjointUnion`). -/
+renumber a quotient (see `disjointUnion`). -/
 def indexRoots (uf : Unionfind) : Array OptIdx := Id.run do
   let mut index : Nat := 0
   let mut out : Array OptIdx := Array.mkEmpty uf.n
@@ -137,11 +131,9 @@ where
 
 /-- A FIFO queue for the BFS worklists (`homomorphism`, `freeHomomorphism`,
 `resolveDegreeIssues`, `fixOutRules`). Mirrors the pseudocode's `Q ← ∅` /
-`Q.push` directly, with `Q.empty()` / `Q.pop()` merged into the total `pop?`,
-instead of an open-coded flat-array-plus-head-index. The representation *is* that flat array walked by a
-head index (FIFO order, without ring-buffer
-bookkeeping), so there is no perf cost over the open-coded form -- only the
-bookkeeping is named. -/
+`Q.push` directly, with `Q.empty()` / `Q.pop()` merged into the total `pop?`.
+The representation is a flat array walked by a head index, so nothing is paid
+over the open-coded form -- only the bookkeeping is named. -/
 structure Queue (α : Type) where
   items : Array α
   head : Nat
@@ -157,9 +149,8 @@ namespace Queue
 /-- The empty queue (pseudocode `Q ← ∅`). -/
 def empty : Queue α := ⟨#[], 0, Nat.le_refl 0⟩
 
-/-- An empty queue whose backing array reserves `cap` slots, so `push` does not
-reallocate until `cap` is exceeded (avoids the `lean_copy_expand_array` regrowth
-in the BFS hot loops, where the final size is known up front). -/
+/-- An empty queue whose backing array reserves `cap` slots, so `push` never
+regrows mid-BFS (the final size is known up front). -/
 def emptyWithCapacity (cap : Nat) : Queue α := ⟨Array.mkEmpty cap, 0, Nat.zero_le _⟩
 
 /-- A queue seeded with `xs` (the initial obligations). -/
@@ -172,9 +163,10 @@ def isEmpty (q : Queue α) : Bool := q.head ≥ q.items.size
 termination measure in the proofs. -/
 def live (q : Queue α) : Nat := q.items.size - q.head
 
-/-- Enqueue `x` (pseudocode `Q.push(x)`). `@[inline]` so the wrapper `Queue`
-rebuild is visible to the caller's reuse analysis (Perceus cannot reuse
-constructors across a call boundary). -/
+/-- Enqueue `x` (pseudocode `Q.push(x)`).
+
+`@[inline]` so the wrapper `Queue` rebuild is visible to the caller's reuse
+analysis (Perceus cannot reuse constructors across a call boundary). -/
 @[inline] def push (q : Queue α) (x : α) : Queue α :=
   ⟨q.items.push x, q.head, by simpa [Array.size_push] using Nat.le_succ_of_le q.queue_invariant⟩
 
@@ -194,8 +186,8 @@ end Queue
 
 A small vocabulary of order-preserving parallel patterns. Each spawns its work on
 the `Task` scheduler and joins in index order, so the result is **identical to the
-sequential version regardless of thread count** — valid for a read-only `f` over
-shared immutable data (R4). The parallelism is wall-clock only; it never changes
+sequential version regardless of thread count** -- valid for a read-only `f` over
+shared immutable data. The parallelism is wall-clock only; it never changes
 results. Centralising the `Task` plumbing here means the parallelism is audited
 once, and call sites read as the pattern they are (`parFilterMap`, `parFlatMap`). -/
 
@@ -222,12 +214,10 @@ def parMapM (xs : Array α) (f : α → IO β) : IO (Array β) := do
   tasks.mapM (fun t => IO.ofExcept t.get)
 
 /-- Run `f` on every element in parallel and fail the whole computation if any
-invocation fails (L7 / R4). Replaces the C++ `boost::asio::thread_pool` + per-item
-`post`. Each `f x` is spawned as a `Task`; we then join every task and re-raise the
-first error — so a failing `proofAssert` inside a worker aborts the process with a
-non-zero exit (L1), matching the C++ `assert` abort. The closures only read shared
-immutable data (shared by reference-counting, not copied), so results are
-thread-count independent. -/
+invocation fails. Each `f x` is spawned as a `Task`; we then join every task and
+re-raise the first error -- so a failing `proofAssert` inside a worker aborts the
+process with a non-zero exit. The closures only read shared immutable data (shared
+by reference-counting, not copied), so results are thread-count independent. -/
 def parForEach (xs : Array α) (f : α → IO Unit) : IO Unit := do
   let tasks ← xs.mapM (fun x => IO.asTask (f x))
   for t in tasks do
@@ -235,19 +225,18 @@ def parForEach (xs : Array α) (f : α → IO Unit) : IO Unit := do
     | .ok _ => pure ()
     | .error e => throw e
 
-/-- A type loadable from a single file (replaces the C++ `HasFromFile` concept).
-`fromFile` runs in `IO` because parsing reads the file; like the C++ it may fail
-(throw) on malformed input. -/
+/-- A type loadable from a single file. `fromFile` runs in `IO` because parsing
+reads the file; it may fail (throw) on malformed input. -/
 class FromFile (α : Type) where
   fromFile : System.FilePath → IO α
 
 /-- Load every regular file in `dir` whose extension matches `extension`
-(e.g. `".rule"`), as `α`, **sorted by path** (C++ `get_objects`).
+(e.g. `".rule"`), as `α`, **sorted by path**.
 
-R3: ordering is observable (it defines the `combined_flag` rule order, see
+Ordering is observable (it defines the `combined_flag` rule order, see
 `../FORMAT.md`), so we sort explicitly rather than rely on filesystem order.
-`System.FilePath.extension` yields the suffix without the leading dot, while the
-C++ `fs::path::extension` includes it; we normalise so callers can pass ".rule". -/
+`System.FilePath.extension` yields the suffix without the leading dot; we
+normalise so callers can pass ".rule". -/
 def getObjects (α : Type) [FromFile α] (dir : System.FilePath) (extension : String) :
     IO (Array α) := do
   let want : String :=
@@ -260,7 +249,7 @@ def getObjects (α : Type) [FromFile α] (dir : System.FilePath) (extension : St
       paths := paths.push p
   paths := paths.qsort (fun a b => decide (a.toString < b.toString))
   -- parse in parallel; `parMapM` preserves the sorted order, so the observable
-  -- load order (R3, the `combined_flag` indexing) is unchanged.
+  -- load order (the `combined_flag` indexing) is unchanged.
   parMapM paths FromFile.fromFile
 
 end NearLinear4ct

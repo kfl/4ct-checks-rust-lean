@@ -1,23 +1,19 @@
 import NearLinear4ct.PseudoConfiguration
 
 /-!
-Phase 4 — file-backed reducible configurations. Port of
-`../src/configuration.{hpp,cpp}` (Appendix A.6).
+File-backed reducible configurations (Appendix A.6).
 
-`Configuration extends PseudoConfiguration` and adds a root `dartId` (L6).
+`Configuration extends PseudoConfiguration` and adds a root `dartId`.
 
-R2 (resolved): the C++ `using std::map/std::set` here are dead — the adjacency
-scratch `suc` is a plain 2-D vector with a `-1` sentinel, mirrored as
-`Array (Array Int)`. R7: `from_file` parsing must reproduce the C++ structures
-byte-for-byte.
+The adjacency scratch `suc` is a plain 2-D vector with a `-1` sentinel, an
+`Array (Array Int)`; no ordered-container behaviour is observable. `from_file`
+parsing reproduces the structures `FORMAT.md` specifies, byte-for-byte.
 
 This file also hosts the **reducible-configuration cluster** on
 `PseudoConfiguration` (`containConf`, `dartsByDegree`, `rootedContainConf`,
-`blockedByReducibleConfiguration`, `representativeDegree`). In C++ these are
-`PseudoConfiguration` methods that consume `Configuration` via a forward
-declaration; Lean has no forward declarations, so they live here (after
-`Configuration` exists), exactly as the Rust port placed them — needed so
-`rule::combineRules` (P4) compiles.
+`blockedByReducibleConfiguration`, `representativeDegree`). These consume
+`Configuration`, and Lean has no forward declarations, so they live here (after
+`Configuration` exists) -- needed so `rule::combineRules` compiles.
 -/
 
 namespace NearLinear4ct
@@ -42,7 +38,7 @@ deriving DecidableEq, Repr
 
 namespace Configuration
 
-/-- C++ `Configuration(dart_id, N, darts, degrees)`. -/
+/-- Construct from `(dart_id, N, darts, degrees)`. -/
 def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree) : Configuration :=
   let f := darts[dartId]!
   { toPseudoConfiguration := PseudoConfiguration.new n darts degrees, dartId := dartId
@@ -52,20 +48,20 @@ def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree) : Configu
 
 instance : Inhabited Configuration := ⟨Configuration.new 0 0 #[] #[]⟩
 
-/-- Reflect the configuration by swapping each dart's `succ`/`pred` (C++ `mirror`). -/
+/-- Reflect the configuration by swapping each dart's `succ`/`pred`. -/
 def mirror (conf : Configuration) : Configuration :=
   let darts := conf.darts.map fun d => { d with succ := d.pred, pred := d.succ }
   Configuration.new conf.dartId conf.n darts conf.degrees
 
 end Configuration
 
-/-- Mirror image of every configuration (C++ `get_mirrors`). -/
+/-- Mirror image of every configuration. -/
 def getMirrors (confs : Array Configuration) : Array Configuration :=
   confs.map Configuration.mirror
 
 /-- Find internal vertices that are cut-vertices, returning their two ring
-neighbours (C++ `find_cut_pairs`, A.6.2). The C++ `assert`/`throw` for an invalid
-cut-vertex become `panic!` (input wellformedness, not a proof obligation). -/
+neighbours (A.6.2). An invalid cut-vertex aborts via `panic!` (input
+wellformedness, not a proof obligation). -/
 def findCutPairs (n r : Nat) (rotations : Array (Array Int)) : Array (Nat × Nat) := Id.run do
   let mut p : Array (Nat × Nat) := #[]
   for i in [r:n] do
@@ -85,7 +81,7 @@ def findCutPairs (n r : Nat) (rotations : Array (Array Int)) : Array (Nat × Nat
   return p
 
 /-- The dart whose (head-degree, tail-degree) pair is lexicographically largest
-among fixed-degree endpoints (C++ `maximum_degree_dart`, A.6.4). -/
+among fixed-degree endpoints (A.6.4). -/
 def maximumDegreeDart (z : PseudoConfiguration) : Nat := Id.run do
   let mut f : Option Nat := none
   let mut dF : Int × Int := (0, 0)
@@ -95,14 +91,14 @@ def maximumDegreeDart (z : PseudoConfiguration) : Nat := Id.run do
     let x := (z.darts[dart.rev]!).head
     if !(z.degrees[y]!).fixed || !(z.degrees[x]!).fixed then continue
     let dE : Int × Int := ((z.degrees[y]!).lower, (z.degrees[x]!).lower)
-    -- lexicographic `>` on the pair (the C++ `pair operator>`)
+    -- lexicographic `>` on the pair
     if dE.1 > dF.1 || (dE.1 == dF.1 && dE.2 > dF.2) then
       f := some i
       dF := dE
   return f.get!
 
 /-- Remove the `remove`-marked ring vertices, renumber, and rebuild as a
-`PseudoConfiguration` (C++ `remove_ring`, A.6.3). -/
+`PseudoConfiguration` (A.6.3). -/
 def removeRing (n r : Nat) (degrees : Array Degree) (rotations : Array (Array Int))
     (remove : Array Bool) : PseudoConfiguration := Id.run do
   -- Step 1: new vertex ids (removed ring vertices get none).
@@ -137,7 +133,7 @@ def removeRing (n r : Nat) (degrees : Array Degree) (rotations : Array (Array In
   return PseudoConfiguration.fromVRotations newN newRotations newDegrees
 
 /-- Expand cut-vertices: for each subset of cut-pairs, remove the unselected ring
-vertices and build a configuration (C++ `extend_from_cut_vertices`, A.6.1). -/
+vertices and build a configuration (A.6.1). -/
 def extendFromCutVertices (n r : Nat) (degrees : Array Degree) (rotations : Array (Array Int)) :
     Array Configuration := Id.run do
   let p := findCutPairs n r rotations
@@ -156,7 +152,7 @@ def extendFromCutVertices (n r : Nat) (degrees : Array Degree) (rotations : Arra
 
 namespace Configuration
 
-/-- Parse a `.conf` file into one or more configurations (C++ `from_file`).
+/-- Parse a `.conf` file into one or more configurations.
 
 Internal vertices list clockwise rotations; the ring vertices' rotations are
 reconstructed from the successor relation `suc`. Cut-vertices expand to several
@@ -164,12 +160,12 @@ configurations, and each is paired with its mirror. Token-based (the degree give
 the neighbour count), so a flat whitespace token stream suffices. -/
 def fromFile (path : System.FilePath) : IO (Array Configuration) := do
   let content ← IO.FS.readFile path
-  -- whitespace-token stream (C++ `ifs >> x`), dropping empties from runs/newlines
+  -- whitespace-token stream, dropping empties from runs/newlines
   let toks := (content.split Char.isWhitespace).filterMap (fun s =>
     if s.isEmpty then none else some s)
   let tokArr := toks.toArray
   let mut idx : Nat := 0
-  -- token reader over the captured array (C++ `ifs >> x`, with `--v` done by callers)
+  -- token reader over the captured array (with `--v` done by callers)
   let readAt (i : Nat) : Int :=
     match (tokArr[i]!).toInt? with
     | some v => v
@@ -253,19 +249,10 @@ def assertRootDartValid (c : Configuration) (ctx : String) : IO Unit := do
   proofAssert (c.rootTailDeg ≤ CONF_DEG_MAX)
     s!"{ctx}: root tail degree {c.rootTailDeg} exceeds CONF_DEG_MAX"
 
-/-- Load every `.conf` file in `confdir`.
-
-The 8200 files (19754 configurations) are read + parsed in parallel (`parMapM`):
-independent IO + CPU per file, so this overlaps across cores instead of a serial loop.
-Containment only asks *whether* some config matches (`containConf` is an order-independent
-`any`), so the load order does not affect output — byte-identical (confirmed by the
-differential).
-
-This helps the *single-process* stages (`combine_rules`, `enum_wheels`, `check`), which load
-configs once. In the per-wheel `enum_cartwheels` stage the driver runs 128 of these processes
-at once and caps each to one thread (`LEAN_NUM_THREADS=1`) to avoid oversubscription — the
-parallelism there is across processes, not threads. (Measured: a "load once, parallel over
-wheels" variant was *slower* at 128 cores than the capped per-process model; see RESULTS.md.) -/
+/-- Load every `.conf` file in `confdir`, read + parsed in parallel
+(`parMapM`). Containment only asks *whether* some config matches
+(`containConf` is an order-independent `any`), so load order does not affect
+output. -/
 def getConfs (confdir : System.FilePath) : IO (Array Configuration) := do
   let paths := (← confdir.readDir).filterMap fun entry =>
     if entry.path.extension == some "conf" then some entry.path else none
@@ -280,11 +267,11 @@ def getConfs (confdir : System.FilePath) : IO (Array Configuration) := do
 
 end Configuration
 
--- --- P4: reducible-configuration cluster (on PseudoConfiguration) -------------
+-- --- reducible-configuration cluster (on PseudoConfiguration) ----------------
 namespace PseudoConfiguration
 
 /-- Bucket darts by the fixed (head-degree, tail-degree) of their endpoints,
-dropping endpoints above `CONF_DEG_MAX` (C++ `darts_by_degree`, A.6.7). -/
+dropping endpoints above `CONF_DEG_MAX` (A.6.7). -/
 def dartsByDegree (pc : PseudoConfiguration) : Array (Array (Array Nat)) := Id.run do
   let size := CONF_DEG_MAX + 1
   let mut buckets : Array (Array (Array Nat)) := Array.replicate size (Array.replicate size #[])
@@ -299,7 +286,7 @@ def dartsByDegree (pc : PseudoConfiguration) : Array (Array (Array Nat)) := Id.r
   return buckets
 
 /-- Whether `conf` embeds into `pc` rooted at `dartId`, with the configuration's
-degrees included in `pc`'s (C++ `rooted_contain_conf`, A.6.8). -/
+degrees included in `pc`'s (A.6.8). -/
 def rootedContainConf (pc : PseudoConfiguration) (dartId : Nat) (conf : Configuration) : Bool :=
   PseudoConfiguration.homomorphismExists conf.toPseudoConfiguration conf.dartId pc dartId
     Degree.includes
@@ -309,22 +296,11 @@ end PseudoConfiguration
 namespace PseudoConfiguration
 
 /-- Whether this configuration contains any reducible configuration in `confs`
-(C++ `contain_conf`, A.6.6). Serial with early-exit: a config-level `parAny` was
-measured and rejected (nested → worker-pool deadlock; non-nested → millions of
-µs-overhead tasks over tiny config-checks, and the early-exit lost — both far
-slower). The right parallelism granularity is the outer wheel/combination level.
-
-(Two refinements were prototyped + measured *not worthwhile* and dropped, see
-`PERF.md` §P13: reusing one generation-stamped scratch across the inner embedding
-checks — *slower*, the per-call alloc is already cheap; and pre-grouping `confs` by
-root-degree key to skip non-matching configs — *neutral*, the loop already skips
-them via an empty dart bucket, so the per-config key work is not redundant.)
-
-P14: the sweep is `Array.any` (short-circuiting — so the spec's first-match exit is
-preserved, where `foldl` would not) rather than nested `for … do … return`, avoiding
-the `forIn`/`ForInStep` closure + heartbeat lowering that cost `homCore` ~1.21×
-(`PERF.md` §P13). A candidate dart is skipped when the spec's `dY > 8` guard fires (a
-high-degree root maps only the dart whose head is the wheel `center`). -/
+(A.6.6). Serial with early exit -- the parallelism that pays off is at the
+outer wheel/combination level. The sweep is short-circuiting `Array.any`, so
+the spec's first-match exit is preserved. A candidate dart is skipped when
+the spec's `dY > 8` guard fires (a high-degree root maps only the dart whose
+head is the wheel `center`). -/
 def containConf (pc : PseudoConfiguration) (center : Nat) (confs : Array Configuration) : Bool :=
   let dbd := pc.dartsByDegree
   confs.any fun conf =>
@@ -332,8 +308,8 @@ def containConf (pc : PseudoConfiguration) (center : Nat) (confs : Array Configu
     ((dbd[dY]!)[conf.rootTailDeg]!).any fun fStar =>
       (dY ≤ 8 || (pc.darts[fStar]!).head == center) && pc.rootedContainConf fStar conf
 
-/-- Enumerate the fixed-degree representatives (C++ `representative_degree`,
-A.7.2). High degrees collapse to a single `exact upper` instead of expanding. -/
+/-- Enumerate the fixed-degree representatives (A.7.2). High degrees collapse to a
+single `exact upper` instead of expanding. -/
 def representativeDegree (pc : PseudoConfiguration) (center : Nat) :
     Array PseudoConfiguration := Id.run do
   let n := pc.n
@@ -344,7 +320,7 @@ def representativeDegree (pc : PseudoConfiguration) (center : Nat) :
     let choices : Array Degree :=
       if degV.upper > highThreshold then #[Degree.exact degV.upper]
       -- coerce to `Int` for the count: an *empty* range (`upper < lower`, a legitimate
-      -- `intersection` result) gives `≤ 0` ⇒ no choices, as in C++. `Nat` subtraction
+      -- `intersection` result) gives `≤ 0` ⇒ no choices. `Nat` subtraction
       -- would truncate to `0` and yield one spurious choice.
       else (Array.range ((degV.upper : Int) - degV.lower + 1).toNat).map
         (fun k => Degree.exact (degV.lower + k))
@@ -356,7 +332,7 @@ def representativeDegree (pc : PseudoConfiguration) (center : Nat) :
   return t.map (fun deg => PseudoConfiguration.new n pc.darts deg)
 
 /-- Whether every fixed-degree representative contains a reducible configuration
-(C++ `blocked_by_reducible_configuration`, A.7.1). -/
+(A.7.1). -/
 def blockedByReducibleConfiguration (pc : PseudoConfiguration) (center : Nat)
     (confs : Array Configuration) : Bool :=
   (pc.representativeDegree center).all (fun z => z.containConf center confs)

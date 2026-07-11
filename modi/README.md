@@ -7,7 +7,7 @@ Scripts for running the near-linear-4CT **Rust and Lean ports** on
 1. **Full binary correctness** of the Rust and Lean ports vs the C++ original --
    end-to-end, not just the cheap subset we can run on a laptop.
 2. **Parallel wall-clock speedup** of the two ports on real many-core Linux
-   hardware (without the macOS `_tlv_get_addr` / system-allocator artifacts).
+   hardware (without the macOS `_tlv_get_addr` / system-allocator artefacts).
 
 The ports are built **in place** under the MODI mount and run inside MODI's
 **stock Apptainer image** -- MODI blocks rootless `apptainer build --fakeroot`, so

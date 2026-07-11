@@ -1,17 +1,16 @@
-//! Phase 1 — leaf type. Port of `../src/mapping.{hpp,cpp}`.
+//! Vertex- and dart-index maps.
 //!
 //! `Mappings { vmap, dmap }` carries vertex- and dart-index maps and supports
 //! composition. Free functions `compose_map` / `split_map` go here too.
 //!
-//! R1 (index / sentinel representation — the crate-wide decision):
+//! Index / sentinel representation (the crate-wide decision):
 //! An index map entry is `Option<usize>`, where `None` is the C++ `-1`
-//! ("unmapped"). `homomorphism` (P3) returns *partial* maps (unreached
+//! ("unmapped"). `homomorphism` returns *partial* maps (unreached
 //! vertices/darts are `-1`), so the type must admit "no image". Using `Option`
 //! instead of an `i32` sentinel turns the C++ `== -1` checks into `is_none()`
-//! and — crucially for trust — turns the latent UB of indexing with `-1`
+//! and -- crucially for trust -- turns the latent UB of indexing with `-1`
 //! (`map2[map1[i]]` when `map1[i] == -1`) into a defined `None`. On the domain
-//! actually exercised (total maps), the two are identical; see the open item in
-//! `PORTING_PLAN.md` to confirm composition is only ever used on total maps.
+//! actually exercised (total maps), the two are identical.
 
 /// A vertex- or dart-index map. `None` == the C++ `-1` (unmapped).
 pub type IndexMap = Vec<Option<usize>>;
@@ -28,14 +27,14 @@ impl Mappings {
         Mappings { vmap, dmap }
     }
 
-    /// Identity maps on `n` vertices and `dart_size` darts (C++ `initial_mappings`).
+    /// Identity maps on `n` vertices and `dart_size` darts.
     pub fn initial_mappings(n: usize, dart_size: usize) -> Self {
         let vmap = (0..n).map(Some).collect();
         let dmap = (0..dart_size).map(Some).collect();
         Mappings { vmap, dmap }
     }
 
-    /// `self` followed by `other` (C++ `compose`: `result[i] = other[self[i]]`).
+    /// `self` followed by `other`: `result[i] = other[self[i]]`.
     pub fn compose(&self, other: &Mappings) -> Mappings {
         Mappings {
             vmap: compose_map(&self.vmap, &other.vmap),
@@ -44,15 +43,16 @@ impl Mappings {
     }
 }
 
-/// Compose two index maps: `result[i] = map2[map1[i]]` (C++ `compose_map`).
+/// Compose two index maps: `result[i] = map2[map1[i]]`.
 ///
-/// `None` propagates: if `map1[i]` is unmapped, so is the result. This matches
-/// C++ on every total input and is strictly safer on partial input (no UB).
+/// `None` propagates: if `map1[i]` is unmapped, so is the result. Total inputs
+/// map every entry; on a partial input the unmapped entry stays `None` rather
+/// than indexing out of bounds.
 pub fn compose_map(map1: &[Option<usize>], map2: &[Option<usize>]) -> IndexMap {
     map1.iter().map(|&j| j.and_then(|j| map2[j])).collect()
 }
 
-/// Split an index map at `l` into `(map[..l], map[l..])` (C++ `split_map`).
+/// Split an index map at `l` into `(map[..l], map[l..])`.
 pub fn split_map(map: &[Option<usize>], l: usize) -> (IndexMap, IndexMap) {
     assert!(l <= map.len());
     (map[..l].to_vec(), map[l..].to_vec())

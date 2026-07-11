@@ -1,15 +1,13 @@
-//! Phase 6 — verification drivers. Port of `../src/combine_cartwheel.{hpp,cpp}`.
+//! Verification drivers.
 //!
 //! The Lemma A.4/A.5/A.6 checks: `run_check_deg8`, `run_check_7triangle`,
 //! `run_check_deg7` and their helpers.
 //!
-//! R4: the C++ posts one task per cartwheel to a `boost::asio::thread_pool`.
-//! These tasks are pure verification (they only read inputs and `assert!`), with
-//! no shared mutable state, so the idiomatic translation is
+//! The per-cartwheel checks are pure verification -- they only read inputs
+//! and `assert!`, with no shared mutable state -- so they run as
 //! `cartwheels.par_iter().for_each(|cw| …)` (rayon). A failing proof obligation
-//! panics its worker; rayon propagates the panic, so the process fails loudly —
-//! matching the C++ `assert` abort.
-//! R5: the asserts here ARE the proof — plain `assert!`, never `debug_assert!`.
+//! panics its worker; rayon propagates the panic, so the process fails loudly.
+//! The asserts here ARE the proof -- plain `assert!`, never `debug_assert!`.
 
 use crate::cartwheel::CartWheel;
 use crate::configuration::Configuration;
@@ -19,7 +17,7 @@ use rayon::prelude::*;
 use std::path::Path;
 
 /// Drop cartwheels with a vertex of fixed degree `k`; collapse `[k-1, 9]` ranges
-/// to fixed `k-1` (C++ `delete_degree_from_k_to_9`).
+/// to fixed `k-1`.
 pub fn delete_degree_from_k_to_9(cartwheels: &[CartWheel], k: i32) -> Vec<CartWheel> {
     let mut new_cartwheels = Vec::new();
     for cw in cartwheels {
@@ -41,7 +39,7 @@ pub fn delete_degree_from_k_to_9(cartwheels: &[CartWheel], k: i32) -> Vec<CartWh
     new_cartwheels
 }
 
-/// Drop cartwheels that contain a 7-triangle (C++ `delete_7triangle`).
+/// Drop cartwheels that contain a 7-triangle.
 pub fn delete_7triangle(cartwheels: &[CartWheel]) -> Vec<CartWheel> {
     let confs = vec![get_7triangle()];
     cartwheels
@@ -51,8 +49,7 @@ pub fn delete_7triangle(cartwheels: &[CartWheel]) -> Vec<CartWheel> {
         .collect()
 }
 
-/// The configuration of three mutually adjacent degree-7 vertices
-/// (C++ `get_7triangle`).
+/// The configuration of three mutually adjacent degree-7 vertices.
 pub fn get_7triangle() -> Configuration {
     let t7 = PseudoConfiguration::from_v_rotations(
         3,
@@ -155,7 +152,7 @@ fn check787(
     }
 }
 
-/// The fixed obstruction configuration `X` (C++ `getX`).
+/// The fixed obstruction configuration `X`.
 pub fn get_x() -> PseudoConfiguration {
     PseudoConfiguration::from_v_rotations(
         17,
@@ -201,7 +198,7 @@ pub fn get_x() -> PseudoConfiguration {
 }
 
 /// Whether `X` embeds into `z` rooted at vertex `v`, over the 8 rotations of the
-/// root dart (C++ `containX`).
+/// root dart.
 pub fn contain_x(z: &PseudoConfiguration, v: usize) -> bool {
     let x = get_x();
     let dart_z = z.tri.any_dart(v).expect("z has a dart at v");
@@ -343,7 +340,7 @@ mod tests {
         // collapses to fixed 8 under k=9.
         let cw = CartWheel::generate_cartwheel(7, &[5, 5, 5, 5, 5, 5, 5]);
         // generate_cartwheel gives second-neighbours degree [5,9]; under k=9
-        // those [8,9]? No — they are [5,9]; nothing is fixed at 9, so kept.
+        // those [8,9]? No -- they are [5,9]; nothing is fixed at 9, so kept.
         let kept = delete_degree_from_k_to_9(std::slice::from_ref(&cw), 9);
         assert_eq!(kept.len(), 1);
 

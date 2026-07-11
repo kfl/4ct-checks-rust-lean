@@ -120,7 +120,7 @@ for p in $PORTS; do
   echo "   [$p] enum_cartwheels: $cnt wheels, ${MAXJ}-way ..."
   t0=$(now)
   # xargs -P gives true MAX_JOBS-way concurrency with negligible per-spawn overhead.
-  # RAYON_NUM_THREADS=1 / LEAN_NUM_THREADS=1: the ports parallelize config-load internally,
+  # RAYON_NUM_THREADS=1 / LEAN_NUM_THREADS=1: the ports parallelise config-load internally,
   # so without the cap 128 per-wheel procs each spawn a full thread pool (~16k threads) and
   # oversubscribe the cores. 1 thread/proc x 128 procs = clean 1:1; this takes Rust's cart
   # from 1.22x to 0.90x C++ (measured). The vars are harmless to C++, which ignores them.

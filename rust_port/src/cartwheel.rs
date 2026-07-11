@@ -1,14 +1,14 @@
-//! Phase 5 — the enumeration engine. Port of `../src/cartwheel.{hpp,cpp}`.
+//! The enumeration engine.
 //!
 //! `CartWheel` embeds a `PseudoConfiguration` and adds `center` + `center_darts`
 //! (the darts of the centre vertex, in rotation order). Covers wheel/cartwheel
 //! enumeration, in/out-rule fixing, charge-bound pruning, refinement, and
 //! `enum_bad_cartwheels`.
 //!
-//! R5: the enumeration relies on `assert!`s as invariants — always-on.
-//! R6: `CartWheel` calls `PseudoConfiguration` behaviour through `self.pc.…`
-//! (its charge/containment methods live in `pseudo_configuration.rs`); no trait
-//! was needed.
+//! The enumeration relies on `assert!`s as invariants -- always-on. `CartWheel`
+//! calls `PseudoConfiguration` behaviour through `self.pc.…` (its
+//! charge/containment methods live in `pseudo_configuration.rs`); no trait was
+//! needed.
 
 use crate::configuration::Configuration;
 use crate::degree::{
@@ -31,7 +31,7 @@ pub struct CartWheel {
 }
 
 impl CartWheel {
-    /// C++ `CartWheel(center, center_darts, N, darts, degrees)`.
+    /// Construct from `(center, center_darts, N, darts, degrees)`.
     pub fn new(
         center: usize,
         center_darts: Vec<usize>,
@@ -46,7 +46,7 @@ impl CartWheel {
         }
     }
 
-    /// Debug view (C++ `to_string`).
+    /// Debug view.
     pub fn to_debug_string(&self) -> String {
         let darts = self
             .center_darts
@@ -57,8 +57,8 @@ impl CartWheel {
         format!("center: {}, center_darts: {}\n", self.center, darts) + &self.pc.show()
     }
 
-    /// Serialise to the `.cartwheel` text format (C++ `to_file`/`write`). The
-    /// layout (incl. the trailing space per vertex line) matches the C++.
+    /// Serialise to the `.cartwheel` text format. The layout follows
+    /// `FORMAT.md`, plus the trailing space per vertex line.
     pub fn write(&self) -> String {
         let darts = &self.pc.tri.darts;
         let mut res = format!("\n{} {}\n", self.pc.tri.n, self.center + 1);
@@ -86,7 +86,7 @@ impl CartWheel {
             .unwrap_or_else(|e| panic!("Failed to write cartwheel file {}: {e}", path.display()));
     }
 
-    /// Load every `.cartwheel` file in `cartwheeldir` (C++ `get_cartwheels`).
+    /// Load every `.cartwheel` file in `cartwheeldir`.
     pub fn get_cartwheels(cartwheeldir: &Path) -> Vec<CartWheel> {
         let cartwheels = get_objects::<CartWheel>(cartwheeldir, ".cartwheel");
         tracing::info!("Total {} cartwheels loaded.", cartwheels.len());
@@ -95,8 +95,7 @@ impl CartWheel {
 
     /// The lex-min neighbour-degree tuples for a centre of degree `center_degree`,
     /// in enumeration order (the inner traversal of C++ `enum_wheels`, with wheel
-    /// *generation* split out so it can be parallelised — learned from the Lean
-    /// port, where fusing generation into the parallel prune was a further win).
+    /// *generation* split out so it can be parallelised).
     pub fn enum_wheel_tuples(center_degree: usize) -> Vec<Vec<i32>> {
         let mut tuples = Vec::new();
         let mut degrees = vec![0i32; center_degree];
@@ -108,7 +107,7 @@ impl CartWheel {
     }
 
     /// Enumerate all wheels with the given centre degree, up to rotation
-    /// (`lex_min`) (C++ `enum_wheels`).
+    /// (`lex_min`).
     pub fn enum_wheels(center_degree: usize) -> Vec<CartWheel> {
         Self::enum_wheel_tuples(center_degree)
             .iter()
@@ -117,7 +116,7 @@ impl CartWheel {
     }
 
     /// Build the canonical cartwheel for a centre of degree `d` with the given
-    /// neighbour degrees, expanding second-neighbours (C++ `generate_cartwheel`).
+    /// neighbour degrees, expanding second-neighbours.
     pub fn generate_cartwheel(d: usize, degrees: &[i32]) -> CartWheel {
         assert_eq!(degrees.len(), d);
         let mut rotations: Vec<Vec<i32>> = vec![Vec::new(); d + 1];
@@ -168,16 +167,16 @@ impl CartWheel {
     }
 
     /// Enumerate wheels of the given centre degree that survive the initial
-    /// pruning (C++ `enum_possible_bad_wheels`).
+    /// pruning.
     pub fn enum_possible_bad_wheels(
         center_degree: usize,
         rules: &[Rule],
         combined_rules: &[CombinedRule],
         confs: &[Configuration],
     ) -> Vec<CartWheel> {
-        // Embarrassingly parallel (learned from the Lean port): generate + prune
+        // Embarrassingly parallel: generate + prune
         // each wheel in one parallel pass over the degree-tuples. `prune` is pure
-        // and read-only over the shared inputs (R4); rayon's ordered collect keeps
+        // and read-only over the shared inputs; rayon's ordered collect keeps
         // the survivor list identical to the serial version (byte-identical output).
         // C++ runs this step serially.
         CartWheel::enum_wheel_tuples(center_degree)
@@ -190,7 +189,7 @@ impl CartWheel {
     }
 
     /// Fix the rules sent from neighbours to the centre, one spoke at a time,
-    /// pruning in between (C++ `fix_in_rules`).
+    /// pruning in between.
     pub fn fix_in_rules(
         &self,
         rules: &[Rule],
@@ -220,8 +219,7 @@ impl CartWheel {
         cartwheels
     }
 
-    /// Intersect degrees with a rule applied at `dart_id`, then concretise
-    /// (C++ `update_degree_by_rule`).
+    /// Intersect degrees with a rule applied at `dart_id`, then concretise.
     pub fn update_degree_by_rule(&self, dart_id: usize, rule: &Rule) -> Vec<CartWheel> {
         let Some(rule2cw) =
             PseudoConfiguration::homomorphism(&rule.pc, rule.st_id, &self.pc, dart_id, |a, b| {
@@ -239,8 +237,7 @@ impl CartWheel {
         updated.concrete_degree_except_tail()
     }
 
-    /// Enumerate all ways to make every non-tail range degree concrete
-    /// (C++ `concrete_degree_except_tail`).
+    /// Enumerate all ways to make every non-tail range degree concrete.
     pub fn concrete_degree_except_tail(&self) -> Vec<CartWheel> {
         let mut cartwheels = vec![self.clone()];
         for v in 0..self.pc.tri.n {
@@ -263,7 +260,7 @@ impl CartWheel {
         cartwheels
     }
 
-    /// Whether this cartwheel can be discarded (C++ `prune`).
+    /// Whether this cartwheel can be discarded.
     pub fn prune(
         &self,
         combined_rule_with_spokes: &[CombinedRule],
@@ -278,8 +275,7 @@ impl CartWheel {
                 .blocked_by_reducible_configuration(self.center, confs)
     }
 
-    /// Prune if a fixed spoke rule applies that the combination doesn't record
-    /// (C++ `prune_by_non_associated_rule`).
+    /// Prune if a fixed spoke rule applies that the combination doesn't record.
     pub fn prune_by_non_associated_rule(
         &self,
         combined_rule_with_spokes: &[CombinedRule],
@@ -296,7 +292,7 @@ impl CartWheel {
         false
     }
 
-    /// Upper bound on the final charge at the centre (C++ `upper_bound_of_charge`).
+    /// Upper bound on the final charge at the centre.
     pub fn upper_bound_of_charge(
         &self,
         combined_rule_with_spokes: &[CombinedRule],
@@ -322,8 +318,7 @@ impl CartWheel {
         initial_charge - out_charge_sum + in_charge_sum
     }
 
-    /// Fix the rules sent from the centre to neighbours by repeated refinement
-    /// (C++ `fix_out_rules`).
+    /// Fix the rules sent from the centre to neighbours by repeated refinement.
     pub fn fix_out_rules(
         &self,
         cartwheels_in_fixed: &[(CartWheel, Vec<CombinedRule>)],
@@ -364,14 +359,14 @@ impl CartWheel {
         cartwheels
     }
 
-    /// Whether spoke `i` should be refined for `rule` (C++ `should_refine`).
+    /// Whether spoke `i` should be refined for `rule`.
     pub fn should_refine(&self, i: usize, rule: &Rule) -> bool {
         let from_center = self.pc.tri.darts[self.center_darts[i]].rev();
         !self.pc.always_apply(from_center, rule) && self.pc.dominantly_apply(from_center, rule)
     }
 
     /// Split into the "always applies" and "never applies" refinements at spoke
-    /// `i` for `rule` (C++ `refinement`).
+    /// `i` for `rule`.
     pub fn refinement(&self, i: usize, rule: &Rule) -> Vec<CartWheel> {
         let from_center = self.pc.tri.darts[self.center_darts[i]].rev();
         let rule2cw = PseudoConfiguration::homomorphism(
@@ -399,8 +394,7 @@ impl CartWheel {
         c_never
     }
 
-    /// The refinement where every `U_R` vertex takes the rule's lower bound
-    /// (C++ `refine_always`).
+    /// The refinement where every `U_R` vertex takes the rule's lower bound.
     pub fn refine_always(&self, u_r: &[usize], rule2cw: &Mappings, rule: &Rule) -> CartWheel {
         let mut c_always = self.clone();
         for &v_rule in u_r {
@@ -413,7 +407,7 @@ impl CartWheel {
     }
 
     /// The refinements where each `U_R` vertex in turn stays below the rule's
-    /// lower bound (C++ `refine_never`).
+    /// lower bound.
     pub fn refine_never(&self, u_r: &[usize], rule2cw: &Mappings, rule: &Rule) -> Vec<CartWheel> {
         let mut c_never = Vec::new();
         for &v_rule in u_r {
@@ -428,7 +422,7 @@ impl CartWheel {
     }
 
     /// The overall enumeration: fix in-rules, fix out-rules, and keep the
-    /// surviving cartwheels (C++ `enum_bad_cartwheels`).
+    /// surviving cartwheels.
     pub fn enum_bad_cartwheels(
         &self,
         rules: &[Rule],
@@ -453,7 +447,7 @@ impl CartWheel {
     }
 
     /// Group the centre's darts by the (fixed) degree of the neighbour they point
-    /// to (C++ `center_darts_by_degree`).
+    /// to.
     pub fn center_darts_by_degree(&self) -> [Vec<usize>; CARTWHEEL_DEG_MAX as usize + 1] {
         let mut by_degree: [Vec<usize>; CARTWHEEL_DEG_MAX as usize + 1] =
             std::array::from_fn(|_| Vec::new());
@@ -525,8 +519,8 @@ fn center_darts_of(pc: &PseudoConfiguration, center: usize) -> Vec<usize> {
 }
 
 /// Recursive helper for `enum_wheel_tuples`: assign neighbour `i`'s degree from
-/// index `i_lowest` upward, collecting the lex-min degree tuples (C++ nested
-/// `enum_degree` lambda, with wheel generation split out — see `enum_wheel_tuples`).
+/// index `i_lowest` upward, collecting the lex-min degree tuples (wheel
+/// generation is split out -- see `enum_wheel_tuples`).
 fn enum_wheel_degrees(
     center_degree: usize,
     degrees: &mut Vec<i32>,
@@ -547,7 +541,7 @@ fn enum_wheel_degrees(
 }
 
 /// Driver for Lemma A.3 step 1: enumerate the possible bad wheels of a given
-/// centre degree and write them out (C++ `run_enum_wheels`).
+/// centre degree and write them out.
 pub fn run_enum_wheels(
     center_degree: usize,
     confdir: &Path,
@@ -568,7 +562,7 @@ pub fn run_enum_wheels(
 }
 
 /// Driver for Lemma A.3 step 2: enumerate the bad cartwheels of a single wheel
-/// and write them out (C++ `run_enum_cartwheels`).
+/// and write them out.
 pub fn run_enum_cartwheels(
     wheel_file: &Path,
     confdir: &Path,

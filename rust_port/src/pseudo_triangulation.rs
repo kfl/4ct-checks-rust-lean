@@ -1,11 +1,11 @@
-//! Phase 2 — combinatorial map. Port of `../src/pseudo_triangulation.{hpp,cpp}`.
+//! Combinatorial map.
 //!
 //! A `PseudoTriangulation` is a rotation system on `n` vertices built from darts
 //! (half-edges). `Dart { head, rev, succ, pred }`:
-//! - `head` — the vertex this dart points at (always present);
-//! - `rev`  — the reverse dart (always present);
-//! - `succ` / `pred` — next / previous dart in the rotation around `head`,
-//!   or `None` at a boundary (R1: the C++ `nil = -1`).
+//! - `head` -- the vertex this dart points at (always present);
+//! - `rev`  -- the reverse dart (always present);
+//! - `succ` / `pred` -- next / previous dart in the rotation around `head`,
+//!   or `None` at a boundary (the C++ `nil = -1`).
 
 use crate::compact_index::OptIdx;
 use crate::mapping::{Mappings, compose_map, split_map};
@@ -78,7 +78,7 @@ impl PseudoTriangulation {
         PseudoTriangulation { n, darts }
     }
 
-    /// Multi-line dump of every dart (C++ `debug`).
+    /// Multi-line dump of every dart.
     pub fn debug(&self) -> String {
         let mut res = format!("N: {}\n", self.n);
         for d in &self.darts {
@@ -93,7 +93,7 @@ impl PseudoTriangulation {
         res
     }
 
-    /// Human-readable rotation view (C++ `to_string`).
+    /// Human-readable rotation view.
     pub fn show(&self) -> String {
         let mut res = format!("N: {}\n", self.n);
         let edges: Vec<(usize, usize)> = self
@@ -115,10 +115,11 @@ impl PseudoTriangulation {
         res
     }
 
-    /// Build from clockwise vertex rotations (C++ `from_v_rotations`).
+    /// Build from clockwise vertex rotations.
     ///
     /// `rotations[a]` lists the neighbours of `a` clockwise; `-1` marks a
-    /// boundary gap (kept as `i32` so the input matches the C++/file form).
+    /// boundary gap (kept as `i32` so the input matches the on-disk form in
+    /// `FORMAT.md`).
     pub fn from_v_rotations(n: usize, rotations: &[Vec<i32>]) -> PseudoTriangulation {
         // dart_of[a][b] = id of the dart a -> b, if any.
         let mut dart_of = vec![vec![None::<usize>; n]; n];
@@ -178,7 +179,7 @@ impl PseudoTriangulation {
         PseudoTriangulation::new(n, darts)
     }
 
-    /// Side-by-side union, shifting `r`'s vertex/dart indices (C++ `disjoint_union`).
+    /// Side-by-side union, shifting `r`'s vertex/dart indices.
     pub fn disjoint_union(l: &PseudoTriangulation, r: &PseudoTriangulation) -> PseudoTriangulation {
         let n = l.n + r.n;
         let offset = l.darts.len();
@@ -194,14 +195,14 @@ impl PseudoTriangulation {
         PseudoTriangulation::new(n, darts)
     }
 
-    /// Whether any dart is a self-loop (`head == rev's head`) (C++ `has_loop`).
+    /// Whether any dart is a self-loop (`head == rev's head`).
     pub fn has_loop(&self) -> bool {
         self.darts
             .iter()
             .any(|d| d.head() == self.darts[d.rev()].head())
     }
 
-    /// Number of darts pointing at each vertex (C++ `n_incident_darts`).
+    /// Number of darts pointing at each vertex.
     pub fn n_incident_darts(&self) -> Vec<usize> {
         let mut n_incident = vec![0; self.n];
         for d in &self.darts {
@@ -210,8 +211,7 @@ impl PseudoTriangulation {
         n_incident
     }
 
-    /// Which vertices lie on a boundary, i.e. have a dart with no `succ`
-    /// (C++ `is_boundary`).
+    /// Which vertices lie on a boundary, i.e. have a dart with no `succ`.
     pub fn is_boundary(&self) -> Vec<bool> {
         let mut is_boundary = vec![false; self.n];
         for d in &self.darts {
@@ -223,27 +223,26 @@ impl PseudoTriangulation {
     }
 
     /// First dart of `v` in rotation order (the one with no `pred`); `None` if
-    /// `v` has no boundary-start dart (C++ `first_dart`, where `nil` -> `None`).
+    /// `v` has no boundary-start dart.
     pub fn first_dart(&self, v: usize) -> Option<usize> {
         self.darts
             .iter()
             .position(|d| d.head() == v && d.pred().is_none())
     }
 
-    /// Last dart of `v` (no `succ`) (C++ `last_dart`).
+    /// Last dart of `v` (no `succ`).
     pub fn last_dart(&self, v: usize) -> Option<usize> {
         self.darts
             .iter()
             .position(|d| d.head() == v && d.succ().is_none())
     }
 
-    /// Any dart of `v` (C++ `any_dart`).
+    /// Any dart of `v`.
     pub fn any_dart(&self, v: usize) -> Option<usize> {
         self.darts.iter().position(|d| d.head() == v)
     }
 
-    /// Follow `succ` `k` times from `e`; `None` if a boundary is hit
-    /// (C++ `suc_k_times`).
+    /// Follow `succ` `k` times from `e`; `None` if a boundary is hit.
     pub fn suc_k_times(&self, e: usize, k: i32) -> Option<usize> {
         let mut curr = e;
         for _ in 0..k {
@@ -253,8 +252,7 @@ impl PseudoTriangulation {
     }
 
     /// For each vertex, the cyclic rotation of its darts. A boundary rotation is
-    /// terminated by a trailing `None` (C++ `get_e_rotations`, where the trailing
-    /// `nil` plays the same role).
+    /// terminated by a trailing `None`.
     pub fn get_e_rotations(&self) -> Vec<Vec<Option<usize>>> {
         let is_boundary = self.is_boundary();
         (0..self.n)
@@ -287,7 +285,7 @@ impl PseudoTriangulation {
             .collect()
     }
 
-    /// All darts from `head` to `tail` (C++ `get_darts`).
+    /// All darts from `head` to `tail`.
     pub fn get_darts(&self, head: usize, tail: usize) -> Vec<usize> {
         self.darts
             .iter()
@@ -298,7 +296,7 @@ impl PseudoTriangulation {
     }
 
     /// Free homomorphism gluing the given dart pairs, returning the quotient map
-    /// and the index `Mappings` onto it (C++ member `free_homomorphism`).
+    /// and the index `Mappings` onto it.
     pub fn free_homomorphism(
         &self,
         dart_pairs: &[(usize, usize)],
@@ -372,7 +370,7 @@ impl PseudoTriangulation {
 
     /// Free homomorphism over the disjoint union of `pt0`, `pt1`, identifying
     /// `dart_id0` (in `pt0`) with `dart_id1` (in `pt1`); returns the quotient and
-    /// the two index maps restricted to each side (C++ static `free_homomorphism`).
+    /// the two index maps restricted to each side.
     pub fn free_homomorphism_pair(
         pt0: &PseudoTriangulation,
         pt1: &PseudoTriangulation,
@@ -397,7 +395,7 @@ fn lift(xs: Vec<usize>) -> Vec<Option<usize>> {
     xs.into_iter().map(Some).collect()
 }
 
-/// Format an optional index the way the C++ printed `int` darts (`-1` for nil).
+/// Format an optional index as a printed `int` dart (`-1` for nil), per `FORMAT.md`.
 fn fmt_idx(x: Option<usize>) -> String {
     match x {
         Some(v) => v.to_string(),

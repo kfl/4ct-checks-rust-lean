@@ -3,22 +3,19 @@ import NearLinear4ct.Degree
 import NearLinear4ct.SmallNatPair
 
 /-!
-Phase 3 — configuration with degrees. Port of
-`../src/pseudo_configuration.{hpp,cpp}` (Appendix A.2 `homomorphism`, A.4
+Configuration with degrees (Appendix A.2 `homomorphism`, A.4
 `dartIdentification` / `freeHomomorphism…` / `resolveDegreeIssues` + helpers).
 
-L6 decision: in C++ this *inherits* from `PseudoTriangulation`. Lean models that
-directly with `extends` — both the fields (`pc.n`, `pc.darts`) **and** the parent
-methods (`pc.firstDart v`, `pc.isBoundary`, …) are reachable by dot notation
-(Lean falls through `extends` parents), so this reads closer to the C++ than the
-Rust port's composition. The two names overridden by the child
-(`debug`, `freeHomomorphism`) are reached on the parent explicitly via
-`pc.toPseudoTriangulation.…` (the C++ `this->PseudoTriangulation::…`).
+This `extends` `PseudoTriangulation` -- both the fields (`pc.n`, `pc.darts`) **and**
+the parent methods (`pc.firstDart v`, `pc.isBoundary`, …) are reachable by dot
+notation (Lean falls through `extends` parents). The two names overridden by the
+child (`debug`, `freeHomomorphism`) are reached on the parent explicitly via
+`pc.toPseudoTriangulation.…`.
 
 Scope: the methods that consume *derived* types (`Configuration`/`Rule`/
-`CartWheel`) — containment, charges, cartwheel combination — are deferred to
-P4/P5 (Lean allows the mutual module reference, so they land as later additions).
-This file is the self-contained core.
+`CartWheel`) -- containment, charges, cartwheel combination -- are deferred (Lean
+allows the mutual module reference, so they land as later additions). This file
+is the self-contained core.
 -/
 
 namespace NearLinear4ct
@@ -30,18 +27,18 @@ deriving DecidableEq, Repr, Inhabited, BEq
 
 namespace PseudoConfiguration
 
-/-- C++ `PseudoConfiguration(N, darts, degrees)`. -/
+/-- Construct from `(N, darts, degrees)`. -/
 def new (n : Nat) (darts : Array Dart) (degrees : Array Degree) : PseudoConfiguration :=
   { toPseudoTriangulation := ⟨n, darts⟩, degrees := degrees }
 
-/-- Multi-line dump (C++ `debug`). -/
+/-- Multi-line dump. -/
 def debug (pc : PseudoConfiguration) : String := Id.run do
   let mut res := pc.toPseudoTriangulation.debug
   for d in pc.degrees do
     res := res ++ s!"Degree({d.lower}, {d.upper}),\n"
   return res
 
-/-- Human-readable rotation view with degrees (C++ `to_string`). -/
+/-- Human-readable rotation view with degrees. -/
 def display (pc : PseudoConfiguration) : String := Id.run do
   let mut res := s!"N: {pc.n}\n"
   let edges := pc.darts.map fun d => (d.head, (pc.darts[d.rev]!).head)
@@ -55,14 +52,14 @@ def display (pc : PseudoConfiguration) : String := Id.run do
     res := res ++ "\n"
   return res
 
-/-- Build from vertex rotations + degrees (C++ `from_v_rotations`).
-The C++ `assert(degrees.size() == N)` is a caller precondition, kept implicit. -/
+/-- Build from vertex rotations + degrees.
+The `degrees.size() == N` requirement is a caller precondition, kept implicit. -/
 def fromVRotations (n : Nat) (vRotations : Array (Array Int)) (degrees : Array Degree) :
     PseudoConfiguration :=
   let pt := PseudoTriangulation.fromVRotations n vRotations
   PseudoConfiguration.new n pt.darts degrees
 
-/-- Side-by-side union (C++ `disjoint_union`). -/
+/-- Side-by-side union. -/
 def disjointUnion (l r : PseudoConfiguration) : PseudoConfiguration :=
   let pt := PseudoTriangulation.disjointUnion l.toPseudoTriangulation r.toPseudoTriangulation
   PseudoConfiguration.new pt.n pt.darts (l.degrees ++ r.degrees)
@@ -71,34 +68,32 @@ def disjointUnion (l r : PseudoConfiguration) : PseudoConfiguration :=
 boundary link queues nothing. The conditional pushes of `homCoreGo`'s expand
 step, named so the proofs speak about one operation instead of its match.
 
-`@[noinline]`: inlined, the match arms duplicate `homCoreGo`'s continuation
-and defeat the borrow inference (`dst` turns owned, doubling the loop's
-reference-count traffic); as a call with scalar arguments the loop keeps its
-borrowed parameters and a smaller body. -/
+`@[noinline]`: inlined, the match arms duplicate the loop's continuation and
+defeat borrow inference; as a call with scalar arguments the loop keeps its
+borrowed parameters. -/
 @[noinline] def pushLink
     (q : Queue SmallNatPair) : OptIdx → OptIdx → Queue SmallNatPair
   | .some s, .some sStar => q.push (SmallNatPair.pack s sStar)
   | _, _ => q
 
 /-- One-step verdict of the homomorphism BFS: the next state, or the final
-answer. `@[inline]` on `homStep` + the immediate `match` in `homCoreGo` means
-this type never exists at runtime (case-of-known-constructor dissolves it);
-it exists so the *proofs* can speak about a single, recursion-free step. -/
+answer. It exists so the *proofs* can speak about a single, recursion-free
+step.
+
+`@[inline]` on `homStep` + the immediate `match` in `homCoreGo` means this
+type never exists at runtime (case-of-known-constructor dissolves it). -/
 inductive HomNext where
   | done (r : Option (IndexMap × IndexMap))
   | next (q : Queue SmallNatPair) (vmap dmap : IndexMap)
 
 /-- One step of the homomorphism BFS (the pseudocode's loop body): pop one
 obligation `(f, f★)` and process it -- re-check an already-mapped dart, or map
-a fresh one and queue its `rev`/`succ`/`pred` obligations.
+a fresh one and queue its `rev`/`succ`/`pred` obligations. The maps are
+`Array OptIdx` and the worklist entries `SmallNatPair` (see those modules for
+the encodings).
 
-The two maps are `Array OptIdx` — the verified-unboxed `Option Nat` (`OptIdx.lean`),
-read in `none`/`some` terms yet stored unboxed (no `some`-cell allocation per `set`).
-The worklist entries `(f, f★)` are `SmallNatPair` -- the verified pointer-tagged
-pack of two dart indices (`SmallNatPair.lean`; a `Nat × Nat` ctor costs a heap
-allocation + free per element, and those pairs were the prune pipeline's dominant
-RC/free churn). `@[inline]`: the step exists once in the source but compiles
-into its driver, so `homCoreGo`'s loop is exactly the pre-factoring code. -/
+`@[inline]`: the step exists once in the source but compiles into its driver,
+so `homCoreGo`'s loop is exactly the unfactored code. -/
 @[inline] def homStep (src dst : PseudoConfiguration)
     (degreeTest : Degree → Degree → Bool)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : HomNext :=
@@ -134,23 +129,16 @@ into its driver, so `homCoreGo`'s loop is exactly the pre-factoring code. -/
           .next q vmap dmap
 
 /-- The worklist loop of the homomorphism BFS: drive `homStep` until it
-answers. Tail-recursive with the state `(q, maps)` in **explicit arguments**:
-Perceus's borrow/reuse analysis is cleaner on a tail call with linear state
-than on the `whileM` closure a `do` loop desugars to -- `maps.set!` stays in
-place, `q` is threaded, and `src`/`dst`/`degreeTest` are read-only so they
-pass borrowed (no per-iteration RC).
+answers -- the hottest loop in the program, kept as a bare tail call with the
+state in explicit arguments rather than an `Id.run do`/`while` lowering.
 
-`partial_fixpoint`: the worklist `q` *grows* (each step pushes ≤ 3 darts), so
-the recursion is not structural. `partial_fixpoint` gives the fixpoint a
-statable unfolding equation and a partial-correctness principle
-(`HomomorphismProofs.lean`) without a termination proof -- soundness/output-WF
-are partial correctness. It compiles to the same code as `partial def` (only
-SSA temp names differ). The function is *not* total on malformed input: an
+`partial_fixpoint`: the worklist grows (each step pushes ≤ 3 darts), so the
+recursion is not structural; the fixpoint exposes the `.partial_correctness`
+principle the proofs ride on. *Not* total on malformed input -- an
 out-of-bounds dart index makes `set!` a no-op and can loop; totality is
-conditional on `WF` (the measure `q.live + 4 * unmapped` strictly decreases
-when every index is in bounds). `@[specialize]` monomorphises `degreeTest`
-per call site (`Degree.includes` etc.), eliminating the indirect
-`lean_apply_2` in the loop. -/
+conditional on `WF`.
+
+`@[specialize]` monomorphises `degreeTest` per call site. -/
 @[specialize] def homCoreGo (src dst : PseudoConfiguration)
     (degreeTest : Degree → Degree → Bool)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Option (IndexMap × IndexMap) :=
@@ -172,29 +160,24 @@ they are non-`private` only so `HomomorphismProofs.lean` can reason about them. 
     (Array.replicate src.n OptIdx.none)
     (Array.replicate src.darts.size OptIdx.none)
 
-/-- Whether a homomorphism exists, accepting a vertex degree compatibility test
-(C++ `homomorphism(...).has_value()`). The `.isSome`-only hot path
-(`rootedContainConf`, `never/always/dominantlyApply`, `containX`) — skips building
-the result `Mappings` entirely.
-
-(A `homRootOk` root-degree fast-fail was prototyped + measured here: neutral on
-both workloads, because the homomorphism failures are *structural/deep*, not at
-the root — the `dartsByDegree` bucket already filters root degrees. Not
-worthwhile, so not kept; see `PERF.md`.) -/
+/-- Whether a homomorphism exists, accepting a vertex degree compatibility test.
+The `.isSome`-only hot path
+(`rootedContainConf`, `never/always/dominantlyApply`, `containX`) -- skips building
+the result `Mappings` entirely. -/
 @[inline] def homomorphismExists (src : PseudoConfiguration) (dartFrom : Nat)
     (dst : PseudoConfiguration) (dartTo : Nat)
     (degreeTest : Degree → Degree → Bool) : Bool :=
   (homCore src dartFrom dst dartTo degreeTest).isSome
 
-/-- BFS graph homomorphism rooted at a dart pair (C++ templated `homomorphism`,
-A.2). Returns the (possibly partial) index maps if a homomorphism exists. -/
+/-- BFS graph homomorphism rooted at a dart pair (A.2). Returns the (possibly
+partial) index maps if a homomorphism exists. -/
 def homomorphism (src : PseudoConfiguration) (dartFrom : Nat)
     (dst : PseudoConfiguration) (dartTo : Nat)
     (degreeTest : Degree → Degree → Bool) : Option Mappings :=
   (homCore src dartFrom dst dartTo degreeTest).map fun (v, d) => ⟨v, d⟩
 
 /-- Glue the dart pairs as a combinatorial map and reconcile degrees, if the
-result is loop-free and degree-consistent (C++ `dart_identification`, A.4.1). -/
+result is loop-free and degree-consistent (A.4.1). -/
 def dartIdentification (pc : PseudoConfiguration) (dartPairs : Array (Nat × Nat)) :
     Option (PseudoConfiguration × Mappings) := Id.run do
   let (zStar, mappings) := pc.toPseudoTriangulation.freeHomomorphism dartPairs
@@ -208,7 +191,7 @@ def dartIdentification (pc : PseudoConfiguration) (dartPairs : Array (Nat × Nat
   return some (PseudoConfiguration.new zStar.n zStar.darts degreesStar, mappings)
 
 /-- Whether an interior vertex has fewer incident darts than its lower degree
-bound (C++ `inner_subdegree_error`, A.4.5). -/
+bound (A.4.5). -/
 def innerSubdegreeError (pc : PseudoConfiguration) : Bool := Id.run do
   let nIncident := pc.nIncidentDarts
   let isB := pc.isBoundary
@@ -218,7 +201,7 @@ def innerSubdegreeError (pc : PseudoConfiguration) : Bool := Id.run do
   return false
 
 /-- Find a fixed-degree vertex whose incidences need adjusting
-(C++ `vertex_single_degree_issue`, A.4.6). -/
+(A.4.6). -/
 def vertexSingleDegreeIssue (pc : PseudoConfiguration) : Option Nat := Id.run do
   let nIncident := pc.nIncidentDarts
   let isB := pc.isBoundary
@@ -230,7 +213,7 @@ def vertexSingleDegreeIssue (pc : PseudoConfiguration) : Option Nat := Id.run do
   return none
 
 /-- Close a boundary fan at `v` by adding the two darts of a new edge
-(C++ `add_boundary_darts`, A.4.8). `none` on a boundary error (`u == w`). -/
+(A.4.8). `none` on a boundary error (`u == w`). -/
 def addBoundaryDarts (pc : PseudoConfiguration) (v : Nat) : Option PseudoConfiguration := Id.run do
   let eFirst := (pc.firstDart v).get!
   let eLast := (pc.lastDart v).get!
@@ -250,9 +233,8 @@ def addBoundaryDarts (pc : PseudoConfiguration) (v : Nat) : Option PseudoConfigu
   darts := darts.set! eLastRev { darts[eLastRev]! with pred := OptIdx.some dWU }
   return some (PseudoConfiguration.new pc.n darts pc.degrees)
 
-/-- Resolve the single degree issue at `v` (C++ `fix_single_degree_issue`,
-A.4.7). The trailing `panic!` is the C++ `assert(false)` — unreachable, since the
-caller only invokes this when one of the two cases holds. -/
+/-- Resolve the single degree issue at `v` (A.4.7). The trailing `panic!` is
+unreachable, since the caller only invokes this when one of the two cases holds. -/
 def fixSingleDegreeIssue (pc : PseudoConfiguration) (v : Nat) :
     Option (PseudoConfiguration × Mappings) :=
   let nIncident := pc.nIncidentDarts
@@ -270,7 +252,7 @@ def fixSingleDegreeIssue (pc : PseudoConfiguration) (v : Nat) :
     panic! "fix_single_degree_issue called without a degree issue"
 
 /-- Split the first range-valued vertex into its lowest degree vs. the rest
-(C++ `single_out_lower_degree`, A.4.9). -/
+(A.4.9). -/
 def singleOutLowerDegree (pc : PseudoConfiguration) :
     Option (PseudoConfiguration × PseudoConfiguration) := Id.run do
   let nIncident := pc.nIncidentDarts
@@ -284,7 +266,7 @@ def singleOutLowerDegree (pc : PseudoConfiguration) :
 
 /-- Enumerate the configurations obtained by resolving every degree issue
 (over-incident fixed vertices, boundary closures, degree splits) via BFS
-(C++ `resolve_degree_issues`, A.4.4). Result order matches the C++ FIFO queue. -/
+(A.4.4). Results come back in FIFO (queue) order. -/
 def resolveDegreeIssues (pc : PseudoConfiguration) : Array (PseudoConfiguration × Mappings) :=
     Id.run do
   let mut z : Array (PseudoConfiguration × Mappings) := #[]
@@ -310,7 +292,7 @@ def resolveDegreeIssues (pc : PseudoConfiguration) : Array (PseudoConfiguration 
   return z
 
 /-- Identify the dart pairs and resolve any resulting degree issues
-(C++ member `free_homomorphism`, A.4.3). -/
+(A.4.3). -/
 def freeHomomorphism (pc : PseudoConfiguration) (dartPairs : Array (Nat × Nat)) :
     Array (PseudoConfiguration × Mappings) :=
   match pc.dartIdentification dartPairs with
@@ -321,7 +303,7 @@ def freeHomomorphism (pc : PseudoConfiguration) (dartPairs : Array (Nat × Nat))
 
 /-- Free homomorphism over the disjoint union of `pc0`, `pc1`, identifying
 `dartId0` (in `pc0`) with `dartId1` (in `pc1`); returns each result with the two
-index maps restricted to each side (C++ static `free_homomorphism`). -/
+index maps restricted to each side. -/
 def freeHomomorphismPair (pc0 pc1 : PseudoConfiguration) (dartId0 dartId1 : Nat) :
     Array (PseudoConfiguration × Mappings × Mappings) :=
   let pc := PseudoConfiguration.disjointUnion pc0 pc1

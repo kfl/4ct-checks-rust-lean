@@ -1,16 +1,14 @@
 import NearLinear4ct
 
 /-!
-CLI entry point. Mirrors `../src/main.cpp`.
+CLI entry point.
 
-The flag surface matches the C++ `main`: each mode is selected by a
-`--combine_rules` / `--enum_wheels` / … switch (modes are independent, not
-mutually exclusive), and the required options for each mode are validated up front
-(C++ `existArgs`: warn `Specify X.` and `exit(1)`).
+Each mode is selected by a `--combine_rules` / `--enum_wheels` / … switch (modes
+are independent, not mutually exclusive), and the required options for each mode
+are validated up front (on a missing arg: warn `Specify X.` and `exit(1)`).
 
-Each mode dispatches to its driver (P6). A failed proof obligation inside a
-`check_*` driver throws, which propagates out of `main` and exits non-zero (L1),
-matching the C++ `assert` abort.
+Each mode dispatches to its driver. A failed proof obligation inside a
+`check_*` driver throws, which propagates out of `main` and exits non-zero.
 -/
 
 
@@ -21,7 +19,7 @@ structure Args where
   flags : List String := []
   vals : List (String × String) := []
 
-/-- Short → long option names (C++ `value<...>` short aliases). -/
+/-- Short → long option names. -/
 def shortToLong : List (Char × String) :=
   [('C', "confdir"), ('R', "ruledir"), ('S', "combined_ruledir"),
    ('W', "cartwheeldir"), ('w', "wheel"), ('d', "degree"),
@@ -64,8 +62,7 @@ partial def parse (args : List String) (acc : Args) : Args :=
 def Args.has (a : Args) (flag : String) : Bool := a.flags.contains flag
 def Args.get? (a : Args) (key : String) : Option String := a.vals.lookup key
 
-/-- Mirror of C++ `existArgs`: warn `Specify X.` for each missing arg, return
-whether all are present. -/
+/-- Warn `Specify X.` for each missing arg; return whether all are present. -/
 def existArgs (a : Args) (names : List String) : IO Bool := do
   let mut ok := true
   for n in names do

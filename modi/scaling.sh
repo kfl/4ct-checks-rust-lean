@@ -2,7 +2,7 @@
 # Parallel wall-clock scaling of the Rust and Lean ports: sweep thread counts and
 # report best-of-N wall-clock, with the (serial) C++ original as the reference.
 # This answers goal (2): how much the ports' parallelisation buys on a real
-# many-core Linux node (no macOS TLV / system-allocator artifacts).
+# many-core Linux node (no macOS TLV / system-allocator artefacts).
 #
 #   apptainer exec ~/modi_images/hpc-notebook-*.sif modi/scaling.sh            # combine_rules
 #   RUNS=5 THREADS="1 2 4 8 16 32 64" apptainer exec ~/modi_images/hpc-notebook-*.sif modi/scaling.sh

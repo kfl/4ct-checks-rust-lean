@@ -1,17 +1,16 @@
-//! Phase 1 — shared helpers. Port of `../src/util.hpp`.
+//! Shared helpers.
 //!
 //! Contains `Unionfind`, `lex_min` (lexicographically-minimal rotation test),
-//! the `FromFile` trait (replacing the C++ `HasFromFile` concept), and the
-//! `get_objects` directory loader.
+//! the `FromFile` trait, and the `get_objects` directory loader.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 /// Disjoint-set forest (union-find) without path compression or union-by-rank,
-/// matching `../src/util.hpp`'s `Unionfind`.
+/// matching the C++ `Unionfind`.
 ///
-/// R1: the C++ stores `parents[x] < 0` to mark a root (with the value `-1`).
-/// Here a root is `None`; an interior node is `Some(parent)`.
+/// The C++ stores `parents[x] < 0` to mark a root (with the value `-1`); here a
+/// root is `None` and an interior node is `Some(parent)`.
 pub struct Unionfind {
     pub n: usize,
     parents: Vec<Option<usize>>,
@@ -25,8 +24,11 @@ impl Unionfind {
         }
     }
 
-    /// Representative of `x` (C++ `root`). Iterative; the C++ recurses but does
-    /// no path compression, so this is behaviourally identical.
+    /// Representative of `x`. Iterative; the C++ recurses but does no path
+    /// compression, so this is behaviourally identical.
+    ///
+    /// TODO: revisit whether omitting path compression here is the intended
+    /// algorithm -- confirm we have not diverged from the reference.
     pub fn root(&self, mut x: usize) -> usize {
         while let Some(p) = self.parents[x] {
             x = p;
@@ -34,7 +36,7 @@ impl Unionfind {
         x
     }
 
-    /// Attach `x`'s tree under `y`'s root (C++ `unite`: `parents[root(x)] = root(y)`).
+    /// Attach `x`'s tree under `y`'s root: `parents[root(x)] = root(y)`.
     pub fn unite(&mut self, x: usize, y: usize) {
         let x = self.root(x);
         let y = self.root(y);
@@ -48,20 +50,20 @@ impl Unionfind {
         self.root(x) == self.root(y)
     }
 
-    /// `root(i)` for every `i` (C++ `each_root`). Always total.
+    /// `root(i)` for every `i`. Always total.
     pub fn each_root(&self) -> Vec<usize> {
         (0..self.n).map(|i| self.root(i)).collect()
     }
 
-    /// The indices that are roots (C++ `all_roots`).
+    /// The indices that are roots.
     pub fn all_roots(&self) -> Vec<usize> {
         (0..self.n).filter(|&i| self.parents[i].is_none()).collect()
     }
 
     /// A relabelling map: each root gets a fresh sequential index; non-roots map
     /// to `None` (the C++ `-1`). Composes with [`each_root`](Self::each_root) via
-    /// [`crate::mapping::compose_map`] to renumber a quotient (see P2
-    /// `disjoint_union`).
+    /// [`crate::mapping::compose_map`] to renumber a quotient (see
+    /// `PseudoTriangulation::disjoint_union`).
     pub fn index_roots(&self) -> Vec<Option<usize>> {
         let mut index = 0;
         self.parents
@@ -96,21 +98,20 @@ pub fn lex_min<T: Ord>(a: &[T]) -> bool {
     })
 }
 
-/// A type that can be loaded from a single file (replaces the C++ `HasFromFile`
-/// concept). Like the C++ `from_file`, implementations may panic on malformed
-/// input — that mirrors the C++ behaviour of throwing/aborting.
+/// A type that can be loaded from a single file. Implementations may panic on
+/// malformed input.
 pub trait FromFile: Sized {
     fn from_file(path: &Path) -> Self;
 }
 
 /// Load every regular file in `dir` whose extension matches `extension`
-/// (e.g. `".rule"`), as `T`, **sorted by path** (C++ `get_objects`).
+/// (e.g. `".rule"`), as `T`, **sorted by path**.
 ///
-/// R3: ordering is observable (it defines the `combined_flag` rule order, see
+/// Ordering is observable (it defines the `combined_flag` rule order, see
 /// `../FORMAT.md`), so we sort explicitly rather than rely on filesystem order.
 pub fn get_objects<T: FromFile>(dir: &Path, extension: &str) -> Vec<T> {
-    // `Path::extension` yields the suffix without the leading dot; the C++
-    // `fs::path::extension` includes it. Normalise so callers can pass ".rule".
+    // `Path::extension` yields the suffix without the leading dot. Normalise so
+    // callers can pass ".rule".
     let want = extension.trim_start_matches('.');
 
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)

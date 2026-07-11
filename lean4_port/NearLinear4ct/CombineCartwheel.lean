@@ -1,28 +1,24 @@
 import NearLinear4ct.Cartwheel
 
 /-!
-Phase 6 — verification drivers. Port of `../src/combine_cartwheel.{hpp,cpp}`
-(Appendix A.10).
+Verification drivers (Appendix A.10).
 
 The Lemma A.4/A.5/A.6 checks: `runCheckDeg8`, `runCheck7triangle`, `runCheckDeg7`
 and their helpers.
 
-R4/L7: the C++ posts one task per cartwheel to a `boost::asio::thread_pool`. These
-tasks are pure verification (they only read inputs and assert), with no shared
-mutable state, so the translation is `parForEach cartwheels (fun cw => …)`
+The per-cartwheel checks are pure verification (they only read inputs and assert),
+with no shared mutable state, so they run as `parForEach cartwheels (fun cw => …)`
 (`Task`-based, see `Util.parForEach`). A failing proof obligation throws in its
-worker; `parForEach` re-raises it, so the process exits non-zero (L1) — matching
-the C++ `assert` abort.
+worker; `parForEach` re-raises it, so the process exits non-zero.
 
-R5/L1: the asserts here ARE the proof → `proofAssert` (always-on, aborts), never
-`panic!` (which Lean would swallow). This includes the C++ `assert(false)`
+The asserts here ARE the proof → `proofAssert` (always-on, aborts), never
+`panic!` (which Lean would swallow). This includes the `assert(false)`
 "impossible" branches: a malformed input must abort, not be silently accepted.
 -/
 
 namespace NearLinear4ct
 
-/-- The configuration of three mutually adjacent degree-7 vertices
-(C++ `get_7triangle`). -/
+/-- The configuration of three mutually adjacent degree-7 vertices. -/
 def get7triangle : Configuration :=
   let t7 := PseudoConfiguration.fromVRotations 3
     #[#[1, 2, -1], #[2, 0, -1], #[0, 1, -1]] #[dgExact7, dgExact7, dgExact7]
@@ -30,11 +26,10 @@ def get7triangle : Configuration :=
 where dgExact7 : Degree := Degree.exact 7
 
 /-- Drop cartwheels with a vertex of fixed degree `k`; collapse `[k-1, 9]` ranges
-to fixed `k-1` (C++ `delete_degree_from_k_to_9`, A.10.1).
+to fixed `k-1` (A.10.1).
 
-The C++ scans with an early `break` on the first fixed-`k` vertex; the observable
-result is "remove iff some vertex is fixed `k`, else collapse every `[k-1,9]`",
-expressed here directly. -/
+The observable result is "remove iff some vertex is fixed `k`, else collapse
+every `[k-1,9]`", expressed here directly. -/
 def deleteDegreeFromKTo9 (cartwheels : Array CartWheel) (k : Nat) : Array CartWheel :=
   cartwheels.filterMap fun cw =>
     if cw.degrees.any (fun d => d.lower == k && d.upper == k) then
@@ -44,13 +39,13 @@ def deleteDegreeFromKTo9 (cartwheels : Array CartWheel) (k : Nat) : Array CartWh
         if d.lower == k - 1 && d.upper == CARTWHEEL_DEG_MAX then ⟨d.lower, k - 1⟩ else d
       some { cw with degrees := degrees }
 
-/-- Drop cartwheels that contain a 7-triangle (C++ `delete_7triangle`). -/
+/-- Drop cartwheels that contain a 7-triangle. -/
 def delete7triangle (cartwheels : Array CartWheel) : Array CartWheel :=
   let confs := #[get7triangle]
   cartwheels.filter fun cw =>
     !cw.toPseudoConfiguration.blockedByReducibleConfiguration 0 confs
 
-/-- The fixed obstruction configuration `X` (C++ `getX`, A.10.8). -/
+/-- The fixed obstruction configuration `X` (A.10.8). -/
 def getX : PseudoConfiguration :=
   PseudoConfiguration.fromVRotations 17
     #[#[1, 2, 3, 4, 5, 6, 7, 8], #[0, 8, 11, 12, 2], #[0, 1, 12, -1, 3], #[0, 2, -1, 13, 4],
@@ -63,7 +58,7 @@ def getX : PseudoConfiguration :=
       Degree.exact 5, Degree.exact 5]
 
 /-- Whether `X` embeds into `z` rooted at vertex `v`, over the 8 rotations of the
-root dart (C++ `containX`). -/
+root dart. -/
 def containX (z : PseudoConfiguration) (v : Nat) : Bool := Id.run do
   let x := getX
   let dartZ := (z.anyDart v).get!
@@ -76,7 +71,7 @@ def containX (z : PseudoConfiguration) (v : Nat) : Bool := Id.run do
 
 -- --- Lemma A.4: a vertex of degree 8 -----------------------------------------
 
-/-- C++ `check88`. -/
+/-- Degree-8 centre with a degree-8 spoke: no combination may survive. -/
 def check88 (cartwheel : CartWheel) (darts8 : Array Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : IO Unit := do
   for dart in darts8 do
@@ -84,14 +79,14 @@ def check88 (cartwheel : CartWheel) (darts8 : Array Nat) (cartwheels : Array Car
     let combined := cartwheel.toPseudoConfiguration.combineEachCartwheel rev cartwheels confs
     proofAssert combined.isEmpty "check88: a combination survived"
 
-/-- C++ `check87`. -/
+/-- Degree-8 centre with a single degree-7 spoke: no combination may survive. -/
 def check87 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : IO Unit := do
   let rev := (cartwheel.darts[darts7[0]!]!).rev
   let combined := cartwheel.toPseudoConfiguration.combineEachCartwheel rev cartwheels confs
   proofAssert combined.isEmpty "check87: a combination survived"
 
-/-- C++ `check787`. -/
+/-- Degree-8 centre with multiple degree-7 spokes: every combination must contain `X`. -/
 def check787 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : IO Unit := do
   let n := darts7.size
@@ -117,7 +112,7 @@ def check787 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array Ca
       let center := (mappingsCw.vmap[cartwheel.center]!).idx!
       proofAssert (containX combined center) "check787: combination must contain X"
 
-/-- C++ `check_deg8`. -/
+/-- Lemma A.4 check: a vertex of degree 8. -/
 def checkDeg8 (allCartwheels : Array CartWheel) (confs : Array Configuration) : IO Unit := do
   let cartwheels := deleteDegreeFromKTo9 allCartwheels 9
   IO.println s!"After removing cartwheels with degree 9, {cartwheels.size} cartwheels remain."
@@ -141,7 +136,7 @@ def runCheckDeg8 (cartwheeldir confdir : System.FilePath) : IO Unit := do
 
 -- --- Lemma A.5: a 7-triangle -------------------------------------------------
 
-/-- C++ `check_7triangle`. -/
+/-- Lemma A.5 check: a 7-triangle. -/
 def check7triangle (allCartwheels : Array CartWheel) (confs : Array Configuration) : IO Unit := do
   let cartwheels := deleteDegreeFromKTo9 (deleteDegreeFromKTo9 allCartwheels 9) 8
   IO.println s!"After removing cartwheels with degree 8 and 9, {cartwheels.size} remain."
@@ -167,14 +162,14 @@ def runCheck7triangle (cartwheeldir confdir : System.FilePath) : IO Unit := do
 
 -- --- Lemma A.6: a vertex of degree 7 -----------------------------------------
 
-/-- C++ `check77`. -/
+/-- Degree-7 centre with a single degree-7 spoke: no combination may survive. -/
 def check77 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : IO Unit := do
   let rev := (cartwheel.darts[darts7[0]!]!).rev
   let combined := cartwheel.toPseudoConfiguration.combineEachCartwheel rev cartwheels confs
   proofAssert combined.isEmpty "check77: a combination survived"
 
-/-- C++ `check777`. -/
+/-- Degree-7 centre with multiple degree-7 spokes: no combination may survive. -/
 def check777 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : IO Unit := do
   for i in [0:darts7.size] do
@@ -185,7 +180,7 @@ def check777 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array Ca
         cartwheel.toPseudoConfiguration.combineEachCartwheelTwice rev1 rev2 cartwheels confs
       proofAssert combined.isEmpty "check777: a combination survived"
 
-/-- C++ `check_deg7`. -/
+/-- Lemma A.6 check: a vertex of degree 7. -/
 def checkDeg7 (allCartwheels : Array CartWheel) (confs0 : Array Configuration) : IO Unit := do
   let cartwheels := delete7triangle (deleteDegreeFromKTo9 (deleteDegreeFromKTo9 allCartwheels 9) 8)
   IO.println s!"After removing degree 8/9 and 7-triangle cartwheels, {cartwheels.size} remain."

@@ -1,9 +1,9 @@
-//! Phase 1 — leaf type. Port of `../src/degree.{hpp,cpp}`.
+//! Inclusive degree ranges.
 //!
 //! `Degree { lower, upper }` is an inclusive degree range with intersection /
 //! containment / disjointness predicates. In the on-disk format the degree
 //! `∞` is written as `0` (see `../FORMAT.md`); that mapping is handled at the
-//! I/O boundary (P4), not here.
+//! I/O boundary, not here.
 
 /// Number of concrete cartwheel degrees (`CARTWHEEL_DEGREES`).
 pub const CARTWHEEL_DEGREES_SIZE: usize = 5;
@@ -11,15 +11,14 @@ pub const CARTWHEEL_DEGREES_SIZE: usize = 5;
 pub const CARTWHEEL_DEGREES: [i32; CARTWHEEL_DEGREES_SIZE] = [5, 6, 7, 8, 9];
 pub const CARTWHEEL_DEG_MIN: i32 = 5;
 pub const CARTWHEEL_DEG_MAX: i32 = 9;
-/// Sentinel value standing in for an unbounded (∞) degree. Matches the C++ `1e9`.
+/// Sentinel value standing in for an unbounded (∞) degree.
 pub const INFTY: i32 = 1_000_000_000;
 pub const CONF_DEG_MAX: i32 = 12;
 
 /// An inclusive degree range `[lower, upper]`.
 ///
-/// Ordering is the C++ default `operator<=>`: lexicographic by `lower` then
-/// `upper` (the field declaration order). `derive(PartialOrd, Ord)` reproduces
-/// this exactly.
+/// Ordering is lexicographic by `lower` then `upper` (the field declaration
+/// order), which is exactly what `derive(PartialOrd, Ord)` produces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Degree {
     pub lower: i32,
@@ -27,45 +26,45 @@ pub struct Degree {
 }
 
 impl Degree {
-    /// A range `[lower, upper]` (C++ `Degree(lower, upper)`).
+    /// A range `[lower, upper]`.
     pub const fn new(lower: i32, upper: i32) -> Self {
         Degree { lower, upper }
     }
 
-    /// A fixed (point) degree `[x, x]` (C++ `Degree(x)`).
+    /// A fixed (point) degree `[x, x]`.
     pub const fn exact(x: i32) -> Self {
         Degree { lower: x, upper: x }
     }
 
-    /// Whether the range is a single fixed value (C++ `fixed()`).
+    /// Whether the range is a single fixed value.
     pub const fn is_fixed(&self) -> bool {
         self.lower == self.upper
     }
 
-    /// Whether two ranges have no common value (C++ `disjoint`).
+    /// Whether two ranges have no common value.
     pub const fn is_disjoint(a: &Degree, b: &Degree) -> bool {
         a.upper < b.lower || b.upper < a.lower
     }
 
-    /// Whether two ranges share at least one value (C++ `has_intersection`).
+    /// Whether two ranges share at least one value.
     pub const fn has_intersection(a: &Degree, b: &Degree) -> bool {
         !Degree::is_disjoint(a, b)
     }
 
-    /// The intersection range (C++ `intersection`). May be empty
-    /// (`lower > upper`) if the inputs are disjoint, exactly as in C++.
+    /// The intersection range. May be empty
+    /// (`lower > upper`) if the inputs are disjoint.
     pub fn intersection(a: &Degree, b: &Degree) -> Degree {
         Degree::new(a.lower.max(b.lower), a.upper.min(b.upper))
     }
 
-    /// Whether `outer` contains `inner` (C++ `include(degree0, degree1)`).
+    /// Whether `outer` contains `inner`.
     pub const fn includes(outer: &Degree, inner: &Degree) -> bool {
         outer.lower <= inner.lower && inner.upper <= outer.upper
     }
 }
 
 impl From<i32> for Degree {
-    /// Mirrors the C++ implicit `Degree(int)` converting constructor.
+    /// Converts an `i32` into the fixed degree `[x, x]`.
     fn from(x: i32) -> Self {
         Degree::exact(x)
     }
@@ -107,7 +106,7 @@ mod tests {
         assert_eq!(Degree::intersection(&a, &b), Degree::new(7, 8));
         assert!(Degree::is_disjoint(&a, &c));
 
-        // Empty intersection keeps the C++ behaviour (lower > upper).
+        // Disjoint inputs yield an empty intersection (lower > upper).
         let empty = Degree::intersection(&a, &c);
         assert!(empty.lower > empty.upper);
 

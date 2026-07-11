@@ -20,7 +20,7 @@ discharge (`composeMap`'s internal `map2[j.idx!]!`) needs only
 dead. Note `idx?_composeMap` is *stated* under `Bounded` deliberately: the
 equation would hold vacuously without it (an out-of-range `!` read yields the
 default `OptIdx.none`, which `bind` absorbs), but the `Bounded` form is the
-one that carries the panic-branch-dead content -- do not "generalize" it away.
+one that carries the panic-branch-dead content -- do not "generalise" it away.
 -/
 
 namespace NearLinear4ct

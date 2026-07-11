@@ -1,17 +1,15 @@
-//! Phase 6 — CLI entry point. Mirrors `../src/main.cpp`.
+//! CLI entry point.
 //!
-//! The flag surface matches the C++ `main`: each mode is selected by a
-//! `--combine_rules` / `--enum_wheels` / … switch (modes are independent, as in
-//! the C++, not mutually exclusive), and the required options for each mode are
-//! validated up front (C++ `existArgs`).
+//! Each mode is selected by a `--combine_rules` / `--enum_wheels` / … switch
+//! (modes are independent, not mutually exclusive), and the required options for
+//! each mode are validated up front.
 
 use clap::Parser;
 use std::path::Path;
 
 // The hot path allocates `vmap`/`dmap` scratch per `homomorphism` call (millions of
-// times); the profile showed ~40% in the macOS system allocator (`nanov2`/`szone`).
-// mimalloc's thread-local free-list makes those allocations cheap — it is exactly
-// why the same pattern costs ~nothing in the Lean port (whose runtime bundles it).
+// times), where the system allocator dominates. mimalloc's thread-local
+// free-list makes those allocations cheap.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -22,8 +20,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
     about = "Combine discharging rules and enumerate/verify cartwheels"
 )]
 struct Cli {
-    // NB: flag names use underscores to match the C++ CLI / README exactly
-    // (clap would otherwise kebab-case them). Behaviour parity (R7-adjacent).
+    // NB: flag names use underscores to match the documented CLI / README exactly
+    // (clap would otherwise kebab-case them).
     /// Combine rules (Lemma A.1 / A.2).
     #[arg(long = "combine_rules")]
     combine_rules: bool,
@@ -69,7 +67,7 @@ struct Cli {
     verbosity: i32,
 }
 
-/// Require an option to be present, mirroring the C++ `existArgs` message.
+/// Require an option to be present, with a `Specify {name}.` error otherwise.
 fn require<'a>(opt: &'a Option<String>, name: &str) -> anyhow::Result<&'a str> {
     opt.as_deref()
         .ok_or_else(|| anyhow::anyhow!("Specify {name}."))

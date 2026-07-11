@@ -1,13 +1,14 @@
-//! Phase 4 — discharging rules. Port of `../src/rule.{hpp,cpp}`.
+//! Discharging rules.
 //!
 //! `Rule` embeds a `PseudoConfiguration` and adds `st_id` (the charge-carrying
 //! dart) and `amount`. `CombinedRule` embeds a `Rule` and adds the
 //! `combined_flag` bitvector.
 //!
-//! R3/R7: `combined_flag` indexes rules "ordered by filename" (see
-//! `../FORMAT.md`), coupled to the deterministic load order from
-//! `util::get_objects`. The `write` output is the proof artifact, so its bytes
-//! (including the trailing space after each vertex line) must match the C++.
+//! `combined_flag` indexes rules "ordered by filename" (see `../FORMAT.md`),
+//! coupled to the deterministic load order from `util::get_objects`. The
+//! `write` output is the proof artefact, so its bytes must match `FORMAT.md` --
+//! including the trailing space after each vertex line, which `FORMAT.md` omits
+//! but the C++ emits.
 
 use crate::configuration::Configuration;
 use crate::degree::{Degree, INFTY};
@@ -25,7 +26,7 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// C++ `Rule(st_id, amount, N, darts, degrees)`.
+    /// Construct from `(st_id, amount, N, darts, degrees)`.
     pub fn new(
         st_id: usize,
         amount: i32,
@@ -40,13 +41,14 @@ impl Rule {
         }
     }
 
-    /// Debug view (C++ `to_string`).
+    /// Debug view.
     pub fn to_debug_string(&self) -> String {
         format!("st_id: {}, amount: {}\n", self.st_id, self.amount) + &self.pc.show()
     }
 
-    /// Serialise to the `.rule` text format (C++ `write`). The output is the
-    /// proof artifact; byte layout matches the C++ exactly.
+    /// Serialise to the `.rule` text format. The output is the
+    /// proof artefact; its byte layout follows `FORMAT.md`, plus the trailing
+    /// space per vertex line.
     pub fn write(&self) -> String {
         let darts = &self.pc.tri.darts;
         let mut res = format!(
@@ -75,13 +77,13 @@ impl Rule {
         res
     }
 
-    /// Write to a file (C++ `to_file`).
+    /// Write to a file.
     pub fn to_file(&self, path: &Path) {
         std::fs::write(path, self.write())
             .unwrap_or_else(|e| panic!("Failed to write rule file {}: {e}", path.display()));
     }
 
-    /// Load every `.rule` file in `ruledir`, sorted by filename (C++ `get_rules`).
+    /// Load every `.rule` file in `ruledir`, sorted by filename.
     pub fn get_rules(ruledir: &Path) -> Vec<Rule> {
         let rules = get_objects::<Rule>(ruledir, ".rule");
         tracing::info!("Total {} rules loaded.", rules.len());
@@ -105,7 +107,7 @@ pub struct CombinedRule {
 }
 
 impl CombinedRule {
-    /// C++ `CombinedRule(combined_flag, st_id, amount, N, darts, degrees)`.
+    /// Construct from `(combined_flag, st_id, amount, N, darts, degrees)`.
     pub fn new(
         combined_flag: Vec<bool>,
         st_id: usize,
@@ -120,7 +122,7 @@ impl CombinedRule {
         }
     }
 
-    /// Serialise: the rule text followed by the flag bits (C++ `to_file`).
+    /// Serialise: the rule text followed by the flag bits.
     pub fn write(&self) -> String {
         let mut res = self.rule.write();
         for &flag in &self.combined_flag {
@@ -136,8 +138,7 @@ impl CombinedRule {
         });
     }
 
-    /// Load every `.combined_rule` file in `combined_ruledir` (C++
-    /// `get_combined_rules`).
+    /// Load every `.combined_rule` file in `combined_ruledir`.
     pub fn get_combined_rules(combined_ruledir: &Path) -> Vec<CombinedRule> {
         let combined_rules = get_objects::<CombinedRule>(combined_ruledir, ".combined_rule");
         tracing::info!("Total {} combined rules loaded.", combined_rules.len());
@@ -145,7 +146,7 @@ impl CombinedRule {
     }
 
     /// Extend this combination by also applying `rules[i]`, dropping results that
-    /// are blocked by a reducible configuration (C++ `add_rule_to_combination`).
+    /// are blocked by a reducible configuration.
     pub fn add_rule_to_combination(
         &self,
         rules: &[Rule],
@@ -197,7 +198,7 @@ impl FromFile for CombinedRule {
         let lines: Vec<&str> = content.lines().collect();
         let mut cursor = 0;
         let rule = parse_rule(&lines, &mut cursor);
-        // The next non-empty line is the 0/1 flag string (C++ `ifs >> line`).
+        // The next non-empty line is the 0/1 flag string.
         let flag_line = lines[cursor..]
             .iter()
             .map(|l| l.trim())
@@ -218,7 +219,7 @@ impl FromFile for CombinedRule {
     }
 }
 
-/// Enumerate all combined rules reachable from the given rules (C++ `combine_rules`).
+/// Enumerate all combined rules reachable from the given rules.
 pub fn combine_rules(rules: &[Rule], confs: &[Configuration]) -> Vec<CombinedRule> {
     let default_flag = vec![false; rules.len()];
     let z0 = CombinedRule::new(
@@ -232,7 +233,7 @@ pub fn combine_rules(rules: &[Rule], confs: &[Configuration]) -> Vec<CombinedRul
     let mut combined_rules = vec![z0];
     for i in 0..rules.len() {
         // Within a round the expansion is independent per combination and read-only
-        // over the shared inputs, so run it in parallel (rayon, order-preserving) —
+        // over the shared inputs, so run it in parallel (rayon, order-preserving) --
         // the heavy step is the reducible-config blocking. Identical output; C++ runs
         // this serially. (The rounds themselves are sequential, an inherent limit.)
         let new_combinations: Vec<CombinedRule> = combined_rules
@@ -251,8 +252,7 @@ pub fn combine_rules(rules: &[Rule], confs: &[Configuration]) -> Vec<CombinedRul
     combined_rules
 }
 
-/// Driver for Lemma A.1 / A.2: combine rules and write them out
-/// (C++ `run_combine_rules`).
+/// Driver for Lemma A.1 / A.2: combine rules and write them out.
 pub fn run_combine_rules(confdir: &Path, ruledir: &Path, outdir: &Path) {
     let confs = Configuration::get_confs(confdir);
     let rules = Rule::get_rules(ruledir);
@@ -269,9 +269,9 @@ fn read_to_lines(path: &Path) -> String {
 }
 
 /// Parse one rule starting at `*cursor` (after a leading blank line), advancing
-/// the cursor past the rule's lines (C++ `Rule::read`).
+/// the cursor past the rule's lines.
 fn parse_rule(lines: &[&str], cursor: &mut usize) -> Rule {
-    *cursor += 1; // skip the format's leading blank line (C++ getline(dummy))
+    *cursor += 1; // skip the format's leading blank line
     let header: Vec<i32> = lines[*cursor].split_whitespace().map(parse_i32).collect();
     *cursor += 1;
     let n = header[0] as usize;
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(rule2, rule2_expected);
     }
 
-    // R7: the write output is byte-exact (including trailing spaces per line).
+    // The write output is byte-exact (including trailing spaces per line).
     #[test]
     fn write_is_byte_exact() {
         let f1 = temp_with(RULE1, ".rule");
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(rule1.write(), "\n2 1 2 2\n1 5 5 2 -1 \n2 5 0 1 -1 \n");
     }
 
-    // R7: `write` is idempotent — its output is a fixpoint under re-parsing.
+    // `write` is idempotent -- its output is a fixpoint under re-parsing.
     //
     // Note `parse∘write` is *not* identity on the in-memory structure: `write`
     // emits each vertex's rotation starting at its boundary (pred==nil) dart, so
@@ -390,7 +390,7 @@ mod tests {
     // dart-ids (an isomorphic graph). But once written, the order is canonical,
     // so writing again reproduces the exact same bytes. This is the property the
     // combined-rule pipeline (write then read back) actually relies on, and it
-    // is what makes the Rust output byte-match the C++ output in P7.
+    // is what makes the output byte-exact.
     #[test]
     fn rule_write_is_idempotent() {
         for content in [RULE1, RULE2, RULE3] {

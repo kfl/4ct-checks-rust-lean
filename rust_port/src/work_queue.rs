@@ -1,4 +1,4 @@
-//! Phase 1 — a single-pass FIFO work queue.
+//! A single-pass FIFO work queue.
 //!
 //! [`WorkQueue`] is a first-in/first-out worklist for traversals (BFS and the
 //! like) that *discover work as they go*: push some seed items, pop them in
@@ -8,7 +8,7 @@
 //! # Why not `VecDeque`?
 //!
 //! Internally it is a flat `Vec` walked with a head index, not a ring buffer.
-//! `pop` is an index bump and `push` is an append — neither performs the
+//! `pop` is an index bump and `push` is an append -- neither performs the
 //! wraparound arithmetic a `VecDeque` does on every operation. In the hot
 //! `PseudoConfiguration::homomorphism` BFS (called millions of times per run)
 //! that bookkeeping is measurable: on `enum_wheels d7` the flat worklist ran
@@ -19,17 +19,17 @@
 //!
 //! # The tradeoff: memory is not reclaimed until drop
 //!
-//! Popped slots are **not** freed or reused — `head` only moves forward, so the
+//! Popped slots are **not** freed or reused -- `head` only moves forward, so the
 //! `Vec` retains every item ever pushed. Peak memory is the *total* number of
 //! pushes over the whole drain, not the number of items live at once. That is
 //! what buys the simple, branch-free `pop`, and it is fine for the intended
 //! short-lived, bounded traversals. It makes this type a poor fit for:
 //!
-//! - long-lived or unbounded queues (memory would grow without bound) — use
+//! - long-lived or unbounded queues (memory would grow without bound) -- use
 //!   [`std::collections::VecDeque`];
 //! - queues reused across iterations (there is deliberately no `clear`/reset;
 //!   allocate a fresh `WorkQueue` per traversal);
-//! - anything needing `push_front` / `pop_back` — this is FIFO only.
+//! - anything needing `push_front` / `pop_back` -- this is FIFO only.
 //!
 //! Items are `Copy`: the work items are meant to be small (e.g. index pairs),
 //! which also keeps the retain-until-drop cost negligible.

@@ -2,28 +2,24 @@ import NearLinear4ct.Util
 import NearLinear4ct.Mapping
 
 /-!
-Phase 2 — combinatorial map. Port of `../src/pseudo_triangulation.{hpp,cpp}`
-(Appendix A.3 `freeHomomorphismTriangulation`, A.5 `fromVRotations`).
+Combinatorial map (Appendix A.3 `freeHomomorphismTriangulation`, A.5 `fromVRotations`).
 
 A `PseudoTriangulation` is a rotation system on `n` vertices built from darts
 (half-edges). `Dart { head, rev, succ, pred }`:
-- `head` — the vertex this dart points at (always present);
-- `rev`  — the reverse dart (always present);
-- `succ` / `pred` — next / previous dart in the rotation around `head`, or `none`
-  at a boundary (R1: the C++ `nil = -1`).
+- `head` -- the vertex this dart points at (always present);
+- `rev`  -- the reverse dart (always present);
+- `succ` / `pred` -- next / previous dart in the rotation around `head`, or `none`
+  at a boundary (the C++ `nil = -1`).
 
-R1 in practice: `head`/`rev` are total `Nat`; `succ`/`pred` are `Option Nat`.
+In practice: `head`/`rev` are total `Nat`; `succ`/`pred` are `Option Nat`.
 -/
 
 namespace NearLinear4ct
 
-/-- A half-edge. `head`/`rev` are total; `succ`/`pred` are `none` at a boundary.
-
-`succ`/`pred` are `OptIdx` (the verified-sound unboxed `Option Nat`, `OptIdx.lean`),
-not `Option Nat`: an `Array Dart` is read millions of times in the `homCore` BFS,
-and a boxed `Option` field would be reference-counted (inc on read, dec on drop) on
-every visit. `OptIdx` stores the index unboxed, so the hot path reads `succ`/`pred`
-with `isSome`/`idx!` and no per-visit RC churn on the `Option` cell. -/
+/-- A half-edge. `head`/`rev` are total; `succ`/`pred` are `none` at a
+boundary, encoded as `OptIdx` rather than `Option Nat` -- the unboxed encoding
+that keeps the BFS's per-visit reads free of `Option`-cell RC (why it is
+sound: `OptIdx.lean`). -/
 structure Dart where
   head : Nat
   rev : Nat
@@ -42,9 +38,9 @@ private def fmtIdx : OptIdx → String
   | .some v => toString v
   | .none => "-1"
 
-/-- Follow the `succ` chain from `eStart`, collecting dart ids (`get_e_rotations`
-inner do-while). A boundary chain is terminated by a trailing `none`. `partial`
-(L5): terminates on a finite rotation, but not structurally. -/
+/-- Follow the `succ` chain from `eStart`, collecting dart ids (the `getERotations`
+inner do-while). A boundary chain is terminated by a trailing `none`. `partial`:
+terminates on a finite rotation, but not structurally. -/
 private partial def rotationGo (darts : Array Dart) (eStart eCur : Nat)
     (acc : Array (Option Nat)) : Array (Option Nat) :=
   let acc := acc.push (some eCur)
@@ -54,19 +50,19 @@ private partial def rotationGo (darts : Array Dart) (eStart eCur : Nat)
 
 namespace PseudoTriangulation
 
-/-- Multi-line dump of every dart (C++ `debug`). -/
+/-- Multi-line dump of every dart. -/
 def debug (pt : PseudoTriangulation) : String := Id.run do
   let mut res := s!"N: {pt.n}\n"
   for d in pt.darts do
     res := res ++ s!"Dart({d.head}, {d.rev}, {fmtIdx d.succ}, {fmtIdx d.pred}),\n"
   return res
 
-/-- Build from clockwise vertex rotations (C++ `from_v_rotations`, A.5).
+/-- Build from clockwise vertex rotations (A.5).
 
 `rotations[a]` lists the neighbours of `a` clockwise; `-1` marks a boundary gap.
-The two malformed-input checks (C++ `throw`) become `panic!`: they signal a
+The two malformed-input checks become `panic!`: they signal a
 corrupt input file, never a proof obligation, so the non-aborting `panic!` (loud
-print) is acceptable here (L1). -/
+print) is acceptable here. -/
 def fromVRotations (n : Nat) (rotations : Array (Array Int)) : PseudoTriangulation := Id.run do
   -- dartOf[a][b] = id of the dart a -> b, if any.
   let mut dartOf : Array (Array (Option Nat)) := Array.replicate n (Array.replicate n none)
@@ -100,26 +96,25 @@ def fromVRotations (n : Nat) (rotations : Array (Array Int)) : PseudoTriangulati
       darts := darts.set! e ⟨a, rev, succ, pred⟩
   return ⟨n, darts⟩
 
-/-- Side-by-side union, shifting `r`'s vertex/dart indices (C++ `disjoint_union`). -/
+/-- Side-by-side union, shifting `r`'s vertex/dart indices. -/
 def disjointUnion (l r : PseudoTriangulation) : PseudoTriangulation :=
   let offset := l.darts.size
   let shifted := r.darts.map fun d =>
     ⟨d.head + l.n, d.rev + offset, d.succ.map (· + offset), d.pred.map (· + offset)⟩
   ⟨l.n + r.n, l.darts ++ shifted⟩
 
-/-- Whether any dart is a self-loop (`head == rev's head`) (C++ `has_loop`). -/
+/-- Whether any dart is a self-loop (`head == rev's head`). -/
 def hasLoop (pt : PseudoTriangulation) : Bool :=
   pt.darts.any fun d => d.head == (pt.darts[d.rev]!).head
 
-/-- Number of darts pointing at each vertex (C++ `n_incident_darts`). -/
+/-- Number of darts pointing at each vertex. -/
 def nIncidentDarts (pt : PseudoTriangulation) : Array Nat := Id.run do
   let mut cnt := Array.replicate pt.n 0
   for d in pt.darts do
     cnt := cnt.modify d.head (· + 1)
   return cnt
 
-/-- Which vertices lie on a boundary, i.e. have a dart with no `succ`
-(C++ `is_boundary`). -/
+/-- Which vertices lie on a boundary, i.e. have a dart with no `succ`. -/
 def isBoundary (pt : PseudoTriangulation) : Array Bool := Id.run do
   let mut b := Array.replicate pt.n false
   for d in pt.darts do
@@ -127,21 +122,19 @@ def isBoundary (pt : PseudoTriangulation) : Array Bool := Id.run do
       b := b.set! d.head true
   return b
 
-/-- First dart of `v` in rotation order (no `pred`); `none` if absent
-(C++ `first_dart`, where `nil` -> `none`). -/
+/-- First dart of `v` in rotation order (no `pred`); `none` if absent. -/
 def firstDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
   pt.darts.findIdx? fun d => d.head == v && d.pred.isNone
 
-/-- Last dart of `v` (no `succ`) (C++ `last_dart`). -/
+/-- Last dart of `v` (no `succ`). -/
 def lastDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
   pt.darts.findIdx? fun d => d.head == v && d.succ.isNone
 
-/-- Any dart of `v` (C++ `any_dart`). -/
+/-- Any dart of `v`. -/
 def anyDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
   pt.darts.findIdx? fun d => d.head == v
 
-/-- Follow `succ` `k` times from `e`; `none` if a boundary is hit
-(C++ `suc_k_times`). -/
+/-- Follow `succ` `k` times from `e`; `none` if a boundary is hit. -/
 def sucKTimes (pt : PseudoTriangulation) (e k : Nat) : Option Nat := Id.run do
   let mut curr := e
   for _ in [0:k] do
@@ -151,7 +144,7 @@ def sucKTimes (pt : PseudoTriangulation) (e k : Nat) : Option Nat := Id.run do
   return some curr
 
 /-- For each vertex, the cyclic rotation of its darts. A boundary rotation is
-terminated by a trailing `none` (C++ `get_e_rotations`). -/
+terminated by a trailing `none`. -/
 def getERotations (pt : PseudoTriangulation) : Array (Array (Option Nat)) := Id.run do
   let isB := pt.isBoundary
   let mut result : Array (Array (Option Nat)) := Array.mkEmpty pt.n
@@ -160,8 +153,7 @@ def getERotations (pt : PseudoTriangulation) : Array (Array (Option Nat)) := Id.
     result := result.push (rotationGo pt.darts eStart eStart #[])
   return result
 
-/-- Human-readable rotation view (C++ `to_string`; renamed — `show` is a Lean
-keyword). -/
+/-- Human-readable rotation view (renamed -- `show` is a Lean keyword). -/
 def display (pt : PseudoTriangulation) : String := Id.run do
   let mut res := s!"N: {pt.n}\n"
   let edges := pt.darts.map fun d => (d.head, (pt.darts[d.rev]!).head)
@@ -175,7 +167,7 @@ def display (pt : PseudoTriangulation) : String := Id.run do
     res := res ++ "\n"
   return res
 
-/-- All darts from `head` to `tail` (C++ `get_darts`). -/
+/-- All darts from `head` to `tail`. -/
 def getDarts (pt : PseudoTriangulation) (head tail : Nat) : Array Nat := Id.run do
   let mut result : Array Nat := #[]
   for i in [0:pt.darts.size] do
@@ -185,10 +177,10 @@ def getDarts (pt : PseudoTriangulation) (head tail : Nat) : Array Nat := Id.run 
   return result
 
 /-- Free homomorphism gluing the given dart pairs, returning the quotient and the
-index `Mappings` onto it (C++ member `free_homomorphism`, A.3).
+index `Mappings` onto it (A.3).
 
-A `Queue` (`Util.Queue`) over the gluing obligations gives the C++ `std::queue`
-FIFO order (needed for byte-identical results). -/
+A `Queue` (`Util.Queue`) over the gluing obligations gives FIFO order (needed for
+byte-identical results). -/
 def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat)) :
     PseudoTriangulation × Mappings := Id.run do
   let mut darts := pt.darts          -- copy: succ/pred get rewritten as we glue
@@ -236,8 +228,8 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
 
 /-- Free homomorphism over the disjoint union of `pt0`, `pt1`, identifying
 `dartId0` (in `pt0`) with `dartId1` (in `pt1`); returns the quotient and the two
-index maps restricted to each side (C++ static `free_homomorphism`). Named
-`…Pair` since Lean lacks the C++ overload. -/
+index maps restricted to each side. Named
+`…Pair` since Lean lacks overloading. -/
 def freeHomomorphismPair (pt0 pt1 : PseudoTriangulation) (dartId0 dartId1 : Nat) :
     PseudoTriangulation × Mappings × Mappings :=
   let pt := disjointUnion pt0 pt1

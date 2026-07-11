@@ -28,10 +28,12 @@ deriving DecidableEq, Repr, Inhabited, BEq, Hashable
 
 namespace SmallNatPair
 
-/-- `2^32`, hoisted into a def: `Nat` literals above the codegen's immediate
-range compile to a `lean_cstr_to_nat` *string parse at every use site*;
-`@[noinline]` keeps it evaluated once at module init (a plain `def` gets
-constant-folded back into the use sites). -/
+/-- `2^32`, the packing base, hoisted into a def.
+
+`@[noinline]`: `Nat` literals above the codegen's immediate range compile to
+a `lean_cstr_to_nat` *string parse at every use site*; the attribute keeps
+the value evaluated once at module init (a plain `def` gets constant-folded
+back into the use sites). -/
 @[noinline] def pairBase : Nat := 4294967296
 
 /-- Pack `(f, s)`, `s < 2^32` (`mul`/`add` have inline runtime fast paths;
