@@ -8,23 +8,39 @@
 //! ordered-container behaviour is observable. We mirror it with `Vec<Vec<i32>>`.
 //! R7: `from_file` parsing must reproduce the C++ structures byte-for-byte.
 
-use crate::degree::{Degree, INFTY};
+use crate::degree::{CONF_DEG_MAX, Degree, INFTY};
 use crate::pseudo_configuration::PseudoConfiguration;
 use crate::pseudo_triangulation::Dart;
-use std::path::Path;
+use rayon::prelude::*;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Configuration {
     pub pc: PseudoConfiguration,
     pub dart_id: usize,
+    /// Cached root-dart endpoint lower degrees (the `contain_conf` bucket
+    /// key). Derived and validated by `new`, which every construction goes
+    /// through; the fields are never written after construction.
+    pub root_head_deg: i32,
+    pub root_tail_deg: i32,
 }
 
 impl Configuration {
     /// C++ `Configuration(dart_id, N, darts, degrees)`.
     pub fn new(dart_id: usize, n: usize, darts: Vec<Dart>, degrees: Vec<Degree>) -> Self {
+        let pc = PseudoConfiguration::new(n, darts, degrees);
+        let f = pc.tri.darts[dart_id];
+        let head_deg = pc.degrees[f.head()];
+        let tail_deg = pc.degrees[pc.tri.darts[f.rev()].head()];
+        assert!(head_deg.is_fixed());
+        assert!(tail_deg.is_fixed());
+        assert!(head_deg.lower <= CONF_DEG_MAX);
+        assert!(tail_deg.lower <= CONF_DEG_MAX);
         Configuration {
-            pc: PseudoConfiguration::new(n, darts, degrees),
+            pc,
             dart_id,
+            root_head_deg: head_deg.lower,
+            root_tail_deg: tail_deg.lower,
         }
     }
 
@@ -98,16 +114,23 @@ impl Configuration {
     }
 
     /// Load every `.conf` file in `confdir` (C++ `get_confs`).
+    ///
+    /// The 8200 files are read + parsed in parallel (rayon) — a serial Amdahl floor
+    /// the Lean port found under every driver. Containment is an order-independent
+    /// `any`, so the load order is irrelevant; output is byte-identical.
     pub fn get_confs(confdir: &Path) -> Vec<Configuration> {
-        let mut confs = Vec::new();
-        for entry in std::fs::read_dir(confdir)
+        let paths: Vec<PathBuf> = std::fs::read_dir(confdir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", confdir.display()))
-        {
-            let path = entry.expect("directory entry").path();
-            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("conf") {
-                confs.extend(Configuration::from_file(&path));
-            }
-        }
+            .filter_map(|entry| {
+                let path = entry.expect("directory entry").path();
+                (path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("conf"))
+                    .then_some(path)
+            })
+            .collect();
+        let confs: Vec<Configuration> = paths
+            .par_iter()
+            .flat_map_iter(|path| Configuration::from_file(path))
+            .collect();
         tracing::info!("Total {} configurations loaded.", confs.len());
         confs
     }

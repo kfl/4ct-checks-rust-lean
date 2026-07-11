@@ -370,15 +370,11 @@ impl PseudoConfiguration {
     pub fn contain_conf(&self, center: usize, confs: &[Configuration]) -> bool {
         let darts_by_degree = self.darts_by_degree();
         for conf in confs {
-            let f = conf.pc.tri.darts[conf.dart_id];
-            let y = f.head();
-            let x = conf.pc.tri.darts[f.rev()].head();
-            assert!(conf.pc.degrees[y].is_fixed());
-            assert!(conf.pc.degrees[x].is_fixed());
-            let d_y = conf.pc.degrees[y].lower;
-            let d_x = conf.pc.degrees[x].lower;
-            assert!(d_y <= CONF_DEG_MAX);
-            assert!(d_x <= CONF_DEG_MAX);
+            // Root degrees are cached (derived and validated by
+            // `Configuration::new`), so the sweep reads two fields per
+            // configuration instead of re-deriving them.
+            let d_y = conf.root_head_deg;
+            let d_x = conf.root_tail_deg;
             for &f_star in &darts_by_degree[d_y as usize][d_x as usize] {
                 if d_y > 8 && self.tri.darts[f_star].head() != center {
                     continue;

@@ -4,6 +4,7 @@
 //! the `FromFile` trait (replacing the C++ `HasFromFile` concept), and the
 //! `get_objects` directory loader.
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 /// Disjoint-set forest (union-find) without path compression or union-by-rank,
@@ -81,17 +82,18 @@ impl Unionfind {
     }
 }
 
-/// Whether `a` is lexicographically minimal among all its rotations
-/// (C++ `lex_min`).
-pub fn lex_min<T: Ord + Clone>(a: &[T]) -> bool {
-    let mut rotated = a.to_vec();
-    for _ in 0..a.len() {
-        rotated.rotate_left(1);
-        if rotated.as_slice() < a {
-            return false;
-        }
-    }
-    true
+/// Whether `a` is lexicographically minimal among all its rotations.
+///
+/// Rotation `r` never materialises: against `a` it compares as `a[r..]` vs
+/// `a[..n-r]`, with `a[..r]` vs `a[n-r..]` as the tiebreak -- two borrowed
+/// slice comparisons, no allocation or shifting.
+pub fn lex_min<T: Ord>(a: &[T]) -> bool {
+    let n = a.len();
+    (1..n).all(|r| match a[r..].cmp(&a[..n - r]) {
+        Ordering::Less => false,
+        Ordering::Greater => true,
+        Ordering::Equal => a[..r] >= a[n - r..],
+    })
 }
 
 /// A type that can be loaded from a single file (replaces the C++ `HasFromFile`

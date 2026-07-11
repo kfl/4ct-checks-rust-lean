@@ -19,6 +19,7 @@ use crate::pseudo_configuration::PseudoConfiguration;
 use crate::pseudo_triangulation::Dart;
 use crate::rule::{CombinedRule, Rule};
 use crate::util::{FromFile, get_objects, lex_min};
+use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::path::Path;
 
@@ -92,16 +93,27 @@ impl CartWheel {
         cartwheels
     }
 
-    /// Enumerate all wheels with the given centre degree, up to rotation
-    /// (`lex_min`) (C++ `enum_wheels`).
-    pub fn enum_wheels(center_degree: usize) -> Vec<CartWheel> {
-        let mut wheels = Vec::new();
+    /// The lex-min neighbour-degree tuples for a centre of degree `center_degree`,
+    /// in enumeration order (the inner traversal of C++ `enum_wheels`, with wheel
+    /// *generation* split out so it can be parallelised — learned from the Lean
+    /// port, where fusing generation into the parallel prune was a further win).
+    pub fn enum_wheel_tuples(center_degree: usize) -> Vec<Vec<i32>> {
+        let mut tuples = Vec::new();
         let mut degrees = vec![0i32; center_degree];
         for (j, &deg) in CARTWHEEL_DEGREES.iter().enumerate() {
             degrees[0] = deg;
-            enum_wheel_degrees(center_degree, &mut degrees, 1, j, &mut wheels);
+            enum_wheel_degrees(center_degree, &mut degrees, 1, j, &mut tuples);
         }
-        wheels
+        tuples
+    }
+
+    /// Enumerate all wheels with the given centre degree, up to rotation
+    /// (`lex_min`) (C++ `enum_wheels`).
+    pub fn enum_wheels(center_degree: usize) -> Vec<CartWheel> {
+        Self::enum_wheel_tuples(center_degree)
+            .iter()
+            .map(|degs| Self::generate_cartwheel(center_degree, degs))
+            .collect()
     }
 
     /// Build the canonical cartwheel for a centre of degree `d` with the given
@@ -163,9 +175,17 @@ impl CartWheel {
         combined_rules: &[CombinedRule],
         confs: &[Configuration],
     ) -> Vec<CartWheel> {
-        CartWheel::enum_wheels(center_degree)
-            .into_iter()
-            .filter(|wheel| !wheel.prune(&[], rules, combined_rules, confs))
+        // Embarrassingly parallel (learned from the Lean port): generate + prune
+        // each wheel in one parallel pass over the degree-tuples. `prune` is pure
+        // and read-only over the shared inputs (R4); rayon's ordered collect keeps
+        // the survivor list identical to the serial version (byte-identical output).
+        // C++ runs this step serially.
+        CartWheel::enum_wheel_tuples(center_degree)
+            .into_par_iter()
+            .filter_map(|degs| {
+                let wheel = CartWheel::generate_cartwheel(center_degree, &degs);
+                (!wheel.prune(&[], rules, combined_rules, confs)).then_some(wheel)
+            })
             .collect()
     }
 
@@ -504,24 +524,25 @@ fn center_darts_of(pc: &PseudoConfiguration, center: usize) -> Vec<usize> {
         .collect()
 }
 
-/// Recursive helper for `enum_wheels`: assign neighbour `i`'s degree from index
-/// `i_lowest` upward (C++ nested `enum_degree` lambda).
+/// Recursive helper for `enum_wheel_tuples`: assign neighbour `i`'s degree from
+/// index `i_lowest` upward, collecting the lex-min degree tuples (C++ nested
+/// `enum_degree` lambda, with wheel generation split out — see `enum_wheel_tuples`).
 fn enum_wheel_degrees(
     center_degree: usize,
     degrees: &mut Vec<i32>,
     i: usize,
     i_lowest: usize,
-    wheels: &mut Vec<CartWheel>,
+    tuples: &mut Vec<Vec<i32>>,
 ) {
     if i == center_degree {
         if lex_min(&degrees[..]) {
-            wheels.push(CartWheel::generate_cartwheel(center_degree, degrees));
+            tuples.push(degrees.clone());
         }
         return;
     }
     for &deg in &CARTWHEEL_DEGREES[i_lowest..] {
         degrees[i] = deg;
-        enum_wheel_degrees(center_degree, degrees, i + 1, i_lowest, wheels);
+        enum_wheel_degrees(center_degree, degrees, i + 1, i_lowest, tuples);
     }
 }
 

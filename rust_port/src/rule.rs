@@ -14,6 +14,7 @@ use crate::degree::{Degree, INFTY};
 use crate::pseudo_configuration::PseudoConfiguration;
 use crate::pseudo_triangulation::Dart;
 use crate::util::{FromFile, get_objects};
+use rayon::prelude::*;
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,11 +231,15 @@ pub fn combine_rules(rules: &[Rule], confs: &[Configuration]) -> Vec<CombinedRul
     );
     let mut combined_rules = vec![z0];
     for i in 0..rules.len() {
-        let mut next = combined_rules.clone();
-        for combination in &combined_rules {
-            next.extend(combination.add_rule_to_combination(rules, i, confs));
-        }
-        combined_rules = next;
+        // Within a round the expansion is independent per combination and read-only
+        // over the shared inputs, so run it in parallel (rayon, order-preserving) —
+        // the heavy step is the reducible-config blocking. Identical output; C++ runs
+        // this serially. (The rounds themselves are sequential, an inherent limit.)
+        let new_combinations: Vec<CombinedRule> = combined_rules
+            .par_iter()
+            .flat_map_iter(|combination| combination.add_rule_to_combination(rules, i, confs))
+            .collect();
+        combined_rules.extend(new_combinations);
     }
     let max_amount = combined_rules
         .iter()

@@ -21,6 +21,9 @@ tracing = "0.1"                                    # replaces spdlog (logging)
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"                                        # top-level error handling in the binary
 thiserror = "2"                                     # typed library errors
+mimalloc = "0.1"                                     # fast pooling allocator (the macOS system
+                                                     # malloc dominates the profile; mimalloc is
+                                                     # what makes the same alloc pattern cheap in Lean)
 
 [dev-dependencies]
 proptest = "1"                                      # property tests for the index/sentinel logic (R1)

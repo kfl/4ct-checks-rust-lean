@@ -8,6 +8,13 @@
 use clap::Parser;
 use std::path::Path;
 
+// The hot path allocates `vmap`/`dmap` scratch per `homomorphism` call (millions of
+// times); the profile showed ~40% in the macOS system allocator (`nanov2`/`szone`).
+// mimalloc's thread-local free-list makes those allocations cheap — it is exactly
+// why the same pattern costs ~nothing in the Lean port (whose runtime bundles it).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// near-linear 4CT computer checks (Rust port).
 #[derive(Parser, Debug)]
 #[command(
