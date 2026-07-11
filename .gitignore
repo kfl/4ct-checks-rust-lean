@@ -1,0 +1,30 @@
+# Rust port build artefacts
+rust_port/target/
+
+# Lean port build artefacts
+lean4_port/.lake/
+lean4_port/test_tmp_*/
+
+# Data repos cloned for the differential, and their outputs.
+# No trailing slash so the lean4_port/ symlinks into rust_port/ are ignored too
+# (a trailing slash matches directories only, not symlinks).
+reducible-configurations
+discharging-rules
+combined_rules/
+wheels/
+empty/
+log/
+
+# Container images / scratch
+*.sif
+
+# Source paper (kept locally, referenced by the docs, but not tracked)
+/2603.24880v2.pdf
+
+# Per-user Claude Code permissions (local, not shared)
+.claude/settings.local.json
+
+.DS_Store
+
+# Personal working notes (journals, ledgers, plans) -- local only, not tracked
+scratch_notes/

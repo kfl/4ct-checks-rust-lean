@@ -1,0 +1,51 @@
+---
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust:
+    name: Rust (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust_port
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_port
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+
+  lean:
+    name: Lean (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Reads lean4_port/lean-toolchain, installs elan + the pinned Lean,
+      # caches ~/.elan and .lake, and runs `lake build`.
+      # --wfail promotes lint findings (the beyond-default linters enabled in
+      # lakefile.toml) to build failures, mirroring clippy's -D warnings.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean4_port
+          build: true
+          build-args: "--wfail"
+          test: false
+      # The proof-obligation checks are a plain `test` executable (no lake test
+      # driver): a non-zero exit means a proof obligation fired.
+      - name: Test
+        working-directory: lean4_port
+        run: lake exe test
