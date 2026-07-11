@@ -6,14 +6,16 @@ containment / disjointness predicates. In the on-disk format the degree `∞` is
 written as `0` (see `../FORMAT.md`); that mapping is handled at the I/O boundary
 (P4), not here.
 
-L2 decision (record, revised P14): the fields are `Nat`. A degree is a vertex
-degree bound, always `≥ 1` — a negative value is an *error*, not a valid state, so
-`Nat` encodes the invariant rather than weakening it (and `intersection` can still
-return an empty range with `lower > upper`, both `Nat`). The *derived* signed
-quantities (curvature `6 − d`, charges) coerce to `Int` at their computation sites.
-This removes the boxed-`Int` handling and `Int.toNat` conversions from the hot
-`containConf` degree-bucket indexing (`dbd[dY][dX]`, ~7% of `combine_rules`). Two
-`degree - 1` refinement sites assume `lower ≥ 1`; that is `proofAssert`-checked.
+The fields are `Nat`. A degree is a vertex degree bound, always `≥ 1` -- a
+negative value is an *error*, not a valid state, so `Nat` encodes the invariant
+rather than weakening it (and `intersection` can still return an empty range
+with `lower > upper`, both `Nat`). The *derived* signed quantities (curvature
+`6 - d`, charges) coerce to `Int` at their computation sites. This removes the
+boxed-`Int` handling and `Int.toNat` conversions from the hot `containConf`
+degree-bucket indexing (`dbd[dY][dX]`). The `degree - 1` refinement site
+(`CartWheel.refineNever`) assumes `lower ≥ 1`; that is `proofAssert`-checked at
+load (`assertDegreesValid`), and the gate is proved sufficient for the site in
+`CartwheelProofs.lean`.
 -/
 
 namespace NearLinear4ct

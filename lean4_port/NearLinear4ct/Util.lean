@@ -33,28 +33,58 @@ the L3 performance notes). -/
 structure Unionfind where
   n : Nat
   parents : Array (Option Nat)
-deriving Inhabited
+  /-- One slot per node, and every parent pointer lands in range: a
+  `Unionfind` is structurally well-formed by construction (erased at
+  runtime). Acyclicity is *not* carried here -- that stays a proof-side
+  invariant (`Unionfind.WF`). -/
+  unionfind_invariant :
+    parents.size = n ∧ ∀ z, z < n → ∀ p, parents[z]! = some p → p < n
+
+instance : Inhabited Unionfind := ⟨⟨0, #[], by simp⟩⟩
 
 namespace Unionfind
 
 /-- A fresh forest of `n` singletons (C++ `Unionfind(n)`). Named `new` to avoid
 clashing with the structure's auto-generated `Unionfind.mk`. -/
-def new (n : Nat) : Unionfind := { n, parents := Array.replicate n none }
+def new (n : Nat) : Unionfind := ⟨n, Array.replicate n none, by grind⟩
 
-/-- Representative of `x` (C++ `root`). The C++ recurses with no path
-compression, so this is behaviourally identical. `partial` (L5): terminating on a
-forest, but not structurally so. -/
-partial def root (uf : Unionfind) (x : Nat) : Nat :=
-  match uf.parents[x]! with
-  | none => x
-  | some p => uf.root p
+/-- Follow parent pointers from `x` for at most `fuel` steps. The range test
+is the comparison `getElem!` would make anyway, minus its panic path: on any
+real forest `unionfind_invariant` keeps every followed pointer in range, so
+the `else` is dead code and every read is proof-carrying. -/
+def rootAux (uf : Unionfind) : Nat → Nat → Nat
+  | x, 0 => x
+  | x, fuel + 1 =>
+    if h : x < uf.parents.size then
+      match uf.parents[x] with
+      | none => x
+      | some p => uf.rootAux p fuel
+    else x
 
-/-- Attach `x`'s tree under `y`'s root (C++ `unite`: `parents[root(x)] = root(y)`). -/
+/-- Representative of `x`. The C++ recurses with no path compression, so this is
+behaviourally identical on a well-formed forest. Total via a fuel bound of
+`uf.n`: a well-formed parent chain visits distinct in-range nodes, so `n` steps
+always reach a root (proved as `Unionfind.WF.root_spec` in `UtilProofs.lean`).
+
+TODO: revisit whether omitting path compression here is the intended algorithm --
+confirm we have not diverged from the reference. -/
+def root (uf : Unionfind) (x : Nat) : Nat := uf.rootAux x uf.n
+
+/-- Attach `x`'s tree under `y`'s root: `parents[root(x)] = root(y)`. The
+`uf.n ≤ ry` guard skips the write when `y`'s representative is out of range
+(only reachable on malformed input, where the C++ would corrupt the forest);
+on in-range inputs it never fires, so behaviour is unchanged. -/
 def unite (uf : Unionfind) (x y : Nat) : Unionfind :=
   let rx := uf.root x
   let ry := uf.root y
-  if rx == ry then uf
-  else { uf with parents := uf.parents.set! rx (some ry) }
+  if h : rx == ry || uf.n ≤ ry then uf
+  else
+    ⟨uf.n, uf.parents.set! rx (some ry), by
+      obtain ⟨hs, hin⟩ := uf.unionfind_invariant
+      refine ⟨by simpa using hs, fun z hz p hp => ?_⟩
+      by_cases hzr : z = rx
+      · grind
+      · exact hin z hz p (by grind)⟩
 
 def same (uf : Unionfind) (x y : Nat) : Bool := uf.root x == uf.root y
 
@@ -84,78 +114,79 @@ def numRoots (uf : Unionfind) : Nat := uf.allRoots.size
 
 end Unionfind
 
-/-- Lexicographic comparison of two arrays via element `Ord` (the C++ `vector`
-`operator<`). Equal-length inputs (rotations) never reach the size tiebreak. -/
-def arrCompare [Ord α] [Inhabited α] (x y : Array α) : Ordering := Id.run do
-  let n := min x.size y.size
-  for i in [0:n] do
-    let c := compare x[i]! y[i]!
-    if c != Ordering.eq then return c
-  return compare x.size y.size
+/-- Whether `xs` is lexicographically strictly below `ys`; running out of
+either list is "not below" (`ltPrefix_eq_true_iff_lex`, `UtilProofs.lean`). -/
+def ltPrefix [Ord α] : List α → List α → Bool
+  | x :: xs, y :: ys =>
+    match compare x y with
+    | .lt => true
+    | .gt => false
+    | .eq => ltPrefix xs ys
+  | _, _ => false
 
-/-- Rotate an array left by one (`std::rotate(begin, begin+1, end)`).
-This mutates the buffer when it is unreferenced elsewhere:
-`eraseIdx` shifts left in place and leaves capacity slack, so the `push` is
-in place too (the head is bound *before* the erase, so that read is a
-completed borrow). -/
-def rotateLeft1 [Inhabited α] (a : Array α) : Array α :=
-  if a.size == 0 then a else
-    let x := a[0]!
-    (a.eraseIdxIfInBounds 0).push x
-
-/-- Whether `a` is lexicographically minimal among all its rotations
-(C++ `lex_min`). -/
-def lexMin [Ord α] [Inhabited α] (a : Array α) : Bool := Id.run do
-  let mut rotated := a
-  for _ in [0:a.size] do
-    rotated := rotateLeft1 rotated
-    if arrCompare rotated a == Ordering.lt then
-      return false
-  return true
+/-- Whether `xs` is lexicographically minimal among its rotations
+(`lexMin_iff_forall_rotateLeft`, `UtilProofs.lean`). Rotation `r` is a prefix
+of the `r`-th suffix of the doubled list `xs ++ xs`, so `go` walks those
+suffixes -- shared structure, no rotation materialised -- with `xs` as the
+rotation counter. -/
+def lexMin [Ord α] (xs : List α) : Bool := go (xs ++ xs) xs
+where
+  go : List α → List α → Bool
+    | ys@(_ :: rest), _ :: cnt => if ltPrefix ys xs then false else go rest cnt
+    | _, _ => true
 
 /-- A FIFO queue for the BFS worklists (`homomorphism`, `freeHomomorphism`,
 `resolveDegreeIssues`, `fixOutRules`). Mirrors the pseudocode's `Q ← ∅` /
-`Q.push` / `Q.pop` / `Q.empty()` directly, instead of an open-coded
-flat-array-plus-head-index. The representation *is* that flat array walked by a
-head index (same FIFO order as the C++ `std::queue`, without ring-buffer
-bookkeeping), so there is no perf cost over the open-coded form — only the
+`Q.push` directly, with `Q.empty()` / `Q.pop()` merged into the total `pop?`,
+instead of an open-coded flat-array-plus-head-index. The representation *is* that flat array walked by a
+head index (FIFO order, without ring-buffer
+bookkeeping), so there is no perf cost over the open-coded form -- only the
 bookkeeping is named. -/
 structure Queue (α : Type) where
   items : Array α
   head : Nat
-deriving Inhabited
+  /-- The head never runs past the backing array: a `Queue` is well-formed by
+  construction (erased at runtime), so the proofs never carry a separate
+  queue-wellformedness invariant. -/
+  queue_invariant : head ≤ items.size
+
+instance : Inhabited (Queue α) := ⟨⟨#[], 0, Nat.le_refl 0⟩⟩
 
 namespace Queue
 
 /-- The empty queue (pseudocode `Q ← ∅`). -/
-def empty : Queue α := ⟨#[], 0⟩
+def empty : Queue α := ⟨#[], 0, Nat.le_refl 0⟩
 
 /-- An empty queue whose backing array reserves `cap` slots, so `push` does not
 reallocate until `cap` is exceeded (avoids the `lean_copy_expand_array` regrowth
 in the BFS hot loops, where the final size is known up front). -/
-def emptyWithCapacity (cap : Nat) : Queue α := ⟨Array.mkEmpty cap, 0⟩
+def emptyWithCapacity (cap : Nat) : Queue α := ⟨Array.mkEmpty cap, 0, Nat.zero_le _⟩
 
 /-- A queue seeded with `xs` (the initial obligations). -/
-def ofArray (xs : Array α) : Queue α := ⟨xs, 0⟩
+def ofArray (xs : Array α) : Queue α := ⟨xs, 0, Nat.zero_le _⟩
 
 /-- Whether the queue is exhausted (pseudocode `Q.empty()`). -/
 def isEmpty (q : Queue α) : Bool := q.head ≥ q.items.size
 
-/-- Number of not-yet-popped elements (`push` +1, `pop!` −1). Used as a
+/-- Number of not-yet-popped elements (`push` +1, `pop?` −1). Used as a
 termination measure in the proofs. -/
 def live (q : Queue α) : Nat := q.items.size - q.head
 
 /-- Enqueue `x` (pseudocode `Q.push(x)`). `@[inline]` so the wrapper `Queue`
 rebuild is visible to the caller's reuse analysis (Perceus cannot reuse
 constructors across a call boundary). -/
-@[inline] def push (q : Queue α) (x : α) : Queue α := { q with items := q.items.push x }
+@[inline] def push (q : Queue α) (x : α) : Queue α :=
+  ⟨q.items.push x, q.head, by simpa [Array.size_push] using Nat.le_succ_of_le q.queue_invariant⟩
 
-/-- Dequeue the front element (pseudocode `x ← Q.pop()`); the head advances.
-Assumes the queue is non-empty — guard with `isEmpty` (as the BFS loops do).
-`@[inline]` so the returned tuple and rebuilt `Queue` are visible to the
-caller's reuse analysis instead of being fresh allocations per pop. -/
-@[inline] def pop! [Inhabited α] (q : Queue α) : α × Queue α :=
-  (q.items[q.head]!, { q with head := q.head + 1 })
+/-- The pseudocode's `Q.empty()` test and `x ← Q.pop()` as one total step:
+the front element and the advanced queue, or `none` when exhausted. The
+emptiness test *is* the bounds proof (`queue_invariant` makes them the same
+fact), so the read is proof-carrying -- no `!`/`?` indexing. For
+`while let some (x, q') := q.pop? do` worklist loops. -/
+@[inline] def pop? (q : Queue α) : Option (α × Queue α) :=
+  if h : q.head < q.items.size then
+    some (q.items[q.head], ⟨q.items, q.head + 1, h⟩)
+  else none
 
 end Queue
 

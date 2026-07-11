@@ -1,54 +1,59 @@
-import Std.Data.Iterators
 import NearLinear4ct.Util
 import NearLinear4ct.MappingProofs
 
 /-!
-Machine-checked correctness of `Util`'s algorithmic loops.
+Machine-checked correctness of `Util`'s algorithms.
 
-Each algorithm gets a loop-free functional specification, its meaning proved
-on the specification side, and a single refinement proof showing the
-imperative loop computes it:
-
-- `arrCompareFun` (first non-`eq` pointwise comparison over the lazy zip,
-  else the size tiebreak; no `Inhabited`, no `!`-indexing), refined by
-  `arrCompare_eq_arrCompareFun`, decoded by `arrCompareFun_eq_lt_iff` /
-  `arrCompare_eq_lt_iff`: **`arrCompare` decides the lexicographic order**.
-- `lexMinFun` (no lazily-unfolded rotation compares below `a`), refined by
-  `lexMin_eq_lexMinFun`, decoded by `lexMinFun_true_iff` /
-  `lexMin_true_iff`: **`lexMin` decides "no rotation is smaller"**.
-- `rotateLeftN` with `rotateLeftN_eq_map`: "rotation" in those statements
-  means reading every index shifted mod size.
+- `lexMin_iff_forall_rotateLeft`: **`lexMin` decides "no rotation is
+  lexicographically smaller"**, stated in core vocabulary (`List.rotateLeft`,
+  `List.Lex`). The proof splits at `lexMin`'s seams: `ltPrefix` decides
+  `List.Lex` (`ltPrefix_eq_true_iff_lex`), the suffix walk quantifies it over
+  the doubled list (`lexMin_go_eq_true_iff`), and pure list identities turn
+  doubled-list suffixes into rotations.
+- `Unionfind.indexRoots_wf`: `indexRoots` is a well-formed relabelling, via a
+  loop-free functional model (`indexRootsFun`) and a single refinement proof.
+- `Unionfind.WF.root_spec` (with `wf_new` / `WF.unite` preservation): parent
+  forests stay acyclic, so `root`'s fuel bound `n` always suffices -- `root`
+  lands on a root, in range.
 
 The proofs live here, not in `Util.lean`, so the port files keep reading like
 the paper; this module is the verification layer (imported by the library
-root, so `lake build` checks it; `Test.lean` builds `lexMin_eq_brute` on it).
+root, so `lake build` checks it).
 
 Reusable machinery: `forIn_range_eq_range'` is the *single* point of
-`Std.Legacy.Range` coupling -- every reduction factors through it, taking the
-loop body as a *hypothesis*, so nothing here depends on the exact elaborated
-shape of a `do` block. Accumulator (`yield`-only) loops go straight to
-`List.foldl` via core's `forIn_pure_yield_eq_foldl` (`forIn_range_eq_foldl`);
-only early-return scans need the bespoke `loopGo` recursion, which they resolve
-to `List.findSome?` over the index range (`forIn_range_eq_loopGo` +
-`loopGo_scan_eq_findSome?`). `arrCompare_eq_findSome?` exposes `arrCompare` in
-that normal form, which is what `Test.lean` relates its independent oracle to.
+`Std.Legacy.Range` coupling -- the loop reductions factor through it, taking
+the loop body as a *hypothesis*, so nothing here depends on the exact
+elaborated shape of a `do` block. Accumulator (`yield`-only) loops go straight
+to `List.foldl` via core's `forIn_pure_yield_eq_foldl`
+(`forIn_range_eq_foldl`); early-return scans use the bespoke `loopGo`
+recursion (`forIn_range_eq_loopGo`).
 -/
 
 namespace NearLinear4ct
 
 namespace Queue
 
-/-- `push` grows the live length by one (queue well-formed). -/
-theorem live_push {α} [Inhabited α] {q : Queue α} {x : α}
-    (h : q.head ≤ q.items.size) : (q.push x).live = q.live + 1 := by
+/-- `push` grows the live length by one. -/
+theorem live_push {α} {q : Queue α} {x : α} : (q.push x).live = q.live + 1 := by
+  have := q.queue_invariant
   simp only [Queue.live, Queue.push, Array.size_push]; omega
 
-/-- `pop` shrinks the live length by one (non-empty). -/
-theorem live_pop {α} [Inhabited α] {q : Queue α} (h : q.isEmpty = false) :
-    q.pop!.2.live + 1 = q.live := by
-  have : q.head < q.items.size := by
-    simp only [Queue.isEmpty, ge_iff_le, decide_eq_false_iff_not, Nat.not_le] at h; exact h
-  simp only [Queue.live, Queue.pop!]; omega
+/-- A successful `pop?`, decoded: the front element and the advanced head
+(items untouched). -/
+theorem pop?_some {α} {q q' : Queue α} {x : α} (h : q.pop? = some (x, q')) :
+    q.items[q.head]? = some x ∧ q'.items = q.items ∧ q'.head = q.head + 1 := by
+  grind [Queue.pop?]
+
+/-- `pop?` shrinks the live length by one. -/
+theorem live_pop {α} {q q' : Queue α} {x : α} (h : q.pop? = some (x, q')) :
+    q'.live + 1 = q.live := by
+  obtain ⟨hx, hi, hh⟩ := Queue.pop?_some h
+  obtain ⟨hlt, -⟩ := Array.getElem?_eq_some_iff.mp hx
+  simp only [Queue.live, hi, hh]; omega
+
+/-- An exhausted `pop?` means an empty queue. -/
+theorem pop?_none {α} {q : Queue α} (h : q.pop? = none) : q.isEmpty = true := by
+  grind [Queue.pop?, Queue.isEmpty, Array.getElem?_eq_none]
 
 end Queue
 
@@ -111,359 +116,83 @@ theorem forIn_range_eq_foldl {σ : Type _} (n : Nat)
   have hb : body = fun i s => pure (.yield (g i s)) := by funext i s; exact hbody i s
   rw [forIn_range_eq_range', hb, List.forIn_pure_yield_eq_foldl]
 
-/-! ### Scan loops are `List.findSome?` over the index range
-
-`arrCompare` (and `Test.lean`'s `lexLt`) are scan loops: probe each index,
-early-return on the first hit. That scan *is* the stdlib's `List.findSome?`
-on `List.range' i n`, so no bespoke recursion is needed -- the `none` decode
-is core's `findSome?_eq_none_iff`, and the `some` decode below merely
-re-indexes core's first-hit characterisation into range form. -/
-
-/-- The loop body of a scan (a named function, so per-loop instantiations
-share one symbol and `rw` matches syntactically). -/
-def scanStep (p : Nat → Option β) (j : Nat) (_ : MProd (Option β) PUnit) :
-    ForInStep (MProd (Option β) PUnit) :=
-  match p j with
-  | some b => .done ⟨some b, PUnit.unit⟩
-  | none => .yield ⟨none, PUnit.unit⟩
-
-/-- The scan loop (state: the early-return marker) is `findSome?` over the
-index range. -/
-theorem loopGo_scan_eq_findSome? (p : Nat → Option β) :
-    ∀ (n i : Nat),
-      loopGo (scanStep p) i n ⟨none, PUnit.unit⟩
-        = ⟨(List.range' i n).findSome? p, PUnit.unit⟩
-  | 0, _ => rfl
-  | n + 1, i => by
-    have ih := loopGo_scan_eq_findSome? p n (i + 1)
-    grind [loopGo, scanStep, List.range'_succ]
-
-/-- `findSome?` over an index range falls through iff the probe never fires
-(core's `findSome?_eq_none_iff`, in range form). -/
-private theorem findSome?_range'_eq_none_iff (p : Nat → Option β) (n i : Nat) :
-    (List.range' i n).findSome? p = none ↔
-      ∀ j, i ≤ j → j < i + n → p j = none := by
-  rw [List.findSome?_eq_none_iff]
-  grind
-
-/-- `findSome?` over an index range returns `some b` iff the *first* firing
-probe yields `b`. -/
-private theorem findSome?_range'_eq_some_iff (p : Nat → Option β) (b : β) :
-    ∀ (n i : Nat),
-      (List.range' i n).findSome? p = some b ↔
-        ∃ j, i ≤ j ∧ j < i + n ∧ p j = some b ∧
-          ∀ l, i ≤ l → l < j → p l = none
-  | 0, _ => by simp; grind
-  | n + 1, i => by
-    have ih := findSome?_range'_eq_some_iff p b n (i + 1)
-    grind [List.range'_succ]
-
-/-! ### Rotations: `rotateLeftN` and its element view -/
-
-/-- `a` rotated left `k` times (the proof-side power of `rotateLeft1`). -/
-def rotateLeftN [Inhabited α] (a : Array α) : Nat → Array α
-  | 0 => a
-  | k + 1 => rotateLeft1 (rotateLeftN a k)
-
-private theorem size_rotateLeft1 [Inhabited α] (a : Array α) :
-    (rotateLeft1 a).size = a.size := by
-  grind [rotateLeft1]
-
-private theorem size_rotateLeftN [Inhabited α] (a : Array α) (k : Nat) :
-    (rotateLeftN a k).size = a.size := by
-  induction k with
-  | zero => rfl
-  | succ k ih => simp [rotateLeftN, size_rotateLeft1, ih]
-
-/-- Element view of one rotation: index `j` reads the source at `j + 1`,
-wrapping at the end. -/
-private theorem getElem!_rotateLeft1 [Inhabited α] (a : Array α) (j : Nat)
-    (hj : j < a.size) : (rotateLeft1 a)[j]! = a[(j + 1) % a.size]! := by
-  -- split at the wrap point: `%` by a variable is outside `grind`'s
-  -- arithmetic, so each branch names the applicable modulus law
-  rcases Nat.lt_or_ge (j + 1) a.size with hlt | hge
-  · grind [rotateLeft1, Nat.mod_eq_of_lt]
-  · grind [rotateLeft1, Nat.mod_self]
-
-private theorem rotateLeftN_rotateLeft1 [Inhabited α] (a : Array α) (k : Nat) :
-    rotateLeftN (rotateLeft1 a) k = rotateLeft1 (rotateLeftN a k) := by
-  induction k with
-  | zero => rfl
-  | succ k ih => simp [rotateLeftN, ih]
-
-/-- Element view of `k` rotations: index `j` reads the source at `j + k`
-mod size. -/
-private theorem getElem!_rotateLeftN [Inhabited α] (a : Array α) (k : Nat) :
-    ∀ j : Nat, j < a.size → (rotateLeftN a k)[j]! = a[(j + k) % a.size]! := by
-  induction k with
-  | zero => grind [rotateLeftN, Nat.mod_eq_of_lt]
-  | succ k ih =>
-    grind [rotateLeftN, getElem!_rotateLeft1, size_rotateLeftN,
-      Nat.mod_lt, Nat.mod_add_mod]
-
-/-- **`rotateLeftN` is what "rotation" means**: rotating `k` times is reading
-every index shifted by `k`, mod size (the form `isLexMinBrute` in `Test.lean`
-builds by hand). -/
-theorem rotateLeftN_eq_map [Inhabited α] (a : Array α) (k : Nat) :
-    rotateLeftN a k = (Array.range a.size).map fun j => a[(j + k) % a.size]! := by
-  apply Array.ext
-  · simp [size_rotateLeftN]
-  · intro i h1 h2
-    have hi : i < a.size := by simpa [size_rotateLeftN] using h1
-    rw [Array.getElem_map, Array.getElem_range,
-        ← getElem!_pos (rotateLeftN a k) i h1,
-        getElem!_rotateLeftN a k i hi]
-
-/-- Rotating by the full size is the identity. -/
-private theorem rotateLeftN_size_self [Inhabited α] (a : Array α) :
-    rotateLeftN a a.size = a := by
-  apply Array.ext
-  · simp [size_rotateLeftN]
-  · intro i h1 h2
-    have e1 : (rotateLeftN a a.size)[i]! = (rotateLeftN a a.size)[i] :=
-      getElem!_pos (rotateLeftN a a.size) i h1
-    have e2 : a[i]! = a[i] := getElem!_pos a i h2
-    rw [← e1, getElem!_rotateLeftN a a.size i h2, ← e2]
-    congr 1
-    rw [Nat.add_mod_right]
-    exact Nat.mod_eq_of_lt h2
-
-/-! ### `arrCompare` decides the lexicographic order
-
-Layered functional-first, like `lexMin` below: `arrCompareFun` is the
-loop-free specification -- the first non-`eq` pointwise comparison over the
-lazy zip (which stops at the shorter array), else the size tiebreak. Note it
-needs no `Inhabited` and no `!`-indexing: the zip hands over the elements.
-`arrCompare_eq_arrCompareFun` is the loop-refines-spec bridge, and the
-public decode transports across it. -/
-
-/-- Functional specification of `arrCompare`: the first non-`eq` pointwise
-comparison over the zip of the two arrays, defaulting to the size tiebreak.
-Pull-based iterators give it the loop's exact cost model. -/
-def arrCompareFun [Ord α] (x y : Array α) : Ordering :=
-  ((x.iter.zip y.iter).findSome? fun p =>
-      if compare p.1 p.2 != Ordering.eq then some (compare p.1 p.2) else none).getD
-    (compare x.size y.size)
-
-/-- `arrCompare`'s probe in index form: the comparison at `j`, if not `eq`
-(the decode workhorse; `arrCompareFun`'s pairwise probe composed with
-indexing). -/
-private def cmpP [Ord α] [Inhabited α] (x y : Array α) (j : Nat) : Option Ordering :=
-  if compare x[j]! y[j]! != Ordering.eq then some (compare x[j]! y[j]!) else none
-
-/-- Pairing elements by index is `zip` (up to the shorter side). -/
-private theorem toList_zip_eq_map_range' [Inhabited α] (x y : Array α) :
-    x.toList.zip y.toList
-      = (List.range' 0 (min x.size y.size)).map fun i => (x[i]!, y[i]!) := by
-  apply List.ext_getElem
-  · simp
-  · intro i h1 h2
-    have hx : i < x.size := by simp at h1; omega
-    have hy : i < y.size := by simp at h1; omega
-    simp [List.getElem_zip, getElem!_pos x i hx, getElem!_pos y i hy]
-
-/-- `arrCompareFun`, re-indexed to the `findSome?`-over-range normal form. -/
-private theorem arrCompareFun_eq_findSome? [Ord α] [Inhabited α] (x y : Array α) :
-    arrCompareFun x y
-      = ((List.range' 0 (min x.size y.size)).findSome? (cmpP x y)).getD
-          (compare x.size y.size) := by
-  rw [arrCompareFun, ← Std.Iter.findSome?_toList, Std.Iter.toList_zip_of_finite,
-      Array.toList_iter, Array.toList_iter, toList_zip_eq_map_range',
-      List.findSome?_map]
-  rfl
-
-/-- **The imperative `arrCompare` computes its functional specification.** -/
-theorem arrCompare_eq_arrCompareFun [Ord α] [Inhabited α] (x y : Array α) :
-    arrCompare x y = arrCompareFun x y := by
-  unfold arrCompare
-  simp only [Id.run, pure_bind]
-  rw [forIn_range_eq_loopGo (min x.size y.size) _ (scanStep (cmpP x y))
-        (fun i s => by by_cases h : compare x[i]! y[i]! != Ordering.eq <;>
-          simp [scanStep, cmpP, h]),
-      loopGo_scan_eq_findSome?, arrCompareFun_eq_findSome?]
-  cases (List.range' 0 (min x.size y.size)).findSome? (cmpP x y) <;> rfl
-
-/-- `arrCompare`, in `findSome?` normal form: the first non-`eq` comparison
-by index, else the size tiebreak (the computation rule `Test.lean`'s oracle
-bridge rewrites against). -/
-theorem arrCompare_eq_findSome? [Ord α] [Inhabited α] (x y : Array α) :
-    arrCompare x y
-      = ((List.range' 0 (min x.size y.size)).findSome? fun j =>
-          if compare x[j]! y[j]! != Ordering.eq then some (compare x[j]! y[j]!)
-          else none).getD (compare x.size y.size) := by
-  rw [arrCompare_eq_arrCompareFun, arrCompareFun_eq_findSome?]
-  rfl
-
-/- `arrCompareFun_eq_lt_iff` must rewrite its hypothesis into `compare`-terms
-(via the two iffs below) before calling `grind`: `grind [cmpP]` alone does
-not solve the first-difference uniqueness goal. -/
-
-private theorem cmpP_eq_none_iff [Ord α] [Inhabited α] (x y : Array α) (j : Nat) :
-    cmpP x y j = none ↔ compare x[j]! y[j]! = Ordering.eq := by
-  grind [cmpP]
-
-private theorem cmpP_eq_some_iff [Ord α] [Inhabited α] (x y : Array α) (j : Nat)
-    (c : Ordering) :
-    cmpP x y j = some c ↔ compare x[j]! y[j]! = c ∧ c ≠ Ordering.eq := by
-  grind [cmpP]
-
-/-- **`arrCompareFun` decides the lexicographic order** (`lt` case): a first
-difference comparing `lt`, or all of the shorter side `eq` and `x` shorter --
-proved on the specification side. -/
-theorem arrCompareFun_eq_lt_iff [Ord α] [Inhabited α] (x y : Array α) :
-    arrCompareFun x y = Ordering.lt ↔
-      (∃ i, i < min x.size y.size ∧ compare x[i]! y[i]! = Ordering.lt ∧
-        ∀ j, j < i → compare x[j]! y[j]! = Ordering.eq)
-      ∨ (x.size < y.size ∧
-        ∀ j, j < min x.size y.size → compare x[j]! y[j]! = Ordering.eq) := by
-  rw [arrCompareFun_eq_findSome?]
-  rcases h : (List.range' 0 (min x.size y.size)).findSome? (cmpP x y) with _ | c
-  · rw [findSome?_range'_eq_none_iff] at h
-    simp only [cmpP_eq_none_iff] at h
-    simp only [Option.getD_none, Nat.compare_eq_lt]
-    grind
-  · rw [findSome?_range'_eq_some_iff] at h
-    simp only [cmpP_eq_some_iff, cmpP_eq_none_iff] at h
-    simp only [Option.getD_some]
-    grind
-
-/-- **`arrCompare` decides the lexicographic order** -- the specification
-meaning, transported across the refinement equality. -/
-theorem arrCompare_eq_lt_iff [Ord α] [Inhabited α] (x y : Array α) :
-    arrCompare x y = Ordering.lt ↔
-      (∃ i, i < min x.size y.size ∧ compare x[i]! y[i]! = Ordering.lt ∧
-        ∀ j, j < i → compare x[j]! y[j]! = Ordering.eq)
-      ∨ (x.size < y.size ∧
-        ∀ j, j < min x.size y.size → compare x[j]! y[j]! = Ordering.eq) := by
-  rw [arrCompare_eq_arrCompareFun]
-  exact arrCompareFun_eq_lt_iff x y
-
 /-! ### `lexMin` decides "no rotation is smaller"
 
-Layered as functional-first refinement: `lexMinFun` is the loop-free
-specification and `lexMinFun_true_iff` gives it meaning by a spec-side
-argument (no loop state anywhere); `lexMin_eq_lexMinFun` is the *only*
-imperative-side proof (the loop refines the specification); `lexMin`'s
-meaning then transports across the equality. -/
+The specification is stated in core vocabulary -- no `List.rotateLeft` of `xs`
+is `List.Lex (· < ·)`-below `xs` -- and the proof splits at `lexMin`'s own
+seams: `ltPrefix_eq_true_iff_lex` decodes the comparison walker into
+`List.Lex`, `lexMin_go_eq_true_iff` decodes the suffix walk into a quantifier
+over the doubled list's suffixes, and two pure list facts (`lex_take_iff`,
+`take_drop_doubled_eq_rotateLeft`) turn those suffixes into rotations. -/
 
-/-- Functional specification of `lexMin`, loop-free and with the loop's exact
-cost model: `a` is lexicographically minimal iff none of its rotations
-`0..a.size - 1` compares strictly below it (rotation `0` is `a` itself).
-`Std.Iter.repeat` is the lazy unfold of `rotateLeft1`, and iterator
-pipelines are pull-based, so `all` interleaves construction with testing and
-stops at the first failure -- O(size²) worst case, early exit after O(size),
-no intermediate list. The loop checks rotations `1..a.size` instead; the two
-ranges decide the same predicate because rotation `a.size` *is* rotation `0`
-(`rotateLeftN_size_self`), so `lexMin_eq_lexMinFun` holds for *every* `Ord`,
-lawful or not. -/
-def lexMinFun [Ord α] [Inhabited α] (a : Array α) : Bool :=
-  (Std.Iter.repeat rotateLeft1 a).take a.size
-    |>.all fun r => arrCompare r a != Ordering.lt
+/-- `ltPrefix` decides `List.Lex (· < ·)` when the left list is at least as
+long -- then `Lex`'s nil case ("left ran out first") cannot fire, and the two
+walks agree position by position. -/
+private theorem ltPrefix_eq_true_iff_lex [Ord α] [LT α] [LE α]
+    [Std.LawfulOrderOrd α] [Std.LawfulOrderLT α] [Std.LawfulEqOrd α] :
+    ∀ (ys xs : List α), xs.length ≤ ys.length →
+      (ltPrefix ys xs = true ↔ List.Lex (· < ·) ys xs)
+  | _, [], _ => by grind [ltPrefix, List.not_lex_nil]
+  | [], _ :: _, h => absurd h (by simp)
+  | y :: ys, x :: xs, h => by
+    have ih := ltPrefix_eq_true_iff_lex ys xs (by simpa using h)
+    grind [ltPrefix, List.cons_lex_cons_iff, Std.compare_eq_lt,
+      Std.LawfulEqOrd.compare_eq_iff_eq]
 
-/-- The unfold's elements mean what they should: entry `i` of the first `k`
-items is the `i`-fold rotation (`toList_take_repeat_succ` is the cons-step). -/
-private theorem toList_take_repeat_rotations [Inhabited α] :
-    ∀ (k : Nat) (a : Array α),
-      ((Std.Iter.repeat rotateLeft1 a).take k).toList
-        = (List.range k).map (rotateLeftN a)
-  | 0, _ => by simp
-  | k + 1, a => by
-    simp [Std.Iter.toList_take_repeat_succ,
-      toList_take_repeat_rotations k (rotateLeft1 a),
-      List.range_succ_eq_map, Function.comp_def,
-      rotateLeftN_rotateLeft1, rotateLeftN]
+/-- The suffix walk falls through iff no examined suffix opens below `xs`:
+suffix `r` of `ys`, for `r` below the counter's length. -/
+private theorem lexMin_go_eq_true_iff [Ord α] (xs : List α) :
+    ∀ (cnt ys : List α),
+      (lexMin.go xs ys cnt = true ↔
+        ∀ r < cnt.length, ltPrefix (ys.drop r) xs = false)
+  | [], _ => by simp [lexMin.go]
+  | _ :: cnt, [] => by grind [lexMin.go, ltPrefix]
+  | _ :: cnt, y :: ys => by
+    have ih := lexMin_go_eq_true_iff xs cnt ys
+    refine ⟨fun hgo r hr => ?_, fun hall => ?_⟩
+    · cases r <;> grind [lexMin.go]
+    · have h0 := hall 0 (by simp)
+      have hgo : lexMin.go xs ys cnt = true := ih.mpr fun r hr => by
+        simpa using hall (r + 1) (by simpa using Nat.succ_lt_succ hr)
+      grind [lexMin.go]
 
-/-- **`lexMinFun` decides "no rotation is lexicographically smaller"** --
-proved on the specification side alone (`all` over a `map`), with no loop
-state in sight. -/
-theorem lexMinFun_true_iff [Ord α] [Inhabited α] (a : Array α) :
-    lexMinFun a ↔
-      ∀ k, k < a.size → arrCompare (rotateLeftN a k) a ≠ Ordering.lt := by
-  rw [lexMinFun, ← Std.Iter.all_toList, toList_take_repeat_rotations,
-      List.all_eq_true]
-  grind
+/-- `List.Lex` against `xs` reads at most `|xs|` positions of the left list:
+when a full-length prefix is available, truncating there does not change the
+verdict. -/
+private theorem lex_take_iff {r : α → α → Prop} :
+    ∀ (ys xs : List α), xs.length ≤ ys.length →
+      (List.Lex r (ys.take xs.length) xs ↔ List.Lex r ys xs)
+  | _, [], _ => by simp
+  | [], _ :: _, h => absurd h (by simp)
+  | y :: ys, x :: xs, h => by
+    have ih := lex_take_iff (r := r) ys xs (by simpa using h)
+    grind [List.cons_lex_cons_iff]
 
-/-- The loop's `loopGo` refines `lexMinFun`'s scan: the early-return marker
-(`getD true`) and `List.all`'s short-circuit agree at every rotation. The
-single imperative-side induction. -/
-private theorem loopGo_lexMin_eq [Ord α] [Inhabited α] (a : Array α) :
-    ∀ (n i : Nat) (r : Array α),
-      ((loopGo (fun _ (p : MProd (Option Bool) (Array α)) =>
-          if arrCompare (rotateLeft1 p.snd) a == Ordering.lt then
-            .done ⟨some false, rotateLeft1 p.snd⟩
-          else .yield ⟨none, rotateLeft1 p.snd⟩) i n ⟨none, r⟩).fst.getD true)
-        = ((Std.Iter.repeat rotateLeft1 (rotateLeft1 r)).take n).toList.all
-            fun x => arrCompare x a != Ordering.lt
-  | 0, _, _ => by simp [loopGo]
-  | n + 1, i, r => by
-    have ih := loopGo_lexMin_eq a n (i + 1) (rotateLeft1 r)
-    grind [loopGo, Std.Iter.toList_take_repeat_succ]
+/-- For `r < |xs|`, rotation `r` of `xs` is the `|xs|`-long prefix of the
+`r`-th suffix of the doubled list. -/
+private theorem take_drop_doubled_eq_rotateLeft (xs : List α) {r : Nat}
+    (h : r < xs.length) :
+    ((xs ++ xs).drop r).take xs.length = xs.rotateLeft r := by
+  grind [List.rotateLeft, List.take_append, List.take_of_length_le,
+    Nat.mod_eq_of_lt]
 
-/-- The loop's rotation range (`1..a.size`) and the specification's
-(`0..a.size - 1`) decide the same scan: rotation `a.size` *is* rotation `0`.
-The single place the off-by-one between loop and spec is paid. -/
-private theorem all_rotations_succ_eq [Ord α] [Inhabited α] (a : Array α) :
-    (((Std.Iter.repeat rotateLeft1 (rotateLeft1 a)).take a.size).toList.all
-        fun r => arrCompare r a != Ordering.lt)
-      = lexMinFun a := by
-  have hstep : ∀ k, rotateLeft1 (rotateLeftN a k) = rotateLeftN a (k + 1) :=
-    fun _ => rfl
-  rw [lexMinFun, ← Std.Iter.all_toList, Bool.eq_iff_iff,
-      List.all_eq_true, List.all_eq_true,
-      toList_take_repeat_rotations, toList_take_repeat_rotations]
-  simp only [List.mem_map, List.mem_range]
-  constructor
-  · rintro h x ⟨i, hi, rfl⟩
-    match i with
-    | 0 =>
-      have h0 := h (rotateLeftN (rotateLeft1 a) (a.size - 1))
-        ⟨a.size - 1, by omega, rfl⟩
-      rw [rotateLeftN_rotateLeft1, hstep, show a.size - 1 + 1 = a.size by omega,
-          rotateLeftN_size_self] at h0
-      exact h0
-    | i + 1 =>
-      have h1 := h (rotateLeftN (rotateLeft1 a) i) ⟨i, by omega, rfl⟩
-      rwa [rotateLeftN_rotateLeft1, hstep] at h1
-  · rintro h x ⟨i, hi, rfl⟩
-    rw [rotateLeftN_rotateLeft1, hstep]
-    rcases Nat.lt_or_ge (i + 1) a.size with hlt | hge
-    · exact h (rotateLeftN a (i + 1)) ⟨i + 1, hlt, rfl⟩
-    · rw [show i + 1 = a.size by omega, rotateLeftN_size_self]
-      exact h (rotateLeftN a 0) ⟨0, by omega, rfl⟩
-
-/-- **The imperative `lexMin` computes its functional specification.** -/
-theorem lexMin_eq_lexMinFun [Ord α] [Inhabited α] (a : Array α) :
-    lexMin a = lexMinFun a := by
-  unfold lexMin
-  simp only [Id.run, pure_bind]
-  rw [forIn_range_eq_loopGo a.size _
-        (fun _ p =>
-          if arrCompare (rotateLeft1 p.snd) a == Ordering.lt then
-            .done ⟨some false, rotateLeft1 p.snd⟩
-          else .yield ⟨none, rotateLeft1 p.snd⟩)
-        (fun i s => by
-          by_cases h : arrCompare (rotateLeft1 s.snd) a == Ordering.lt <;>
-            simp [h]),
-      ← all_rotations_succ_eq, ← loopGo_lexMin_eq a a.size 0 a]
-  rcases loopGo _ 0 a.size _ with ⟨mark, rot⟩
-  cases mark <;> rfl
-
-/-- **`lexMin` decides "no rotation is lexicographically smaller"** -- the
-specification meaning, transported across the refinement equality.
-`rotateLeftN_eq_map` gives `rotateLeftN` its meaning and
-`arrCompare_eq_lt_iff` gives `arrCompare`'s. -/
-theorem lexMin_true_iff [Ord α] [Inhabited α] (a : Array α) :
-    lexMin a ↔
-      ∀ k, k < a.size → arrCompare (rotateLeftN a k) a ≠ Ordering.lt := by
-  rw [lexMin_eq_lexMinFun]
-  exact lexMinFun_true_iff a
+/-- **`lexMin` decides "no rotation is lexicographically smaller."** -/
+theorem lexMin_iff_forall_rotateLeft [Ord α] [LT α] [LE α]
+    [Std.LawfulOrderOrd α] [Std.LawfulOrderLT α] [Std.LawfulEqOrd α]
+    (xs : List α) :
+    lexMin xs = true ↔
+      ∀ r < xs.length, ¬ List.Lex (· < ·) (xs.rotateLeft r) xs := by
+  rw [lexMin, lexMin_go_eq_true_iff]
+  refine forall_congr' fun r => imp_congr_right fun hr => ?_
+  have hlen : xs.length ≤ ((xs ++ xs).drop r).length := by simp; omega
+  rw [← take_drop_doubled_eq_rotateLeft xs hr, Bool.eq_false_iff]
+  exact not_congr ((ltPrefix_eq_true_iff_lex _ _ hlen).trans
+    (lex_take_iff _ _ hlen).symm)
 
 /-! ### `Unionfind.indexRoots` is a well-formed relabelling
 
 `indexRoots` is a push loop (accumulator, no early return), so its functional
-model is a `foldl`; `loopGo_yield_eq_foldl` below is the yield-only sibling of
-`loopGo_scan_eq_findSome?`, reusable for every future accumulator loop. The
-model says: entry `i` is `some (rootRank i)` iff `i` is a root, where
+model is a `foldl` (via `forIn_range_eq_foldl`). The model says: entry `i` is `some (rootRank i)` iff `i` is a root, where
 `rootRank i` counts the roots before `i` -- so `indexRoots` assigns roots
 fresh sequential indices (`WF uf.n uf.numRoots`, strictly monotone), which is
 exactly the "relabelling map" its doc comment promises. -/
@@ -536,15 +265,14 @@ private theorem foldl_indexRootsStep (uf : Unionfind) :
 /-- **The bridge**: the push loop computes the functional model. -/
 theorem indexRoots_eq_fun (uf : Unionfind) : uf.indexRoots = uf.indexRootsFun := by
   unfold indexRoots
-  simp only [Id.run, pure_bind]
+  simp only [pure_bind]
   rw [forIn_range_eq_foldl uf.n _ uf.indexRootsStep
-        (fun i s => by by_cases h : uf.parents[i]!.isNone <;> simp [indexRootsStep, h])]
+        (fun i s => by grind [indexRootsStep])]
   have h0 : (⟨0, Array.mkEmpty uf.n⟩ : MProd Nat (Array OptIdx))
       = ⟨uf.rootRank 0, uf.outPrefix 0⟩ := by
     simp [rootRank, outPrefix]
   rw [h0, foldl_indexRootsStep uf uf.n 0]
   simp [outPrefix, indexRootsFun]
-  rfl
 
 @[simp] theorem size_indexRoots (uf : Unionfind) : uf.indexRoots.size = uf.n := by
   simp [indexRoots_eq_fun, indexRootsFun]
@@ -585,31 +313,217 @@ theorem indexRoots_wf (uf : Unionfind) :
       exact uf.rootRank_lt_rootRank (by simpa using h) hr
     · simp [hr] at hj
 
-/-- Reachability well-formedness, stated but not yet proved: `root` is a
-`partial def`, so its value-level facts are currently unstatable. Records the
-intended property -- every representative lands in range, on a root. -/
+/-! ### `root` totality: `RootsWF` from a preserved acyclicity invariant
+
+`root uf x = rootAux uf x uf.n` follows parent pointers, stuttering once it hits
+a root. It lands on a genuine in-range root provided the parent forest is
+acyclic and in range -- the `Unionfind.WF` invariant below, which `new`/`unite`
+preserve. The fuel `uf.n` suffices because an acyclic chain visits distinct
+in-range nodes (the pigeonhole `nodup_lt_length_le`). -/
+
+/-- Following parents `k` then `j` steps = following `k + j` steps: once a root
+is hit the walk stutters, so the two agree. The composition law behind
+everything else. -/
+theorem rootAux_none {uf : Unionfind} {x : Nat} (h : uf.parents[x]! = none) :
+    ∀ j, uf.rootAux x j = x
+  | 0 => rfl
+  | _ + 1 => by grind [rootAux]
+
+/-- Unfold one step at a non-root: `rootAux x (fuel+1) = rootAux (parent x) fuel`. -/
+theorem rootAux_succ_some {uf : Unionfind} {x p : Nat} (h : uf.parents[x]! = some p)
+    (fuel : Nat) : uf.rootAux x (fuel + 1) = uf.rootAux p fuel := by
+  grind [rootAux]
+
+theorem rootAux_add (uf : Unionfind) (j : Nat) : ∀ x k,
+    uf.rootAux x (k + j) = uf.rootAux (uf.rootAux x k) j := by
+  intro x k
+  induction k generalizing x with
+  | zero => simp [rootAux]
+  | succ k ih =>
+    cases hpx : uf.parents[x]! with
+    | none => simp [rootAux_none hpx]
+    | some p => rw [Nat.succ_add, rootAux_succ_some hpx, rootAux_succ_some hpx, ih p]
+
+/-- Once the walk hits a root it stays: `rootAux x k` a root ⇒ more fuel is idempotent. -/
+theorem rootAux_stable {uf : Unionfind} {x k : Nat} (h : uf.parents[uf.rootAux x k]! = none)
+    (j : Nat) : uf.rootAux x (k + j) = uf.rootAux x k := by
+  rw [rootAux_add]; exact rootAux_none h j
+
+/-- The explicit parent path from `x` to its root `r`. A derivation is finite,
+so this encodes acyclicity; its `Nodup` is that content and its length bounds
+the fuel `rootAux` needs. -/
+inductive Chain (uf : Unionfind) : Nat → Nat → List Nat → Prop where
+  | root {x} : uf.parents[x]! = none → Chain uf x x [x]
+  | step {x p r l} : uf.parents[x]! = some p → Chain uf p r l → Chain uf x r (x :: l)
+
+/-- `rootAux` at the path length reaches the path's root. -/
+theorem Chain.rootAux_length {uf : Unionfind} {x r : Nat} {l : List Nat}
+    (h : Chain uf x r l) : uf.rootAux x l.length = r := by
+  induction h with
+  | root hx => exact rootAux_none hx 1
+  | step hp _ ih => rw [List.length_cons, rootAux_succ_some hp]; exact ih
+
+theorem Chain.isNone {uf : Unionfind} {x r : Nat} {l : List Nat}
+    (h : Chain uf x r l) : uf.parents[r]! = none := by
+  induction h with grind
+
+/-- The path's root is in range. -/
+theorem Chain.lt {uf : Unionfind}
+    (hin : ∀ z, z < uf.n → ∀ p, uf.parents[z]! = some p → p < uf.n) :
+    ∀ {x r l}, Chain uf x r l → x < uf.n → r < uf.n := by
+  intro x r l h
+  induction h with
+  | root _ => exact id
+  | step hp _ ih => exact fun hx => ih (hin _ hx _ hp)
+
+/-- Every node on the path is in range. -/
+theorem Chain.mem_lt {uf : Unionfind}
+    (hin : ∀ z, z < uf.n → ∀ p, uf.parents[z]! = some p → p < uf.n) :
+    ∀ {x r l}, Chain uf x r l → x < uf.n → ∀ z ∈ l, z < uf.n := by
+  intro x r l h
+  induction h with
+  | root _ => grind
+  | step hp _ ih => grind
+
+/-- Parent paths are unique (the parent map is a function). -/
+theorem Chain.unique {uf : Unionfind} : ∀ {a r₁ r₂ l₁ l₂},
+    Chain uf a r₁ l₁ → Chain uf a r₂ l₂ → l₁ = l₂ := by
+  intro a r₁ r₂ l₁ l₂ h₁
+  induction h₁ generalizing r₂ l₂ with
+  | root hx => intro h₂; cases h₂ <;> grind
+  | step hp _ ih => intro h₂; cases h₂ <;> grind
+
+/-- A node on the path starts its own (no-longer) subpath. -/
+theorem Chain.mem_subchain {uf : Unionfind} : ∀ {a r l z},
+    Chain uf a r l → z ∈ l → ∃ l', Chain uf z r l' ∧ l'.length ≤ l.length := by
+  intro a r l z h
+  induction h with
+  | root hx => grind [Chain.root]
+  | step hp _ ih => intro hz; grind [Chain.step]
+
+/-- The acyclicity payoff: a parent path repeats no node. -/
+theorem Chain.nodup {uf : Unionfind} : ∀ {x r l}, Chain uf x r l → l.Nodup := by
+  intro x r l h
+  induction h with
+  | root _ => simp
+  | step hp hpr ih =>
+    refine List.nodup_cons.mpr ⟨fun hmem => ?_, ih⟩
+    obtain ⟨l', hl', hle⟩ := hpr.mem_subchain hmem
+    have heq := Chain.unique (Chain.step hp hpr) hl'
+    grind
+
+/-- **Pigeonhole**: a `Nodup` list of naturals all `< n` has length `≤ n`. -/
+theorem nodup_lt_length_le : ∀ (n : Nat) (l : List Nat),
+    l.Nodup → (∀ x ∈ l, x < n) → l.length ≤ n := by
+  intro n
+  induction n with
+  | zero =>
+    intro l _ hlt; cases l with
+    | nil => simp
+    | cons a t => exact absurd (hlt a (by simp)) (Nat.not_lt_zero a)
+  | succ n ih =>
+    intro l hnd hlt
+    have hle := ih (l.erase n) (hnd.erase n) (by grind [List.Nodup.mem_erase_iff])
+    grind
+
+/-- Reachability well-formedness: every representative lands in range, on a
+root. Derived from `WF` below. -/
 def RootsWF (uf : Unionfind) : Prop :=
   ∀ i, i < uf.n → uf.root i < uf.n ∧ uf.parents[uf.root i]!.isNone
 
-/-- **The conditional keystone**: the quotient relabelling (`eachRoot` then
-`indexRoots`, the composition pattern `disjointUnion`/`freeHomomorphism`
-uses) is a *total, well-formed* map onto the compact root indices --
-conditional on `RootsWF`. Once `RootsWF` is proved, this upgrades unconditionally. -/
-theorem relabel_wf (uf : Unionfind) (h : uf.RootsWF) :
+/-- Array read helpers for the `set!`/`replicate` updates in `new`/`unite`. -/
+private theorem set!_self {a : Array (Option Nat)} {i : Nat} {v : Option Nat}
+    (h : i < a.size) : (a.set! i v)[i]! = v := by grind
+
+private theorem set!_ne {a : Array (Option Nat)} {i j : Nat} {v : Option Nat}
+    (hne : j ≠ i) : (a.set! i v)[j]! = a[j]! := by grind
+
+private theorem replicate_none_get {n z : Nat} :
+    (Array.replicate n (none : Option Nat))[z]! = none := by grind
+
+/-- **Well-formedness**: every node reaches a root -- the acyclicity content.
+The structural half (sizes match, parents in range) is carried by the type
+itself (`unionfind_invariant`), so `WF` is exactly what `new`/`unite` must
+preserve *semantically*. -/
+structure WF (uf : Unionfind) : Prop where
+  reaches : ∀ z, z < uf.n → ∃ r l, Chain uf z r l
+
+/-- Under `WF`, `root` lands on a genuine in-range root. The fuel `uf.n` reaches
+it because the parent path is `Nodup` and in range, so at most `n` long. -/
+theorem WF.root_spec {uf : Unionfind} (h : uf.WF) {x : Nat} (hx : x < uf.n) :
+    uf.parents[uf.root x]! = none ∧ uf.root x < uf.n := by
+  obtain ⟨r, l, hl⟩ := h.reaches x hx
+  have hlen : l.length ≤ uf.n :=
+    nodup_lt_length_le uf.n l hl.nodup (hl.mem_lt uf.unionfind_invariant.2 hx)
+  have hroot : uf.root x = r := by
+    have hsum : l.length + (uf.n - l.length) = uf.n := by omega
+    rw [root, ← hsum, rootAux_stable (hl.rootAux_length ▸ hl.isNone), hl.rootAux_length]
+  exact ⟨hroot ▸ hl.isNone, hroot ▸ hl.lt uf.unionfind_invariant.2 hx⟩
+
+theorem WF.rootsWF {uf : Unionfind} (h : uf.WF) : uf.RootsWF := by
+  intro i hi
+  obtain ⟨h1, h2⟩ := h.root_spec hi
+  exact ⟨h2, by simp [h1]⟩
+
+/-- `new n` is well-formed: every node is its own root. -/
+theorem wf_new (n : Nat) : (Unionfind.new n).WF where
+  reaches := fun z _ => ⟨z, [z], .root (by simp [new, replicate_none_get])⟩
+
+/-- `unite` preserves well-formedness (given both arguments are in range). The
+new edge points a root at a *different* root, which cannot reach back, so no
+cycle is created: every old chain transports across the single new edge. -/
+theorem WF.unite {uf : Unionfind} (h : uf.WF) {x y : Nat} (hx : x < uf.n) (hy : y < uf.n) :
+    (uf.unite x y).WF := by
+  obtain ⟨hrxn, hrxlt⟩ := h.root_spec hx
+  obtain ⟨hryn, hrylt⟩ := h.root_spec hy
+  simp only [Unionfind.unite]
+  split
+  · exact h
+  · rename_i hbeq
+    obtain ⟨hne, -⟩ : uf.root x ≠ uf.root y ∧ ¬ uf.n ≤ uf.root y := by simpa using hbeq
+    have hsz : uf.root x < uf.parents.size := by
+      rw [uf.unionfind_invariant.1]; exact hrxlt
+    refine ⟨fun z hz => ?_⟩
+    obtain ⟨r, l, hl⟩ := h.reaches z hz
+    clear hz
+    induction hl with
+    | @root w hw =>
+      by_cases hwr : w = uf.root x
+      · subst hwr
+        exact ⟨uf.root y, _, .step (set!_self hsz) (.root ((set!_ne hne.symm).trans hryn))⟩
+      · exact ⟨w, _, .root ((set!_ne hwr).trans hw)⟩
+    | @step w p r l hw hch ih =>
+      have hwr : w ≠ uf.root x := by rintro rfl; grind
+      obtain ⟨r', l', hr'⟩ := ih
+      exact ⟨r', _, .step ((set!_ne hwr).trans hw) hr'⟩
+
+@[simp] theorem size_eachRoot (uf : Unionfind) : uf.eachRoot.size = uf.n := by
+  simp [eachRoot]
+
+/-- The `eachRoot` entry read, folded. -/
+@[simp] theorem getElem_eachRoot {uf : Unionfind} {i : Nat} (h : i < uf.eachRoot.size) :
+    uf.eachRoot[i]'h = uf.root i := by
+  simp [eachRoot]
+
+/-- **The keystone**: the quotient relabelling (`eachRoot` then `indexRoots`,
+the composition pattern `disjointUnion`/`freeHomomorphism` uses) is a *total,
+well-formed* map onto the compact root indices, for any well-formed union-find.
+`WF` is provable and preserved by `new`/`unite` (`wf_new`, `WF.unite`), so unlike
+the earlier `RootsWF` assumption this holds unconditionally. -/
+theorem relabel_wf (uf : Unionfind) (hwf : uf.WF) :
     IndexMap.WF (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots) uf.n uf.numRoots
     ∧ IndexMap.Total (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots) := by
+  have h := hwf.rootsWF
   have hm1wf : IndexMap.WF (uf.eachRoot.map OptIdx.some) uf.n uf.n := by
     simpa [eachRoot, Function.comp_def] using
       (IndexMap.range_map_some_wf (n := uf.n) (codom := uf.n) (f := uf.root)
         (fun i hi => (h i hi).1))
   refine ⟨IndexMap.composeMap_wf hm1wf (uf.indexRoots_wf), ?_⟩
   intro i hi
-  have hin : i < uf.n := by
-    simpa [composeMap, eachRoot] using hi
+  have hin : i < uf.n := by simpa using hi
   have hroot := h i hin
-  unfold composeMap
-  rw [Array.getElem_map]
-  simp [eachRoot, getElem!_indexRoots uf hroot.1, hroot.2]
+  rw [IndexMap.getElem_composeMap (by simpa using hin)]
+  simp [getElem!_indexRoots uf hroot.1, hroot.2]
 
 end Unionfind
 end NearLinear4ct

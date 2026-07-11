@@ -53,6 +53,14 @@ def wfCheck (m : IndexMap) (dom codom : Nat) : Bool :=
 
 /-! ### Plumbing -/
 
+/-- The in-range `idx?` read, folded. -/
+theorem idx?_pos {m : IndexMap} {i : Nat} (h : i < m.size) :
+    m.idx? i = (m[i]'h).get? := dif_pos h
+
+/-- The out-of-range `idx?` read, folded. -/
+theorem idx?_neg {m : IndexMap} {i : Nat} (h : ¬ i < m.size) :
+    m.idx? i = Option.none := dif_neg h
+
 theorem wf_iff {m : IndexMap} {dom codom : Nat} :
     m.WF dom codom ↔ m.size = dom ∧ m.Bounded codom :=
   ⟨fun h => ⟨h.size_eq, h.bounded⟩, fun h => ⟨h.1, h.2⟩⟩
@@ -186,6 +194,12 @@ theorem idx?_initialMappings_vmap (n d i : Nat) :
     (composeMap m1 m2).size = m1.size := by
   simp [composeMap]
 
+/-- The `composeMap` entry read, folded (its `Array.getElem_map` equation). -/
+theorem getElem_composeMap {m1 m2 : IndexMap} {i : Nat} (hi : i < m1.size) :
+    (composeMap m1 m2)[i]'(by simpa using hi) =
+      if (m1[i]'hi).isNone then OptIdx.none else m2[(m1[i]'hi).idx!]! := by
+  simp [composeMap]
+
 /-- **The workhorse.** Under `Bounded`, composing maps is Kleisli composition
 of the functions they denote -- and the proof shows `composeMap`'s internal
 `map2[j.idx!]!` read (Mapping.lean) is in range, i.e. its panic branch is
@@ -194,23 +208,14 @@ dead. (True even without `Bounded` -- an out-of-range `!` read defaults to
 panic-branch-dead content; see the module header.) -/
 theorem idx?_composeMap {m1 m2 : IndexMap} (hb : m1.Bounded m2.size) (i : Nat) :
     (composeMap m1 m2).idx? i = (m1.idx? i).bind m2.idx? := by
-  unfold idx?
   by_cases hi : i < m1.size
-  · rw [dif_pos (by simpa using hi), dif_pos hi]
-    unfold composeMap
-    rw [Array.getElem_map]
-    have hbi := hb i hi
-    rcases hm : m1[i]'hi with ⟨raw⟩
-    rw [hm] at hbi
-    cases raw with
-    | zero => simp [OptIdx.isNone, OptIdx.get?, OptIdx.none]
-    | succ k =>
-      have hk : k < m2.size := hbi k (by simp [OptIdx.get?])
-      simp only [OptIdx.idx!_raw_succ, OptIdx.isNone_raw_succ,
-        Bool.false_eq_true, if_false,
-        getElem!_pos m2 k hk, OptIdx.get?]
-      simp [dif_pos hk]
-  · rw [dif_neg (by simpa using hi), dif_neg hi]
+  · rw [idx?_pos (by simpa using hi), getElem_composeMap hi, idx?_pos hi]
+    rcases hm : (m1[i]'hi).get? with _ | k
+    · simp [OptIdx.isNone_eq, hm]
+    · have hk : k < m2.size := hb i hi k hm
+      simp [OptIdx.isNone_eq, hm, OptIdx.idx!_of_get?_some hm,
+        getElem!_pos m2 k hk, idx?_pos hk]
+  · rw [idx?_neg (by simpa using hi), idx?_neg hi]
     rfl
 
 theorem composeMap_wf {m1 m2 : IndexMap} {a b c : Nat}
@@ -226,22 +231,7 @@ theorem composeMap_wf {m1 m2 : IndexMap} {a b c : Nat}
 theorem composeMap_total {m1 m2 : IndexMap}
     (t1 : m1.Total) (hb : m1.Bounded m2.size) (t2 : m2.Total) :
     (composeMap m1 m2).Total := by
-  intro i h
-  have hi : i < m1.size := by simpa using h
-  unfold composeMap
-  rw [Array.getElem_map]
-  have hs := t1 i hi
-  have hbi := hb i hi
-  rcases hm : m1[i]'hi with ⟨raw⟩
-  rw [hm] at hs hbi
-  cases raw with
-  | zero => simp [OptIdx.isSome] at hs
-  | succ k =>
-    have hk : k < m2.size := hbi k (by simp [OptIdx.get?])
-    simp only [OptIdx.idx!_raw_succ, OptIdx.isNone_raw_succ,
-      Bool.false_eq_true, if_false,
-      getElem!_pos m2 k hk]
-    exact t2 k hk
+  grind [Total, composeMap, Bounded, OptIdx.isNone, OptIdx.isSome, OptIdx.idx!, OptIdx.get?]
 
 /-- Lifted to `Mappings.compose` (`self` first, then `other` -- note the paper
 writes `φ̃ ∘ φ★`, applying `φ★` first; same composite, opposite notation). -/
@@ -264,23 +254,11 @@ half's domain embeds by `i ↦ l + i`) -/
 
 theorem idx?_splitMap_fst {m : IndexMap} {l : Nat} (hl : l ≤ m.size) (i : Nat) :
     (splitMap m l).1.idx? i = if i < l then m.idx? i else Option.none := by
-  unfold idx?
-  simp only [splitMap, Array.size_extract]
-  by_cases hi : i < l
-  · rw [dif_pos (by omega), if_pos hi, dif_pos (by omega)]
-    congr 1
-    simp [Array.getElem_extract]
-  · rw [dif_neg (by omega), if_neg hi]
+  grind [idx?, splitMap]
 
 theorem idx?_splitMap_snd (m : IndexMap) (l i : Nat) :
     (splitMap m l).2.idx? i = m.idx? (l + i) := by
-  unfold idx?
-  simp only [splitMap, Array.size_extract]
-  by_cases hi : l + i < m.size
-  · rw [dif_pos (by omega), dif_pos hi]
-    congr 1
-    simp [Array.getElem_extract]
-  · rw [dif_neg (by omega), dif_neg hi]
+  grind [idx?, splitMap]
 
 theorem splitMap_fst_wf {m : IndexMap} {dom codom l : Nat}
     (h : m.WF dom codom) (hl : l ≤ dom) : (splitMap m l).1.WF l codom := by
@@ -304,28 +282,17 @@ theorem splitMap_snd_wf {m : IndexMap} {dom codom l : Nat}
 
 theorem splitMap_fst_total {m : IndexMap} {l : Nat} (ht : m.Total) :
     (splitMap m l).1.Total := by
-  intro i hi
-  simpa [splitMap, Array.getElem_extract] using ht i (by simp at hi; omega)
+  grind [Total, splitMap]
 
 theorem splitMap_snd_total {m : IndexMap} {l : Nat} (ht : m.Total) :
     (splitMap m l).2.Total := by
-  intro i hi
-  simpa [splitMap, Array.getElem_extract] using ht (l + i) (by simp at hi; omega)
+  grind [Total, splitMap]
 
 /-- Reassembly: the two restrictions *are* the map -- pins
 `freeHomomorphismPair`'s meaning. -/
 theorem splitMap_fst_append_snd {m : IndexMap} {l : Nat} (hl : l ≤ m.size) :
     (splitMap m l).1 ++ (splitMap m l).2 = m := by
-  apply Array.ext
-  · simp; omega
-  · intro i h1 h2
-    rw [Array.getElem_append]
-    split
-    · simp [splitMap, Array.getElem_extract]
-    · simp only [splitMap, Array.getElem_extract]
-      congr 1
-      simp at *
-      omega
+  grind [splitMap]
 
 /-! ### Decode payoffs: the combinators under `toFun` (each a transport of its
 `idx?` twin via `toFun_val` + `option_fin_val_inj`) -/

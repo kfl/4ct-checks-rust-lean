@@ -37,11 +37,10 @@ structure PseudoTriangulation where
   darts : Array Dart
 deriving DecidableEq, Repr, Inhabited, BEq
 
-/-- Format an optional index the way the C++ printed `int` darts (`-1` for nil). -/
-private def fmtIdx (o : OptIdx) : String :=
-  match o.get? with
-  | some v => toString v
-  | none => "-1"
+/-- Format an optional index as a printed `int` dart (`-1` for nil), per `FORMAT.md`. -/
+private def fmtIdx : OptIdx → String
+  | .some v => toString v
+  | .none => "-1"
 
 /-- Follow the `succ` chain from `eStart`, collecting dart ids (`get_e_rotations`
 inner do-while). A boundary chain is terminated by a trailing `none`. `partial`
@@ -49,9 +48,9 @@ inner do-while). A boundary chain is terminated by a trailing `none`. `partial`
 private partial def rotationGo (darts : Array Dart) (eStart eCur : Nat)
     (acc : Array (Option Nat)) : Array (Option Nat) :=
   let acc := acc.push (some eCur)
-  match (darts[eCur]!).succ.get? with
-  | none => acc.push none
-  | some nxt => if nxt == eStart then acc else rotationGo darts eStart nxt acc
+  match (darts[eCur]!).succ with
+  | .none => acc.push none
+  | .some nxt => if nxt == eStart then acc else rotationGo darts eStart nxt acc
 
 namespace PseudoTriangulation
 
@@ -146,9 +145,9 @@ def anyDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
 def sucKTimes (pt : PseudoTriangulation) (e k : Nat) : Option Nat := Id.run do
   let mut curr := e
   for _ in [0:k] do
-    match (pt.darts[curr]!).succ.get? with
-    | none => return none
-    | some nxt => curr := nxt
+    match (pt.darts[curr]!).succ with
+    | .none => return none
+    | .some nxt => curr := nxt
   return some curr
 
 /-- For each vertex, the cyclic rotation of its darts. A boundary rotation is
@@ -196,8 +195,7 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
   let mut ufV := Unionfind.new pt.n
   let mut ufD := Unionfind.new darts.size
   let mut q : Queue (Nat × Nat) := Queue.ofArray dartPairs
-  while !q.isEmpty do
-    let ((e, f), q') := q.pop!
+  while let some ((e, f), q') := q.pop? do
     q := q'
     if ufD.same e f then continue
     let hE := (darts[e]!).head
@@ -210,19 +208,16 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
     let eRev := (darts[eStar]!).rev
     let fRev := (darts[fStar]!).rev
     q := q.push (eRev, fRev)
-    let eSucc := (darts[eStar]!).succ
-    let fSucc := (darts[fStar]!).succ
-    if eSucc.isSome && fSucc.isSome then
-      q := q.push (eSucc.idx!, fSucc.idx!)
-    let ePred := (darts[eStar]!).pred
-    let fPred := (darts[fStar]!).pred
-    if ePred.isSome && fPred.isSome then
-      q := q.push (ePred.idx!, fPred.idx!)
-    -- fill in the representative's open sides from the other dart
-    if eSucc.isSome && fSucc.isNone then
-      darts := darts.set! fStar { darts[fStar]! with succ := eSucc }
-    if ePred.isSome && fPred.isNone then
-      darts := darts.set! fStar { darts[fStar]! with pred := ePred }
+    -- both sides closed: a new gluing obligation; only the representative's
+    -- side open: fill it in from the other dart
+    match (darts[eStar]!).succ, (darts[fStar]!).succ with
+    | .some e', .some f' => q := q.push (e', f')
+    | .some e', .none => darts := darts.set! fStar { darts[fStar]! with succ := .some e' }
+    | _, _ => pure ()
+    match (darts[eStar]!).pred, (darts[fStar]!).pred with
+    | .some e', .some f' => q := q.push (e', f')
+    | .some e', .none => darts := darts.set! fStar { darts[fStar]! with pred := .some e' }
+    | _, _ => pure ()
 
   -- renumber survivors: each_root (total, lifted to `some`) ∘ index_roots (compacted)
   let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
@@ -232,10 +227,10 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
     let dd := darts[d]!
     let hd := (vMap[dd.head]!).idx!
     let rv := (dMap[dd.rev]!).idx!
-    -- `dMap[s]!` is already the `OptIdx` that `dd.succ.bind (·.get?)` would decode;
-    -- propagate it directly (boundary `none` stays `none`).
-    let succ := if dd.succ.isSome then dMap[dd.succ.idx!]! else OptIdx.none
-    let pred := if dd.pred.isSome then dMap[dd.pred.idx!]! else OptIdx.none
+    -- `dMap[s]!` is already an `OptIdx`; propagate it directly (boundary
+    -- `none` stays `none`).
+    let succ := match dd.succ with | .some s => dMap[s]! | .none => .none
+    let pred := match dd.pred with | .some p => dMap[p]! | .none => .none
     dartsStar := dartsStar.push ⟨hd, rv, succ, pred⟩
   return (⟨ufV.numRoots, dartsStar⟩, ⟨vMap, dMap⟩)
 

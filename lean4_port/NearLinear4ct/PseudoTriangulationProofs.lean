@@ -155,16 +155,11 @@ the left copy's bounds weaken into the union, the right copy's shift by
 theorem disjointUnion_wf {l r : PseudoTriangulation}
     (hl : l.WF) (hr : r.WF) : (l.disjointUnion r).WF := by
   intro i h
-  simp only [disjointUnion_darts, disjointUnion_n, Array.size_append,
-    Array.size_map] at h ⊢
-  rw [Array.getElem_append]
-  split
-  · -- left block: `l`'s dart, bounds weaken into the union
-    next hi => exact (hl i hi).mono (by omega) (by omega)
-  · -- right block: `r`'s dart, shifted
-    next hi =>
-      rw [Array.getElem_map]
-      exact dart_shift_inBounds (hr (i - l.darts.size) (by omega))
+  by_cases hi : i < l.darts.size
+  · grind [WF, disjointUnion_darts, disjointUnion_n, Dart.InBounds.mono]
+  · have hd := dart_shift_inBounds (n' := l.n) (D' := l.darts.size)
+        (hr (i - l.darts.size) (by grind [disjointUnion_darts]))
+    grind [WF, disjointUnion_darts, disjointUnion_n]
 
 /-! ### Construction
 
@@ -223,29 +218,13 @@ private def DartOfWF (n : Nat) (dartOf : Array (Array (Option Nat))) (fresh : Na
 
 private theorem dartOfWF_init (n : Nat) :
     DartOfWF n (Array.replicate n (Array.replicate n none)) 0 := by
-  refine ⟨by simp, fun a ha => ?_, fun a b v hv => ?_, by omega⟩
-  · rw [getElem!_pos _ a (by simpa using ha), Array.getElem_replicate, Array.size_replicate]
-  · rw [getElem!_replicate_replicate] at hv; simp at hv
+  grind [DartOfWF, getElem!_replicate_replicate]
 
 private theorem dartOfWF_set (n : Nat) (dartOf : Array (Array (Option Nat)))
     (fresh a b : Nat) (hwf : DartOfWF n dartOf fresh) (ha : a < n) :
     DartOfWF n (dartOf.setIfInBounds a ((dartOf[a]!).setIfInBounds b (some fresh)))
       (fresh + 1) := by
-  obtain ⟨hsz, hinner, hbnd, _⟩ := hwf
-  refine ⟨by simpa using hsz, ?_, ?_, fun _ => by omega⟩
-  · intro a' ha'
-    rw [getElem!_setIfInBounds]
-    by_cases h : a = a'
-    · rw [if_pos ⟨h, hsz ▸ ha'⟩, Array.size_setIfInBounds]; exact hinner a ha
-    · rw [if_neg (fun c => h c.1)]; exact hinner a' ha'
-  · intro a' b' v hv
-    rw [getElem!_setIfInBounds] at hv
-    split at hv
-    · rw [getElem!_setIfInBounds] at hv
-      split at hv
-      · simp at hv; omega
-      · have := hbnd a b' v hv; omega
-    · have := hbnd a' b' v hv; omega
+  grind [DartOfWF, getElem!_setIfInBounds]
 
 /-- Every dart in the initial `replicate`-filled array is in bounds (all fields
 are `0`/`none`; `head = 0 < n` holds because `fresh > 0 ⇒ n > 0`). -/
@@ -253,11 +232,7 @@ private theorem inBounds_replicate_default (n fresh : Nat) (d : Dart)
     (hd : d.head = 0 ∧ d.rev = 0 ∧ d.succ = OptIdx.none ∧ d.pred = OptIdx.none)
     (hn : 0 < fresh → 0 < n) (i : Nat) (hi : i < (Array.replicate fresh d).size) :
     ((Array.replicate fresh d)[i]'hi).InBounds n (Array.replicate fresh d).size := by
-  obtain ⟨hh, hr, hsu, hpr⟩ := hd
-  rw [Array.getElem_replicate]
-  simp only [Array.size_replicate] at hi ⊢
-  exact ⟨by rw [hh]; exact hn (by omega), by rw [hr]; omega,
-    by rw [hsu]; simp [OptIdx.get?, OptIdx.none], by rw [hpr]; simp [OptIdx.get?, OptIdx.none]⟩
+  grind [Dart.InBounds, Array.size_replicate, OptIdx.get?, OptIdx.none]
 
 /-- `InBounds` is preserved by a phase-2 write, provided the written dart is in
 bounds whenever its target index is valid. -/
@@ -277,6 +252,11 @@ private theorem lt_of_mem_range_toList {n cur : Nat} {pref suff : List Nat}
     (h : [0:n].toList = pref ++ cur :: suff) : cur < n := by
   have : cur ∈ ([0:n] : Std.Legacy.Range).toList := by rw [h]; simp
   simpa [Std.Legacy.Range.toList] using this
+
+section
+-- The transparency linter flags `mvcgen`'s own `Invariant` encoding (the `⇓`
+-- postconditions), not this proof's text; nothing here to rephrase.
+set_option linter.tacticCheckInstances false
 
 /-- `fromVRotations` always produces a well-formed triangulation, *regardless*
 of whether the input rotations are valid: structural `InBounds` follows entirely
@@ -314,7 +294,9 @@ theorem fromVRotations_wf (n : Nat) (rotations : Array (Array Int)) :
     refine ⟨lt_of_mem_range_toList (by assumption), ?_, ?_, ?_⟩ <;>
       simp only [hsz] <;>
       grind [DartOfWF, OptIdx.ofOption_get?, OptIdx.get?, OptIdx.none, panicWithPosWithDecl_nat]
-  all_goals (first | assumption | (refine ⟨?_, ?_⟩ <;> assumption))
+  all_goals assumption
+
+end
 
 end Construction
 
@@ -353,17 +335,21 @@ private theorem Configuration.mirror_darts (conf : Configuration) :
     conf.mirror.darts
       = conf.darts.map fun d => { d with succ := d.pred, pred := d.succ } := rfl
 
+/-- `mirror` keeps the vertex count, definitionally. -/
+private theorem Configuration.mirror_n (conf : Configuration) :
+    conf.mirror.n = conf.n := rfl
+
+/-- `mirror` keeps the degrees, definitionally. -/
+private theorem Configuration.mirror_degrees (conf : Configuration) :
+    conf.mirror.degrees = conf.degrees := rfl
+
 /-- `mirror` (reflecting the configuration by swapping each dart's
 `succ`/`pred`) preserves well-formedness: `head`/`rev` are untouched and the
 two rotation clauses swap. -/
 theorem Configuration.mirror_wf {conf : Configuration}
     (h : conf.toPseudoConfiguration.WF) :
     conf.mirror.toPseudoConfiguration.WF := by
-  obtain ⟨hpt, hdeg⟩ := h
-  refine ⟨fun i hi => ?_, hdeg⟩
-  simp only [mirror_darts, Array.size_map] at hi ⊢
-  rw [Array.getElem_map]
-  let hd := hpt i hi
-  exact ⟨hd.head_lt, hd.rev_lt, hd.pred_lt, hd.succ_lt⟩
+  grind [PseudoConfiguration.WF, PseudoTriangulation.WF, mirror_darts,
+    mirror_n, mirror_degrees, Dart.InBounds]
 
 end NearLinear4ct

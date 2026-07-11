@@ -204,33 +204,43 @@ def getCartwheels (cartwheeldir : System.FilePath) : IO (Array CartWheel) := do
   IO.println s!"Total {cws.size} cartwheels loaded."
   return cws
 
-/-- Recursive helper for `enumWheelTuples`: assign neighbour `i`'s degree from
-index `iLowest` upward, collecting the lex-min neighbour-degree tuples (C++ nested
-`enum_degree` lambda, with wheel *generation* split out so it can be parallelised).
-`partial` (L5). -/
-private partial def enumWheelDegrees (centerDegree : Nat) (degrees : Array Int) (i iLowest : Nat)
-    (acc : Array (Array Int)) : Array (Array Int) := Id.run do
-  if i == centerDegree then
-    if lexMin degrees then return acc.push degrees
-    return acc
-  let mut acc := acc
-  for j in [iLowest:CARTWHEEL_DEGREES_SIZE] do
-    acc := enumWheelDegrees centerDegree (degrees.set! i CARTWHEEL_DEGREES[j]!) (i + 1) iLowest acc
-  return acc
+/-- `CARTWHEEL_DEGREES` as an `Int` list, computed once; every digit menu
+`CARTWHEEL_DEGREES[iLowest:]` is one of its suffixes, shared via `drop`. -/
+private def cartwheelDegreesInt : List Int :=
+  CARTWHEEL_DEGREES.toList.map Int.ofNat
+
+/-- The digit enumeration of A.9.5's `enumDegree(degrees, i, ilowest)`: the
+length-`k` tails of a neighbour-degree tuple, every entry drawn from
+`CARTWHEEL_DEGREES[iLowest:]` (the spec's `ilowest` cut -- a lex-min rotation
+starts at its minimal digit), in the spec's enumeration order (earlier
+positions vary slowest). One prepend-a-digit step iterated `k` times
+(`Nat.repeat`). Lists, not arrays: cons is O(1) and each suffix level is
+shared structurally by all the digits above it; the caller realises each full
+tuple into an `Array` once, at the boundary. -/
+private def wheelTails (iLowest k : Nat) : List (List Int) :=
+  let digits := cartwheelDegreesInt.drop iLowest
+  Nat.repeat (fun tails => digits.flatMap fun d => tails.map (d :: ·)) k [[]]
 
 namespace CartWheel
 
-/-- The lex-min neighbour-degree tuples for a centre of degree `centerDegree`, in
-enumeration order (C++ `enum_wheels`' inner traversal). -/
-def enumWheelTuples (centerDegree : Nat) : Array (Array Int) := Id.run do
-  let mut tuples : Array (Array Int) := #[]
-  let degrees : Array Int := Array.replicate centerDegree 0
-  for j in [0:CARTWHEEL_DEGREES_SIZE] do
-    tuples := enumWheelDegrees centerDegree (degrees.set! 0 CARTWHEEL_DEGREES[j]!) 1 j tuples
-  return tuples
+/-- The lex-min neighbour-degree tuples for a centre of degree `centerDegree`,
+in enumeration order (A.9.5's digit enumeration and rotation check). The
+rotation check (`lexMin`, specified against `List.rotateLeft` by
+`lexMin_iff_forall_rotateLeft`) runs on the list itself, so only the surviving
+tuples are realised as arrays. Deviation from A.9.5, which generates each cartwheel at the leaf of
+the recursion: the tuples are enumerated first and `generateCartwheel` applied
+afterwards, so `enumPossibleBadWheels` can parallelise generation + pruning
+per tuple. -/
+def enumWheelTuples : (centerDegree : Nat) → Array (Array Int)
+  | 0 => #[]
+  | k + 1 =>
+    CARTWHEEL_DEGREES.zipIdx.flatMap fun (d, iLowest) =>
+      ((wheelTails iLowest k).filterMap fun tail =>
+        let degs := (d : Int) :: tail
+        if lexMin degs then some degs.toArray else none).toArray
 
-/-- Enumerate all wheels with the given centre degree, up to rotation (`lexMin`)
-(C++ `enum_wheels`). -/
+/-- Enumerate all wheels with the given centre degree, up to rotation
+(`lexMin`) -- A.9.5's `enumWheels`. -/
 def enumWheels (centerDegree : Nat) : Array CartWheel :=
   (enumWheelTuples centerDegree).map (generateCartwheel centerDegree)
 
@@ -306,18 +316,16 @@ def prune (cw : CartWheel) (combinedRuleWithSpokes : Array CombinedRule) (rules 
   || cw.toPseudoConfiguration.blockedByReducibleConfiguration cw.center confs
 
 /-- Enumerate wheels of the given centre degree that survive the initial pruning
-(C++ `enum_possible_bad_wheels`, A.9.20-adjacent).
+(A.9.7).
 
-The per-wheel `prune` is pure and read-only over the shared `rules`/`combinedRules`
-/`confs`, so the filter is embarrassingly parallel (R4). It is run with `parMap`
-(order-preserving), giving a wall-clock speedup on many cores while producing the
-**identical** surviving-wheel list (and hence identical `d{c}_{i}` output files) —
-note the C++ runs this step serially. -/
+Deviation from A.9.7, which builds every wheel and then prunes in a serial loop:
+generation + pruning run as one order-preserving `parFilterMap` over the tuples.
+The per-tuple work is pure and read-only over the shared
+`rules`/`combinedRules`/`confs`, so the survivor list -- and hence the
+`d{c}_{i}` output files -- is byte-identical (see `FIDELITY.md`, data
+parallelism). -/
 def enumPossibleBadWheels (centerDegree : Nat) (rules : Array Rule)
     (combinedRules : Array CombinedRule) (confs : Array Configuration) : Array CartWheel :=
-  -- Fuse generation + pruning into one parallel pass over the degree-tuples, so the
-  -- wheel construction is parallelised alongside the prune. Order-preserving
-  -- ⇒ identical survivor list / output files.
   parFilterMap (enumWheelTuples centerDegree) fun degs =>
     let wheel := generateCartwheel centerDegree degs
     if wheel.prune #[] rules combinedRules confs then none else some wheel
@@ -407,8 +415,7 @@ def fixOutRules (cw : CartWheel) (cartwheelsInFixed : Array (CartWheel × Array 
   let degreeCenter := (cw.degrees[cw.center]!).lower
   let mut queue : Queue (CartWheel × Array CombinedRule) := Queue.ofArray cartwheelsInFixed
   let mut cartwheels : Array (CartWheel × Array CombinedRule) := #[]
-  while !queue.isEmpty do
-    let ((cartwheel, combinedRuleWithSpokes), queue') := queue.pop!
+  while let some ((cartwheel, combinedRuleWithSpokes), queue') := queue.pop? do
     queue := queue'
     match cartwheel.firstRefinable degreeCenter rules with
     | none => cartwheels := cartwheels.push (cartwheel, combinedRuleWithSpokes)

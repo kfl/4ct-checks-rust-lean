@@ -23,6 +23,8 @@ import NearLinear4ct.Rule
 
 -- Phase 5: the enumeration engine
 import NearLinear4ct.Cartwheel
+-- degree-gate sufficiency for the refinement subtraction
+import NearLinear4ct.CartwheelProofs
 
 -- Phase 6: verification drivers
 import NearLinear4ct.CombineCartwheel

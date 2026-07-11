@@ -38,17 +38,21 @@ instance : LawfulBEq OptIdx where
 
 namespace OptIdx
 
-/-- `none` (unmapped). -/
-def none : OptIdx := ⟨0⟩
+/-- `none` (unmapped). `@[match_pattern]`: usable in patterns, so call sites
+match an `OptIdx` like an `Option` without decoding through `get?`. -/
+@[match_pattern] def none : OptIdx := ⟨0⟩
 
-/-- `some i` (mapped to index `i`). -/
-def «some» (i : Nat) : OptIdx := ⟨i + 1⟩
+/-- `some i` (mapped to index `i`).
 
-/-- Whether this is `some _` (no allocation — for the hot loop). -/
-def isSome (o : OptIdx) : Bool := o.raw != 0
+`@[match_pattern]`: the pattern `.some i` unfolds to `⟨i + 1⟩`, so
+`.none`/`.some i` matches are exhaustive. -/
+@[inline, match_pattern] def «some» (i : Nat) : OptIdx := ⟨i + 1⟩
+
+/-- Whether this is `some _` (no allocation -- for the hot loop). -/
+@[inline] def isSome (o : OptIdx) : Bool := o.raw != 0
 
 /-- Whether this is `none` (no allocation). -/
-def isNone (o : OptIdx) : Bool := o.raw == 0
+@[inline] def isNone (o : OptIdx) : Bool := o.raw == 0
 
 /-- The decoded `Option Nat` view (boundary accessor; builds an `Option`). -/
 def get? (o : OptIdx) : Option Nat := if o.raw == 0 then Option.none else Option.some (o.raw - 1)
@@ -127,8 +131,7 @@ theorem get?_ofOption (o : OptIdx) : ofOption o.get? = o := by
 /-- A mapped `get?` pins down the value: `some` is the only preimage. -/
 theorem get?_eq_some_iff {o : OptIdx} {j : Nat} :
     o.get? = Option.some j ↔ o = OptIdx.«some» j := by
-  obtain ⟨raw⟩ := o
-  cases raw <;> simp [get?, OptIdx.«some»] <;> omega
+  grind [OptIdx, get?, OptIdx.«some»]
 
 /-- Raw bounds are exactly bounds on the decoded value, when present. -/
 theorem raw_le_iff_get?_lt {o : OptIdx} {bound : Nat} :
@@ -153,6 +156,10 @@ theorem raw_le_iff_get?_lt {o : OptIdx} {bound : Nat} :
 theorem isNone_iff_get? {o : OptIdx} : o.isNone ↔ o.get? = Option.none := by
   obtain ⟨raw⟩ := o
   cases raw <;> simp [isNone, get?]
+
+/-- `isNone` under the `Option Nat` view, as a `Bool` rewrite. -/
+theorem isNone_eq (o : OptIdx) : o.isNone = o.get?.isNone := by
+  grind [isNone, get?]
 
 /-- The `!`-discharge converter: a `get?` fact justifies the panicking read. -/
 theorem idx!_of_get?_some {o : OptIdx} {j : Nat} (h : o.get? = Option.some j) :

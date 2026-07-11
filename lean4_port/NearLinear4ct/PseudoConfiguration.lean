@@ -67,42 +67,51 @@ def disjointUnion (l r : PseudoConfiguration) : PseudoConfiguration :=
   let pt := PseudoTriangulation.disjointUnion l.toPseudoTriangulation r.toPseudoTriangulation
   PseudoConfiguration.new pt.n pt.darts (l.degrees ++ r.degrees)
 
+/-- Queue the obligation `(s, s★)` when both links are interior (`some`); a
+boundary link queues nothing. The conditional pushes of `homCoreGo`'s expand
+step, named so the proofs speak about one operation instead of its match.
 
-/-- Tail-recursive worklist loop of the homomorphism BFS, factored out of the
-`while`/`Id.run do` so the state `(q, maps)` threads through **explicit arguments**.
-Perceus's borrow/reuse analysis is cleaner on a tail call with linear state than on
-the `whileM` closure the `do` loop desugars to (which also carried a per-iteration
-heartbeat): `maps.set!` stays in place, `q` is threaded, and `src`/`dst`/`degreeTest`
-are read-only so they pass borrowed (no per-iteration RC).
+`@[noinline]`: inlined, the match arms duplicate `homCoreGo`'s continuation
+and defeat the borrow inference (`dst` turns owned, doubling the loop's
+reference-count traffic); as a call with scalar arguments the loop keeps its
+borrowed parameters and a smaller body. -/
+@[noinline] def pushLink
+    (q : Queue SmallNatPair) : OptIdx → OptIdx → Queue SmallNatPair
+  | .some s, .some sStar => q.push (SmallNatPair.pack s sStar)
+  | _, _ => q
 
-`partial_fixpoint`: the worklist `q` *grows* (each visit pushes ≤ 3 darts), so the
-recursion is not structural. `partial_fixpoint` gives the fixpoint a statable
-unfolding equation and a partial-correctness principle (`HomomorphismProofs.lean`)
-without a termination proof -- soundness/output-WF are partial correctness. It
-compiles to the same code as `partial def` (only SSA temp names differ). The
-function is *not* total on malformed input: an out-of-bounds dart index makes
-`set!` a no-op and can loop; totality is conditional on `WF` (the measure
-`(# unmapped dart cells, q.size)` strictly decreases when every index is in bounds).
+/-- One-step verdict of the homomorphism BFS: the next state, or the final
+answer. `@[inline]` on `homStep` + the immediate `match` in `homCoreGo` means
+this type never exists at runtime (case-of-known-constructor dissolves it);
+it exists so the *proofs* can speak about a single, recursion-free step. -/
+inductive HomNext where
+  | done (r : Option (IndexMap × IndexMap))
+  | next (q : Queue SmallNatPair) (vmap dmap : IndexMap)
+
+/-- One step of the homomorphism BFS (the pseudocode's loop body): pop one
+obligation `(f, f★)` and process it -- re-check an already-mapped dart, or map
+a fresh one and queue its `rev`/`succ`/`pred` obligations.
 
 The two maps are `Array OptIdx` — the verified-unboxed `Option Nat` (`OptIdx.lean`),
 read in `none`/`some` terms yet stored unboxed (no `some`-cell allocation per `set`).
 The worklist entries `(f, f★)` are `SmallNatPair` -- the verified pointer-tagged
 pack of two dart indices (`SmallNatPair.lean`; a `Nat × Nat` ctor costs a heap
 allocation + free per element, and those pairs were the prune pipeline's dominant
-RC/free churn). `@[specialize]` monomorphises `degreeTest` per call site
-(`Degree.includes` etc.), eliminating the indirect `lean_apply_2` in the loop. -/
-@[specialize] def homCoreGo (src dst : PseudoConfiguration)
+RC/free churn). `@[inline]`: the step exists once in the source but compiles
+into its driver, so `homCoreGo`'s loop is exactly the pre-factoring code. -/
+@[inline] def homStep (src dst : PseudoConfiguration)
     (degreeTest : Degree → Degree → Bool)
-    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Option (IndexMap × IndexMap) :=
-  if q.isEmpty then some (vmap, dmap)
-  else
-    let (packed, q) := q.pop!
-    let (f, fStar) := packed.unpackPair
-    let dv := dmap[f]!
-    if dv.isSome then
-      if dv != OptIdx.some fStar then none           -- already mapped, inconsistently
-      else homCoreGo src dst degreeTest q vmap dmap
-    else
+    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : HomNext :=
+  match q.pop? with
+  | none => .done (some (vmap, dmap))
+  | some (packed, q) =>
+    let f := packed.fst
+    let fStar := packed.snd
+    match dmap[f]! with
+    | .some d =>
+      if d != fStar then .done none                  -- already mapped, inconsistently
+      else .next q vmap dmap
+    | .none =>
       let dmap := dmap.set! f (OptIdx.some fStar)
       -- bind each dart once (read 4×: head/rev/succ/pred)
       let srcD := src.darts[f]!
@@ -110,19 +119,44 @@ RC/free churn). `@[specialize]` monomorphises `degreeTest` per call site
       let h := srcD.head
       let hStar := dstD.head
       let vv := vmap[h]!
-      if vv.isSome && vv != OptIdx.some hStar then none
+      if vv.isSome && vv != OptIdx.some hStar then .done none
       else
         let vmap := vmap.set! h (OptIdx.some hStar)
-        if !degreeTest (src.degrees[h]!) (dst.degrees[hStar]!) then none
+        if !degreeTest (src.degrees[h]!) (dst.degrees[hStar]!) then .done none
         -- `src` side open where `dst` is closed ⇒ no homomorphism (the queue would
-        -- be discarded on `none`, so failing before the pushes is equivalent).
-        else if srcD.succ.isSome && dstD.succ.isNone then none
-        else if srcD.pred.isSome && dstD.pred.isNone then none
+        -- be discarded on `.done none`, so failing before the pushes is equivalent).
+        else if srcD.succ.isSome && dstD.succ.isNone then .done none
+        else if srcD.pred.isSome && dstD.pred.isNone then .done none
         else
           let q := q.push (SmallNatPair.pack srcD.rev dstD.rev)
-          let q := if srcD.succ.isSome then q.push (SmallNatPair.pack srcD.succ.idx! dstD.succ.idx!) else q
-          let q := if srcD.pred.isSome then q.push (SmallNatPair.pack srcD.pred.idx! dstD.pred.idx!) else q
-          homCoreGo src dst degreeTest q vmap dmap
+          let q := pushLink q srcD.succ dstD.succ
+          let q := pushLink q srcD.pred dstD.pred
+          .next q vmap dmap
+
+/-- The worklist loop of the homomorphism BFS: drive `homStep` until it
+answers. Tail-recursive with the state `(q, maps)` in **explicit arguments**:
+Perceus's borrow/reuse analysis is cleaner on a tail call with linear state
+than on the `whileM` closure a `do` loop desugars to -- `maps.set!` stays in
+place, `q` is threaded, and `src`/`dst`/`degreeTest` are read-only so they
+pass borrowed (no per-iteration RC).
+
+`partial_fixpoint`: the worklist `q` *grows* (each step pushes ≤ 3 darts), so
+the recursion is not structural. `partial_fixpoint` gives the fixpoint a
+statable unfolding equation and a partial-correctness principle
+(`HomomorphismProofs.lean`) without a termination proof -- soundness/output-WF
+are partial correctness. It compiles to the same code as `partial def` (only
+SSA temp names differ). The function is *not* total on malformed input: an
+out-of-bounds dart index makes `set!` a no-op and can loop; totality is
+conditional on `WF` (the measure `q.live + 4 * unmapped` strictly decreases
+when every index is in bounds). `@[specialize]` monomorphises `degreeTest`
+per call site (`Degree.includes` etc.), eliminating the indirect
+`lean_apply_2` in the loop. -/
+@[specialize] def homCoreGo (src dst : PseudoConfiguration)
+    (degreeTest : Degree → Degree → Bool)
+    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Option (IndexMap × IndexMap) :=
+  match homStep src dst degreeTest q vmap dmap with
+  | .done r => r
+  | .next q vmap dmap => homCoreGo src dst degreeTest q vmap dmap
 partial_fixpoint
 
 /-- Shared BFS core for `homomorphism` / `homomorphismExists` (A.2). Seeds the
@@ -256,8 +290,7 @@ def resolveDegreeIssues (pc : PseudoConfiguration) : Array (PseudoConfiguration 
   let mut z : Array (PseudoConfiguration × Mappings) := #[]
   let initial := Mappings.initialMappings pc.n pc.darts.size
   let mut q : Queue (PseudoConfiguration × Mappings) := Queue.ofArray #[(pc, initial)]
-  while !q.isEmpty do
-    let ((zTilde, mappingsTilde), q') := q.pop!
+  while let some ((zTilde, mappingsTilde), q') := q.pop? do
     q := q'
     if zTilde.innerSubdegreeError then continue
     match zTilde.vertexSingleDegreeIssue with

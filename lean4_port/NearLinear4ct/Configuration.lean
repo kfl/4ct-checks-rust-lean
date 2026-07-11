@@ -23,16 +23,34 @@ declaration; Lean has no forward declarations, so they live here (after
 namespace NearLinear4ct
 
 /-- A reducible configuration: a pseudo-configuration with a distinguished root
-dart (C++ `Configuration`). -/
+dart. `rootHeadDeg`/`rootTailDeg` cache the root dart's endpoint lower degrees
+(the `containConf` bucket key, invariant for a loaded configuration).
+
+`BEq` comes through `DecidableEq` (the derived `BEq` cannot transport the
+invariant field); `Inhabited` is the hand instance below `new`. -/
 structure Configuration extends PseudoConfiguration where
   dartId : Nat
-deriving DecidableEq, Repr, Inhabited, BEq
+  rootHeadDeg : Nat
+  rootTailDeg : Nat
+  /-- The cached degrees are the derived ones: a `Configuration` is consistent
+  by construction (erased at runtime), so no construction can let the cache
+  drift from `darts`/`degrees`. -/
+  root_deg_invariant :
+    rootHeadDeg = (degrees[(darts[dartId]!).head]!).lower ∧
+    rootTailDeg = (degrees[(darts[(darts[dartId]!).rev]!).head]!).lower
+deriving DecidableEq, Repr
 
 namespace Configuration
 
 /-- C++ `Configuration(dart_id, N, darts, degrees)`. -/
 def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree) : Configuration :=
-  { toPseudoConfiguration := PseudoConfiguration.new n darts degrees, dartId := dartId }
+  let f := darts[dartId]!
+  { toPseudoConfiguration := PseudoConfiguration.new n darts degrees, dartId := dartId
+    rootHeadDeg := (degrees[f.head]!).lower
+    rootTailDeg := (degrees[(darts[f.rev]!).head]!).lower
+    root_deg_invariant := ⟨rfl, rfl⟩ }
+
+instance : Inhabited Configuration := ⟨Configuration.new 0 0 #[] #[]⟩
 
 /-- Reflect the configuration by swapping each dart's `succ`/`pred` (C++ `mirror`). -/
 def mirror (conf : Configuration) : Configuration :=
@@ -217,23 +235,23 @@ def assertDartCountPackable (darts : Array Dart) (ctx : String) : IO Unit :=
 
 /-- Validate at the I/O boundary that the root dart is sound for `containConf`:
 `dartId` indexes `darts`, the endpoint reads made from it (`head`, `rev`,
-reverse `head`) are in bounds, and the endpoints' lower degrees index the
-`dartsByDegree` bucket table -- `containConf` reads `(dbd[dY]!)[dX]!` with the
-*configuration's* root degrees unguarded (the `> CONF_DEG_MAX` skip filters only
-the host's darts when bucketing). -/
+reverse `head`) are in bounds, and the cached root degrees (= the endpoints'
+lower degrees, by `root_deg_invariant`) index the `dartsByDegree` bucket
+table -- `containConf` reads `(dbd[dY]!)[dX]!` with the *configuration's* root
+degrees unguarded (the `> CONF_DEG_MAX` skip filters only the host's darts
+when bucketing). -/
 def assertRootDartValid (c : Configuration) (ctx : String) : IO Unit := do
   proofAssert (c.dartId < c.darts.size)
     s!"{ctx}: root dart {c.dartId} out of bounds (|darts| = {c.darts.size})"
   let f := c.darts[c.dartId]!
   proofAssert (f.head < c.degrees.size && f.rev < c.darts.size)
     s!"{ctx}: root dart endpoints out of bounds (head {f.head}, rev {f.rev})"
-  let x := (c.darts[f.rev]!).head
-  proofAssert (x < c.degrees.size)
-    s!"{ctx}: root dart tail vertex {x} out of bounds (n = {c.degrees.size})"
-  proofAssert ((c.degrees[f.head]!).lower ≤ CONF_DEG_MAX)
-    s!"{ctx}: root head degree {(c.degrees[f.head]!).lower} exceeds CONF_DEG_MAX"
-  proofAssert ((c.degrees[x]!).lower ≤ CONF_DEG_MAX)
-    s!"{ctx}: root tail degree {(c.degrees[x]!).lower} exceeds CONF_DEG_MAX"
+  proofAssert ((c.darts[f.rev]!).head < c.degrees.size)
+    s!"{ctx}: root dart tail vertex {(c.darts[f.rev]!).head} out of bounds (n = {c.degrees.size})"
+  proofAssert (c.rootHeadDeg ≤ CONF_DEG_MAX)
+    s!"{ctx}: root head degree {c.rootHeadDeg} exceeds CONF_DEG_MAX"
+  proofAssert (c.rootTailDeg ≤ CONF_DEG_MAX)
+    s!"{ctx}: root tail degree {c.rootTailDeg} exceeds CONF_DEG_MAX"
 
 /-- Load every `.conf` file in `confdir`.
 
@@ -286,6 +304,10 @@ def rootedContainConf (pc : PseudoConfiguration) (dartId : Nat) (conf : Configur
   PseudoConfiguration.homomorphismExists conf.toPseudoConfiguration conf.dartId pc dartId
     Degree.includes
 
+end PseudoConfiguration
+
+namespace PseudoConfiguration
+
 /-- Whether this configuration contains any reducible configuration in `confs`
 (C++ `contain_conf`, A.6.6). Serial with early-exit: a config-level `parAny` was
 measured and rejected (nested → worker-pool deadlock; non-nested → millions of
@@ -306,10 +328,8 @@ high-degree root maps only the dart whose head is the wheel `center`). -/
 def containConf (pc : PseudoConfiguration) (center : Nat) (confs : Array Configuration) : Bool :=
   let dbd := pc.dartsByDegree
   confs.any fun conf =>
-    let f := conf.darts[conf.dartId]!
-    let dY := (conf.degrees[f.head]!).lower
-    let dX := (conf.degrees[(conf.darts[f.rev]!).head]!).lower
-    ((dbd[dY]!)[dX]!).any fun fStar =>
+    let dY := conf.rootHeadDeg
+    ((dbd[dY]!)[conf.rootTailDeg]!).any fun fStar =>
       (dY ≤ 8 || (pc.darts[fStar]!).head == center) && pc.rootedContainConf fStar conf
 
 /-- Enumerate the fixed-degree representatives (C++ `representative_degree`,

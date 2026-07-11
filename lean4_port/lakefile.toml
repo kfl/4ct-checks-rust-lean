@@ -1,10 +1,21 @@
-# Lake build for the Lean 4 port of the near-linear 4CT computer checks.
 # Library `NearLinear4ct` + the `main` driver + a `test` executable.
-# Proof-obligation asserts are always-on (L1/R5); there is no debug/release
-# split that could compile them out.
 name = "NearLinear4ct"
 version = "0.1.0"
 defaultTargets = ["NearLinear4ct", "main", "test"]
+
+# Beyond-default linters
+moreLeanArgs = [
+  "-Dlinter.tacticCheckInstances=true",
+  "-Dlinter.extra=true",
+  "-Dlinter.extra.unreachableTactic=true",
+  "-Dlinter.extra.unnecessarySeqFocus=true",
+]
+moreServerOptions = [
+  { name = "linter.tacticCheckInstances", value = true },
+  { name = "linter.extra", value = true },
+  { name = "linter.extra.unreachableTactic", value = true },
+  { name = "linter.extra.unnecessarySeqFocus", value = true },
+]
 
 [[lean_lib]]
 name = "NearLinear4ct"

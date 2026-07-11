@@ -99,13 +99,14 @@ def utilTests (c : Counter) : IO Unit := do
       decide (u.root i < u.n) && u.parents[u.root i]!.isNone
   expect c "uf RootsWF check" (rootsWF uf)
   expect c "uf RootsWF check (relabel fixture)" (rootsWF uf2)
-  -- lexMin
-  expect c "lexMin [1,2,3]" (lexMin #[1, 2, 3])
-  expect c "lexMin not [2,3,1]" (!lexMin #[2, 3, 1])
-  expect c "lexMin not [3,1,2]" (!lexMin #[3, 1, 2])
-  expect c "lexMin [1,1,2]" (lexMin #[1, 1, 2])
-  expect c "lexMin empty" (lexMin (#[] : Array Nat))
-  expect c "lexMin single" (lexMin #[5])
+  -- lexMin (specified against `List.rotateLeft` by
+  -- `lexMin_iff_forall_rotateLeft` in `UtilProofs.lean`)
+  expect c "lexMin [1,2,3]" (lexMin [1, 2, 3])
+  expect c "lexMin not [2,3,1]" (!lexMin [2, 3, 1])
+  expect c "lexMin not [3,1,2]" (!lexMin [3, 1, 2])
+  expect c "lexMin [1,1,2]" (lexMin [1, 1, 2])
+  expect c "lexMin empty" (lexMin ([] : List Nat))
+  expect c "lexMin single" (lexMin [5])
 
 /-- Build a `Dart` from the C++ test's `int` quad, mapping `-1` -> `none`. -/
 def dt (head rev : Nat) (succ pred : Int) : Dart :=
@@ -604,119 +605,6 @@ def getObjectsTest (c : Counter) : IO Unit :=
     let objs ← getObjects Line dir ".rule"
     expect c "getObjects sorted + filtered"
       (objs.map (·.s) == #["A", "B"])
-
-/-! ### Self-contained property oracles (checked at build time via `#guard`)
-
-Each compares a function against an *independently computed* expectation over a
-bounded set of inputs -- nothing is transcribed from the C++. A failing `#guard`
-fails the build, so these cannot be skipped. -/
-
-/-- Strict lexicographic `<` on `Array Int`, computed directly -- an oracle
-independent of `lexMin`'s own comparison. -/
-def lexLt (a b : Array Int) : Bool := Id.run do
-  let n := min a.size b.size
-  for i in [0:n] do
-    if a[i]! < b[i]! then return true
-    if a[i]! > b[i]! then return false
-  return decide (a.size < b.size)
-
-/-- Brute-force spec: `v` is lex-minimal iff no rotation of `v` is strictly
-smaller. -/
-def isLexMinBrute (v : Array Int) : Bool :=
-  let n := v.size
-  (List.range n).all fun k =>
-    let rot := (Array.range n).map fun j => v[(j + k) % n]!
-    !lexLt rot v
-
-/-- Every sequence of length 1..4 over the alphabet {0,1,2} (120 arrays). -/
-def lexMinOracleCases : List (Array Int) := Id.run do
-  let alphabet := 3
-  let mut out : List (Array Int) := []
-  for len in [1, 2, 3, 4] do
-    let hi := alphabet ^ len
-    for code in [0:hi] do
-      let mut a : Array Int := #[]
-      let mut c := code
-      for _ in [0:len] do
-        a := a.push (Int.ofNat (c % alphabet))
-        c := c / alphabet
-      out := a :: out
-  return out
-
-/-- `lexMin` agrees with the brute-force spec on every bounded case. -/
-def lexMinOracleOk : Bool := lexMinOracleCases.all fun v => lexMin v == isLexMinBrute v
-#guard lexMinOracleOk
-
-/-! #### `lexMin = isLexMinBrute`, universally -- the `#guard` above, as a theorem
-
-Proved for *all* `Array Int` (not just the 120 bounded cases) from the
-machine-checked `lexMin_true_iff` in `UtilProofs.lean`. The `#guard` is kept
-as an executable tripwire. The only new work here is relating `lexLt` (this
-file's independent oracle comparison) to the port's `arrCompare`: both are
-`List.findSome?` scans, and `lexLt`'s probe is `arrCompare`'s post-composed
-with `(· == .lt)`, so `lexLt_eq_arrCompare_beq` is a functional identity
-(`Option.map` commutes through `findSome?` and `getD`) rather than a
-first-difference argument. -/
-
-/-- `lexLt`'s probe: the verdict at index `j`, if the elements differ. -/
-private def lexLtP (a b : Array Int) (j : Nat) : Option Bool :=
-  if a[j]! < b[j]! then some true
-  else if a[j]! > b[j]! then some false
-  else none
-
-/-- `lexLtP` is `arrCompare`'s probe post-composed with `(· == .lt)`: the
-three verdicts are exactly "does the position's comparison equal `lt`". -/
-private theorem lexLtP_eq_map_cmp (a b : Array Int) (j : Nat) :
-    lexLtP a b j
-      = Option.map (· == Ordering.lt)
-          (if compare a[j]! b[j]! != Ordering.eq then some (compare a[j]! b[j]!)
-           else none) := by
-  grind [lexLtP, Int.compare_eq_lt, Int.compare_eq_eq, Int.compare_eq_gt]
-
-/-- Unfold `lexLt`'s `Id.run do` loop to a `findSome?` scan. -/
-private theorem lexLt_eq_findSome? (a b : Array Int) :
-    lexLt a b
-      = ((List.range' 0 (min a.size b.size)).findSome? (lexLtP a b)).getD
-          (decide (a.size < b.size)) := by
-  unfold lexLt
-  simp only [Id.run, pure_bind]
-  rw [forIn_range_eq_loopGo (min a.size b.size) _ (scanStep (lexLtP a b))
-        (fun i s => by
-          by_cases h1 : a[i]! < b[i]!
-          · simp [scanStep, lexLtP, h1]
-          · by_cases h2 : a[i]! > b[i]! <;> simp [scanStep, lexLtP, h1, h2]),
-      loopGo_scan_eq_findSome?]
-  cases (List.range' 0 (min a.size b.size)).findSome? (lexLtP a b) <;> rfl
-
-/-- `lexLt` (this file's oracle `<`) *is* the port's `arrCompare`
-post-composed with `(· == .lt)` -- a functional identity (`Option.map`
-commutes through `findSome?` and `getD`), so no first-difference reasoning
-is needed. -/
-private theorem lexLt_eq_arrCompare_beq (a b : Array Int) :
-    lexLt a b = (arrCompare a b == Ordering.lt) := by
-  have hp : lexLtP a b
-      = Option.map (· == Ordering.lt) ∘ fun j =>
-          if compare a[j]! b[j]! != Ordering.eq then some (compare a[j]! b[j]!)
-          else none :=
-    funext (lexLtP_eq_map_cmp a b)
-  rw [lexLt_eq_findSome?, arrCompare_eq_findSome?, hp, ← List.map_findSome?,
-      show decide (a.size < b.size) = (compare a.size b.size == Ordering.lt) by
-        rw [Bool.eq_iff_iff]; simp [Nat.compare_eq_lt],
-      Option.getD_map]
-
-/-- `isLexMinBrute`, decoded to the `lexMin_true_iff` vocabulary: no rotation
-`0..v.size - 1` compares below `v`. -/
-private theorem isLexMinBrute_true_iff (v : Array Int) :
-    isLexMinBrute v ↔
-      ∀ k, k < v.size → arrCompare (rotateLeftN v k) v ≠ Ordering.lt := by
-  unfold isLexMinBrute
-  simp only [List.all_eq_true, List.mem_range, ← rotateLeftN_eq_map,
-    Bool.not_eq_true', ← Bool.not_eq_true, lexLt_eq_arrCompare_beq, beq_iff_eq]
-
-/-- **The `#guard` oracle as a universal theorem**: `lexMin` agrees with the
-brute-force "no rotation is strictly smaller" spec on every `Array Int`. -/
-theorem lexMin_eq_brute (v : Array Int) : lexMin v = isLexMinBrute v := by
-  rw [Bool.eq_iff_iff, lexMin_true_iff, isLexMinBrute_true_iff]
 
 -- The Degree algebra laws are proved universally as theorems in
 -- `NearLinear4ct/Degree.lean` (stronger than the finite grid they replaced).
