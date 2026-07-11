@@ -17,12 +17,18 @@ R1 in practice: `head`/`rev` are total `Nat`; `succ`/`pred` are `Option Nat`.
 
 namespace NearLinear4ct
 
-/-- A half-edge. `head`/`rev` are total; `succ`/`pred` are `none` at a boundary. -/
+/-- A half-edge. `head`/`rev` are total; `succ`/`pred` are `none` at a boundary.
+
+`succ`/`pred` are `OptIdx` (the verified-sound unboxed `Option Nat`, `OptIdx.lean`),
+not `Option Nat`: an `Array Dart` is read millions of times in the `homCore` BFS,
+and a boxed `Option` field would be reference-counted (inc on read, dec on drop) on
+every visit. `OptIdx` stores the index unboxed, so the hot path reads `succ`/`pred`
+with `isSome`/`idx!` and no per-visit RC churn on the `Option` cell. -/
 structure Dart where
   head : Nat
   rev : Nat
-  succ : Option Nat
-  pred : Option Nat
+  succ : OptIdx
+  pred : OptIdx
 deriving DecidableEq, Repr, Inhabited, BEq
 
 /-- A rotation system on `n` vertices. -/
@@ -32,7 +38,8 @@ structure PseudoTriangulation where
 deriving DecidableEq, Repr, Inhabited, BEq
 
 /-- Format an optional index the way the C++ printed `int` darts (`-1` for nil). -/
-private def fmtIdx : Option Nat → String
+private def fmtIdx (o : OptIdx) : String :=
+  match o.get? with
   | some v => toString v
   | none => "-1"
 
@@ -42,7 +49,7 @@ inner do-while). A boundary chain is terminated by a trailing `none`. `partial`
 private partial def rotationGo (darts : Array Dart) (eStart eCur : Nat)
     (acc : Array (Option Nat)) : Array (Option Nat) :=
   let acc := acc.push (some eCur)
-  match (darts[eCur]!).succ with
+  match (darts[eCur]!).succ.get? with
   | none => acc.push none
   | some nxt => if nxt == eStart then acc else rotationGo darts eStart nxt acc
 
@@ -74,7 +81,7 @@ def fromVRotations (n : Nat) (rotations : Array (Array Int)) : PseudoTriangulati
       dartOf := dartOf.set! a ((dartOf[a]!).set! b (some fresh))
       fresh := fresh + 1
 
-  let mut darts : Array Dart := Array.replicate fresh ⟨0, 0, none, none⟩
+  let mut darts : Array Dart := Array.replicate fresh ⟨0, 0, OptIdx.none, OptIdx.none⟩
   for a in [0:n] do
     let rot := rotations[a]!
     let size := rot.size
@@ -88,9 +95,9 @@ def fromVRotations (n : Nat) (rotations : Array (Array Int)) : PseudoTriangulati
         | none => panic! s!"Discrepancy in dart structure between {a} and {b}"
       -- clockwise-after / clockwise-before neighbour (cyclic), `-1` -> `none`
       let s := if i < size - 1 then rot[i + 1]! else rot[0]!
-      let succ := if s != -1 then (dartOf[a]!)[s.toNat]! else none
+      let succ := if s != -1 then OptIdx.ofOption (dartOf[a]!)[s.toNat]! else OptIdx.none
       let p := if i > 0 then rot[i - 1]! else rot[size - 1]!
-      let pred := if p != -1 then (dartOf[a]!)[p.toNat]! else none
+      let pred := if p != -1 then OptIdx.ofOption (dartOf[a]!)[p.toNat]! else OptIdx.none
       darts := darts.set! e ⟨a, rev, succ, pred⟩
   return ⟨n, darts⟩
 
@@ -139,7 +146,7 @@ def anyDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
 def sucKTimes (pt : PseudoTriangulation) (e k : Nat) : Option Nat := Id.run do
   let mut curr := e
   for _ in [0:k] do
-    match (pt.darts[curr]!).succ with
+    match (pt.darts[curr]!).succ.get? with
     | none => return none
     | some nxt => curr := nxt
   return some curr
@@ -205,12 +212,12 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
     q := q.push (eRev, fRev)
     let eSucc := (darts[eStar]!).succ
     let fSucc := (darts[fStar]!).succ
-    if let (some es, some fs) := (eSucc, fSucc) then
-      q := q.push (es, fs)
+    if eSucc.isSome && fSucc.isSome then
+      q := q.push (eSucc.idx!, fSucc.idx!)
     let ePred := (darts[eStar]!).pred
     let fPred := (darts[fStar]!).pred
-    if let (some ep, some fp) := (ePred, fPred) then
-      q := q.push (ep, fp)
+    if ePred.isSome && fPred.isSome then
+      q := q.push (ePred.idx!, fPred.idx!)
     -- fill in the representative's open sides from the other dart
     if eSucc.isSome && fSucc.isNone then
       darts := darts.set! fStar { darts[fStar]! with succ := eSucc }
@@ -225,8 +232,10 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
     let dd := darts[d]!
     let hd := (vMap[dd.head]!).idx!
     let rv := (dMap[dd.rev]!).idx!
-    let succ := dd.succ.bind fun s => (dMap[s]!).get?
-    let pred := dd.pred.bind fun p => (dMap[p]!).get?
+    -- `dMap[s]!` is already the `OptIdx` that `dd.succ.bind (·.get?)` would decode;
+    -- propagate it directly (boundary `none` stays `none`).
+    let succ := if dd.succ.isSome then dMap[dd.succ.idx!]! else OptIdx.none
+    let pred := if dd.pred.isSome then dMap[dd.pred.idx!]! else OptIdx.none
     dartsStar := dartsStar.push ⟨hd, rv, succ, pred⟩
   return (⟨ufV.numRoots, dartsStar⟩, ⟨vMap, dMap⟩)
 

@@ -93,9 +93,15 @@ def arrCompare [Ord α] [Inhabited α] (x y : Array α) : Ordering := Id.run do
     if c != Ordering.eq then return c
   return compare x.size y.size
 
-/-- Rotate an array left by one (`std::rotate(begin, begin+1, end)`). -/
+/-- Rotate an array left by one (`std::rotate(begin, begin+1, end)`).
+This mutates the buffer when it is unreferenced elsewhere:
+`eraseIdx` shifts left in place and leaves capacity slack, so the `push` is
+in place too (the head is bound *before* the erase, so that read is a
+completed borrow). -/
 def rotateLeft1 [Inhabited α] (a : Array α) : Array α :=
-  if a.size == 0 then a else (a.extract 1 a.size).push a[0]!
+  if a.size == 0 then a else
+    let x := a[0]!
+    (a.eraseIdxIfInBounds 0).push x
 
 /-- Whether `a` is lexicographically minimal among all its rotations
 (C++ `lex_min`). -/
@@ -135,12 +141,16 @@ def ofArray (xs : Array α) : Queue α := ⟨xs, 0⟩
 /-- Whether the queue is exhausted (pseudocode `Q.empty()`). -/
 def isEmpty (q : Queue α) : Bool := q.head ≥ q.items.size
 
-/-- Enqueue `x` (pseudocode `Q.push(x)`). -/
-def push (q : Queue α) (x : α) : Queue α := { q with items := q.items.push x }
+/-- Enqueue `x` (pseudocode `Q.push(x)`). `@[inline]` so the wrapper `Queue`
+rebuild is visible to the caller's reuse analysis (Perceus cannot reuse
+constructors across a call boundary). -/
+@[inline] def push (q : Queue α) (x : α) : Queue α := { q with items := q.items.push x }
 
 /-- Dequeue the front element (pseudocode `x ← Q.pop()`); the head advances.
-Assumes the queue is non-empty — guard with `isEmpty` (as the BFS loops do). -/
-def pop! [Inhabited α] (q : Queue α) : α × Queue α :=
+Assumes the queue is non-empty — guard with `isEmpty` (as the BFS loops do).
+`@[inline]` so the returned tuple and rebuilt `Queue` are visible to the
+caller's reuse analysis instead of being fresh allocations per pop. -/
+@[inline] def pop! [Inhabited α] (q : Queue α) : α × Queue α :=
   (q.items[q.head]!, { q with head := q.head + 1 })
 
 end Queue

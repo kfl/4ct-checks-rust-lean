@@ -35,7 +35,7 @@ to fixed `k-1` (C++ `delete_degree_from_k_to_9`, A.10.1).
 The C++ scans with an early `break` on the first fixed-`k` vertex; the observable
 result is "remove iff some vertex is fixed `k`, else collapse every `[k-1,9]`",
 expressed here directly. -/
-def deleteDegreeFromKTo9 (cartwheels : Array CartWheel) (k : Int) : Array CartWheel :=
+def deleteDegreeFromKTo9 (cartwheels : Array CartWheel) (k : Nat) : Array CartWheel :=
   cartwheels.filterMap fun cw =>
     if cw.degrees.any (fun d => d.lower == k && d.upper == k) then
       none                                    -- a vertex of fixed degree k → remove
@@ -71,7 +71,7 @@ def containX (z : PseudoConfiguration) (v : Nat) : Bool := Id.run do
   for _ in [0:8] do
     if PseudoConfiguration.homomorphismExists x dartX z dartZ Degree.includes then
       return true
-    dartX := (x.darts[dartX]!).succ.get!
+    dartX := (x.darts[dartX]!).succ.idx!
   return false
 
 -- --- Lemma A.4: a vertex of degree 8 -----------------------------------------
@@ -101,7 +101,7 @@ def check787 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array Ca
     let dart2 := if i == n - 1 then darts7[0]! else darts7[i+1]!
     let mut d := 0
     while dart1 != dart2 do
-      dart1 := (cartwheel.darts[dart1]!).succ.get!
+      dart1 := (cartwheel.darts[dart1]!).succ.idx!
       d := d + 1
     dist := dist.set! i d
   let minDist := dist.foldl Nat.min dist[0]!
@@ -147,7 +147,7 @@ def check7triangle (allCartwheels : Array CartWheel) (confs : Array Configuratio
   IO.println s!"After removing cartwheels with degree 8 and 9, {cartwheels.size} remain."
   parForEach cartwheels fun cartwheel => do
     for e in cartwheel.centerDarts do
-      let f := (cartwheel.darts[e]!).succ.get!
+      let f := (cartwheel.darts[e]!).succ.idx!
       let revE := (cartwheel.darts[e]!).rev
       let revF := (cartwheel.darts[f]!).rev
       let vE := (cartwheel.darts[revE]!).head

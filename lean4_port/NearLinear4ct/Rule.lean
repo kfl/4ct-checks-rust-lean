@@ -60,8 +60,8 @@ def parse (lines : Array String) (cursor : Nat) : Rule × Nat := Id.run do
   for u in [0:n] do
     let toks := lineToks lines[cur]!
     cur := cur + 1
-    let lower := parseInt toks[1]!
-    let upperRaw := parseInt toks[2]!
+    let lower := (parseInt toks[1]!).toNat
+    let upperRaw := (parseInt toks[2]!).toNat
     let upper := if upperRaw == 0 then INFTY else upperRaw
     degrees := degrees.set! u ⟨lower, upper⟩
     let mut rotU : Array Int := #[]
@@ -104,6 +104,7 @@ instance : FromFile Rule where
 /-- Load every `.rule` file in `ruledir`, sorted by filename (C++ `get_rules`). -/
 def getRules (ruledir : System.FilePath) : IO (Array Rule) := do
   let rules ← getObjects Rule ruledir ".rule"
+  for r in rules do Configuration.assertDegreesValid r.degrees "rule"
   IO.println s!"Total {rules.size} rules loaded."
   return rules
 
@@ -178,7 +179,7 @@ output files), the same trick used for `enum_possible_bad_wheels`. -/
 def combineRules (rules : Array Rule) (confs : Array Configuration) : Array CombinedRule := Id.run do
   let defaultFlag := Array.replicate rules.size false
   let z0 := CombinedRule.new defaultFlag 0 0 2
-    #[⟨0, 1, none, none⟩, ⟨1, 0, none, none⟩] #[⟨1, INFTY⟩, ⟨1, INFTY⟩]
+    #[⟨0, 1, OptIdx.none, OptIdx.none⟩, ⟨1, 0, OptIdx.none, OptIdx.none⟩] #[⟨1, INFTY⟩, ⟨1, INFTY⟩]
   let mut combinedRules : Array CombinedRule := #[z0]
   for i in [0:rules.size] do
     combinedRules := combinedRules ++

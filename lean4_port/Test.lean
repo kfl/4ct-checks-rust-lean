@@ -102,7 +102,7 @@ def utilTests (c : Counter) : IO Unit := do
 
 /-- Build a `Dart` from the C++ test's `int` quad, mapping `-1` -> `none`. -/
 def dt (head rev : Nat) (succ pred : Int) : Dart :=
-  let o : Int → Option Nat := fun x => if x == -1 then none else some x.toNat
+  let o : Int → OptIdx := fun x => if x == -1 then OptIdx.none else OptIdx.some x.toNat
   ⟨head, rev, o succ, o pred⟩
 
 /-- Ports of `../test/pseudo_triangulation_test.cpp` (FromVRotation, Identify,
@@ -141,8 +141,8 @@ def ptTests (c : Counter) : IO Unit := do
     dt 1 6 5 0, dt 1 2 6 4, dt 1 4 3 5, dt 2 3 1 (-1)]
   expect c "pt Identify2 structure" (ptI2 == expectedI2)
 
-def dg (l u : Int) : Degree := ⟨l, u⟩
-def dgx (x : Int) : Degree := ⟨x, x⟩
+def dg (l u : Nat) : Degree := ⟨l, u⟩
+def dgx (x : Nat) : Degree := ⟨x, x⟩
 
 /-- Ports of `../test/pseudo_configuration_test.cpp` self-contained-core cases
 (Identify1/2, resolveDegreeIssues1-3, findHomomorphism). The Contain/charge cases
@@ -317,10 +317,10 @@ def mkRule (c : Counter) (tag content : String) : IO Rule := do
   IO.FS.removeFile f
   return r
 
-def exA (xs : List Int) : Array Degree := (xs.map dgx).toArray
+def exA (xs : List Nat) : Array Degree := (xs.map dgx).toArray
 
 /-- Set several vertices to exact degrees (test helper). -/
-def setDeg (cw : CartWheel) (mods : List (Nat × Int)) : CartWheel := Id.run do
+def setDeg (cw : CartWheel) (mods : List (Nat × Nat)) : CartWheel := Id.run do
   let mut c := cw
   for (v, d) in mods do
     c := { c with degrees := c.degrees.set! v (dgx d) }

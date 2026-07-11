@@ -1,5 +1,6 @@
 -- Phase 1: leaf types
 import NearLinear4ct.OptIdx
+import NearLinear4ct.SmallNatPair
 import NearLinear4ct.Util
 import NearLinear4ct.Mapping
 import NearLinear4ct.Degree

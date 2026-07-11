@@ -144,9 +144,9 @@ def generateCartwheel (d : Nat) (degrees : Array Int) : CartWheel := Id.run do
     if i > d || degrees[i-1]! == CARTWHEEL_DEG_MAX then
       rotations := rotations.set! i ((rotations[i]!).push (-1))
   let mut allDegrees : Array Degree := Array.replicate k ⟨CARTWHEEL_DEG_MIN, CARTWHEEL_DEG_MAX⟩
-  allDegrees := allDegrees.set! 0 (Degree.exact (d : Int))
+  allDegrees := allDegrees.set! 0 (Degree.exact d)
   for i in [1:d+1] do
-    allDegrees := allDegrees.set! i (Degree.exact degrees[i-1]!)
+    allDegrees := allDegrees.set! i (Degree.exact degrees[i-1]!.toNat)
   let pc := PseudoConfiguration.fromVRotations k rotations allDegrees
   return { toPseudoConfiguration := pc, center := 0, centerDarts := centerDartsOf pc 0 }
 
@@ -165,8 +165,8 @@ def ofString (content : String) : CartWheel := Id.run do
   for u in [0:n] do
     let toks := cwLineToks lines[idx]!
     idx := idx + 1
-    let lower := cwParseInt toks[1]!
-    let upperRaw := cwParseInt toks[2]!
+    let lower := (cwParseInt toks[1]!).toNat
+    let upperRaw := (cwParseInt toks[2]!).toNat
     let upper := if upperRaw == 0 then INFTY else upperRaw
     degrees := degrees.set! u ⟨lower, upper⟩
     let mut rotU : Array Int := #[]
@@ -268,7 +268,7 @@ def pruneByNonAssociatedRule (cw : CartWheel) (combinedRuleWithSpokes : Array Co
 A.9.13). -/
 def upperBoundOfCharge (cw : CartWheel) (combinedRuleWithSpokes : Array CombinedRule)
     (rules : Array Rule) (combinedRules : Array CombinedRule) : Int := Id.run do
-  let degreeCenter := (cw.degrees[cw.center]!).lower.toNat
+  let degreeCenter := (cw.degrees[cw.center]!).lower
   let mut inChargeSum : Int := 0
   for cr in combinedRuleWithSpokes do
     inChargeSum := inChargeSum + cr.amount
@@ -310,7 +310,7 @@ def enumPossibleBadWheels (centerDegree : Nat) (rules : Array Rule)
 in between (C++ `fix_in_rules`, A.9.8). -/
 def fixInRules (cw : CartWheel) (rules : Array Rule) (combinedRules : Array CombinedRule)
     (confs : Array Configuration) : Array (CartWheel × Array CombinedRule) := Id.run do
-  let degreeCenter := (cw.degrees[cw.center]!).lower.toNat
+  let degreeCenter := (cw.degrees[cw.center]!).lower
   let mut cartwheels : Array (CartWheel × Array CombinedRule) := #[(cw, #[])]
   for i in [0:degreeCenter] do
     let mut newCartwheels : Array (CartWheel × Array CombinedRule) := #[]
@@ -388,7 +388,7 @@ def firstRefinable (cw : CartWheel) (degreeCenter : Nat) (rules : Array Rule) :
 def fixOutRules (cw : CartWheel) (cartwheelsInFixed : Array (CartWheel × Array CombinedRule))
     (rules : Array Rule) (combinedRules : Array CombinedRule) (confs : Array Configuration) :
     Array (CartWheel × Array CombinedRule) := Id.run do
-  let degreeCenter := (cw.degrees[cw.center]!).lower.toNat
+  let degreeCenter := (cw.degrees[cw.center]!).lower
   let mut queue : Queue (CartWheel × Array CombinedRule) := Queue.ofArray cartwheelsInFixed
   let mut cartwheels : Array (CartWheel × Array CombinedRule) := #[]
   while !queue.isEmpty do
@@ -406,13 +406,13 @@ def fixOutRules (cw : CartWheel) (cartwheelsInFixed : Array (CartWheel × Array 
 (C++ `center_darts_by_degree`, A.9.22). Returns a length-`CARTWHEEL_DEG_MAX+1`
 array. The degree-range `assert` is a structural invariant → `panic!`. -/
 def centerDartsByDegree (cw : CartWheel) : Array (Array Nat) := Id.run do
-  let mut byDegree : Array (Array Nat) := Array.replicate (CARTWHEEL_DEG_MAX.toNat + 1) #[]
+  let mut byDegree : Array (Array Nat) := Array.replicate (CARTWHEEL_DEG_MAX + 1) #[]
   for dartId in cw.centerDarts do
     let neighbor := (cw.darts[(cw.darts[dartId]!).rev]!).head
     let deg := (cw.degrees[neighbor]!).lower
     if decide (deg < CARTWHEEL_DEG_MIN) || decide (deg > CARTWHEEL_DEG_MAX) then
       panic! "center_darts_by_degree: neighbour degree out of [5,9]"
-    byDegree := byDegree.set! deg.toNat ((byDegree[deg.toNat]!).push dartId)
+    byDegree := byDegree.set! deg ((byDegree[deg]!).push dartId)
   return byDegree
 
 /-- The overall enumeration: fix in-rules, fix out-rules, and keep the surviving
@@ -489,5 +489,26 @@ def runEnumCartwheels (wheelFile confdir ruledir combinedRuledir outdir : System
   let basename := wheelFile.fileStem.getD "wheel"
   for i in [0:enumedWheels.size] do
     enumedWheels[i]!.toFile (outdir / s!"{basename}_{i}.cartwheel")
+
+/-- Lemma A.3 step 2 over a *whole directory* of wheels in one process
+(Lean-port addition). The C++/Rust run one `enum_cartwheels` process per wheel,
+each reloading the ~19754 configs — measured to dominate that phase. This loads
+configs/rules/combined-rules **once** and runs `enumBadCartwheels` over every wheel
+in `wheelsdir` in parallel (`parForEach`), writing the same `{stem}_{i}.cartwheel`
+outputs. Byte-identical output set to the per-wheel runs; far less I/O. -/
+def runEnumAllCartwheels (wheelsdir confdir ruledir combinedRuledir outdir : System.FilePath) :
+    IO Unit := do
+  let confs ← Configuration.getConfs confdir
+  let rules ← getRules ruledir
+  let combinedRules ← getCombinedRules combinedRuledir
+  let wheelPaths := (← wheelsdir.readDir).filterMap fun e =>
+    if e.path.extension == some "cartwheel" then some e.path else none
+  IO.println s!"Processing {wheelPaths.size} wheels (configs loaded once)."
+  parForEach wheelPaths fun wheelPath => do
+    let cartwheel := CartWheel.ofString (← IO.FS.readFile wheelPath)
+    let enumed ← cartwheel.enumBadCartwheels rules combinedRules confs
+    let basename := wheelPath.fileStem.getD "wheel"
+    for i in [0:enumed.size] do
+      enumed[i]!.toFile (outdir / s!"{basename}_{i}.cartwheel")
 
 end NearLinear4ct

@@ -1,5 +1,6 @@
 import NearLinear4ct.PseudoTriangulation
 import NearLinear4ct.Degree
+import NearLinear4ct.SmallNatPair
 
 /-!
 Phase 3 — configuration with degrees. Port of
@@ -67,56 +68,71 @@ def disjointUnion (l r : PseudoConfiguration) : PseudoConfiguration :=
   PseudoConfiguration.new pt.n pt.darts (l.degrees ++ r.degrees)
 
 
-/-- Shared BFS core for `homomorphism` / `homomorphismExists` (C++ templated
-`homomorphism`, A.2). Returns the compact `vmap`/`dmap` on success, `none` if no
-homomorphism exists.
+/-- Tail-recursive worklist loop of the homomorphism BFS, factored out of the
+`while`/`Id.run do` so the state `(q, maps)` threads through **explicit arguments**.
+Perceus's borrow/reuse analysis is cleaner on a tail call with linear state than on
+the `whileM` closure the `do` loop desugars to (which also carried a per-iteration
+heartbeat): `maps.set!` stays in place, `q` is threaded, and `src`/`dst`/`degreeTest`
+are read-only so they pass borrowed (no per-iteration RC).
 
-P10/P11 perf note: the scratch maps are `Array OptIdx` — `OptIdx` is the
-verified-sound compact `Option Nat` (`OptIdx.lean`), so the loop reads in
-`none`/`some` terms (`isSome`, `OptIdx.some`) yet stores **unboxed** (an
-`Array (Option Nat)` would heap-allocate + reference-count a `some` cell on every
-`set`, millions of times — Lean has no niche optimisation). The scratch *is* the
-public `Mappings` representation now, so the success path returns it with no decode.
-The boundary branches still mirror the C++ `succ != nil && succ_star == nil`.
+`partial` (L5): the worklist `q` *grows* (each visit pushes ≤ 3 darts), so this is not
+structural. Termination argument (to be formalised — see `PROOFS.md` §3): each dart is
+*expanded* (the `dmap[f] = none` branch) at most once, so on a **well-formed** graph
+the measure `(# unmapped dart cells, q.size)` strictly decreases — a re-pop of a mapped
+dart shrinks `q`, a first visit drops the unmapped count. (It is *not* total on
+malformed input: an out-of-bounds dart index makes `set!` a no-op and can loop. The
+real inputs are well-formed; the byte-exact differential is the current evidence.)
 
-`@[specialize]` so the `degreeTest` argument is monomorphised per call site
-(`Degree.includes` / `hasIntersection` / `gDominant`), eliminating the indirect
-closure call (`lean_apply_2`) in the inner loop. The queue reserves its final
-capacity (≤ 3 pushes per dart) up front to avoid regrowth copies. -/
-@[specialize] private def homCore (src : PseudoConfiguration) (dartFrom : Nat)
-    (dst : PseudoConfiguration) (dartTo : Nat)
-    (degreeTest : Degree → Degree → Bool) : Option (IndexMap × IndexMap) := Id.run do
-  let mut vmap : IndexMap := Array.replicate src.n OptIdx.none
-  let mut dmap : IndexMap := Array.replicate src.darts.size OptIdx.none
-  let mut q : Queue (Nat × Nat) := (Queue.emptyWithCapacity (src.darts.size * 3 + 1)).push (dartFrom, dartTo)
-  while !q.isEmpty do
-    let ((f, fStar), q') := q.pop!
-    q := q'
+The two maps are `Array OptIdx` — the verified-unboxed `Option Nat` (`OptIdx.lean`),
+read in `none`/`some` terms yet stored unboxed (no `some`-cell allocation per `set`).
+The worklist entries `(f, f★)` are `SmallNatPair` -- the verified pointer-tagged
+pack of two dart indices (`SmallNatPair.lean`; a `Nat × Nat` ctor costs a heap
+allocation + free per element, and those pairs were the prune pipeline's dominant
+RC/free churn). `@[specialize]` monomorphises `degreeTest` per call site
+(`Degree.includes` etc.), eliminating the indirect `lean_apply_2` in the loop. -/
+@[specialize] private partial def homCoreGo (src dst : PseudoConfiguration)
+    (degreeTest : Degree → Degree → Bool)
+    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Option (IndexMap × IndexMap) :=
+  if q.isEmpty then some (vmap, dmap)
+  else
+    let (packed, q) := q.pop!
+    let (f, fStar) := packed.unpackPair
     let dv := dmap[f]!
     if dv.isSome then
-      if dv != OptIdx.some fStar then return none      -- already mapped, inconsistently
+      if dv != OptIdx.some fStar then none           -- already mapped, inconsistently
+      else homCoreGo src dst degreeTest q vmap dmap
     else
-      dmap := dmap.set! f (OptIdx.some fStar)
-      -- bind each dart once (it is read 4×: head/rev/succ/pred); re-indexing
-      -- `src.darts[f]!` would re-fetch + reference-count the boxed `Dart` each time.
+      let dmap := dmap.set! f (OptIdx.some fStar)
+      -- bind each dart once (read 4×: head/rev/succ/pred)
       let srcD := src.darts[f]!
       let dstD := dst.darts[fStar]!
       let h := srcD.head
       let hStar := dstD.head
       let vv := vmap[h]!
-      if vv.isSome && vv != OptIdx.some hStar then return none
-      vmap := vmap.set! h (OptIdx.some hStar)
-      if !degreeTest (src.degrees[h]!) (dst.degrees[hStar]!) then return none
-      q := q.push (srcD.rev, dstD.rev)
-      match srcD.succ, dstD.succ with
-      | some _, none => return none
-      | some s, some ss => q := q.push (s, ss)
-      | _, _ => pure ()
-      match srcD.pred, dstD.pred with
-      | some _, none => return none
-      | some p, some pp => q := q.push (p, pp)
-      | _, _ => pure ()
-  return some (vmap, dmap)
+      if vv.isSome && vv != OptIdx.some hStar then none
+      else
+        let vmap := vmap.set! h (OptIdx.some hStar)
+        if !degreeTest (src.degrees[h]!) (dst.degrees[hStar]!) then none
+        -- `src` side open where `dst` is closed ⇒ no homomorphism (the queue would
+        -- be discarded on `none`, so failing before the pushes is equivalent).
+        else if srcD.succ.isSome && dstD.succ.isNone then none
+        else if srcD.pred.isSome && dstD.pred.isNone then none
+        else
+          let q := q.push (SmallNatPair.pack srcD.rev dstD.rev)
+          let q := if srcD.succ.isSome then q.push (SmallNatPair.pack srcD.succ.idx! dstD.succ.idx!) else q
+          let q := if srcD.pred.isSome then q.push (SmallNatPair.pack srcD.pred.idx! dstD.pred.idx!) else q
+          homCoreGo src dst degreeTest q vmap dmap
+
+/-- Shared BFS core for `homomorphism` / `homomorphismExists` (C++ templated
+`homomorphism`, A.2). Seeds the worklist + the vertex (`[0,n)`) and dart
+(`[0,darts.size)`) scratch maps and runs `homCoreGo`. -/
+@[specialize] private def homCore (src : PseudoConfiguration) (dartFrom : Nat)
+    (dst : PseudoConfiguration) (dartTo : Nat)
+    (degreeTest : Degree → Degree → Bool) : Option (IndexMap × IndexMap) :=
+  homCoreGo src dst degreeTest
+    ((Queue.emptyWithCapacity (src.darts.size * 3 + 1)).push (SmallNatPair.pack dartFrom dartTo))
+    (Array.replicate src.n OptIdx.none)
+    (Array.replicate src.darts.size OptIdx.none)
 
 /-- Whether a homomorphism exists, accepting a vertex degree compatibility test
 (C++ `homomorphism(...).has_value()`). The `.isSome`-only hot path
@@ -188,12 +204,12 @@ def addBoundaryDarts (pc : PseudoConfiguration) (v : Nat) : Option PseudoConfigu
   let dUW := pc.darts.size
   let dWU := dUW + 1
   let mut darts := pc.darts
-  darts := darts.push ⟨u, dWU, none, some eFirstRev⟩
-  darts := darts.push ⟨w, dUW, some eLastRev, none⟩
-  darts := darts.set! eFirst { darts[eFirst]! with pred := some eLast }
-  darts := darts.set! eLast { darts[eLast]! with succ := some eFirst }
-  darts := darts.set! eFirstRev { darts[eFirstRev]! with succ := some dUW }
-  darts := darts.set! eLastRev { darts[eLastRev]! with pred := some dWU }
+  darts := darts.push ⟨u, dWU, OptIdx.none, OptIdx.some eFirstRev⟩
+  darts := darts.push ⟨w, dUW, OptIdx.some eLastRev, OptIdx.none⟩
+  darts := darts.set! eFirst { darts[eFirst]! with pred := OptIdx.some eLast }
+  darts := darts.set! eLast { darts[eLast]! with succ := OptIdx.some eFirst }
+  darts := darts.set! eFirstRev { darts[eFirstRev]! with succ := OptIdx.some dUW }
+  darts := darts.set! eLastRev { darts[eLastRev]! with pred := OptIdx.some dWU }
   return some (PseudoConfiguration.new pc.n darts pc.degrees)
 
 /-- Resolve the single degree issue at `v` (C++ `fix_single_degree_issue`,
@@ -203,10 +219,10 @@ def fixSingleDegreeIssue (pc : PseudoConfiguration) (v : Nat) :
     Option (PseudoConfiguration × Mappings) :=
   let nIncident := pc.nIncidentDarts
   let isB := pc.isBoundary
-  let inc : Int := nIncident[v]!
+  let inc := nIncident[v]!
   if (pc.degrees[v]!).lower < inc then
     let e := (if isB[v]! then pc.firstDart v else pc.anyDart v).get!
-    let f := (pc.sucKTimes e ((pc.degrees[v]!).lower).toNat).get!
+    let f := (pc.sucKTimes e (pc.degrees[v]!).lower).get!
     pc.dartIdentification #[(e, f)]
   else if isB[v]! && inc == (pc.degrees[v]!).lower then
     match pc.addBoundaryDarts v with

@@ -54,6 +54,11 @@ def ofOption : Option Nat → OptIdx
   | Option.none => none
   | Option.some i => «some» i
 
+/-- Map the index if present, staying unboxed (mirrors `Option.map`; `map f ∘ get? =
+get? ∘ Option.map f`). -/
+@[inline] def map (f : Nat → Nat) (o : OptIdx) : OptIdx :=
+  if o.raw == 0 then none else «some» (f (o.raw - 1))
+
 /-! ### Soundness: `OptIdx` carries exactly the data of `Option Nat`.
 
 These discharge R1 by proof — the compact encoding is verified equivalent to
@@ -69,6 +74,13 @@ These discharge R1 by proof — the compact encoding is verified equivalent to
 
 @[simp] theorem ofOption_get? (o : Option Nat) : (ofOption o).get? = o := by
   cases o <;> simp [ofOption]
+
+/-- `map` mirrors `Option.map` under the `Option Nat` view. -/
+@[simp] theorem get?_map (f : Nat → Nat) (o : OptIdx) : (map f o).get? = o.get?.map f := by
+  obtain ⟨raw⟩ := o
+  cases raw with
+  | zero => rfl
+  | succ n => simp [map, get?, «some»]
 
 /-- Round-trip the other way: `ofOption ∘ get? = id`. Together with `get?_ofOption`
 this is the bijection `OptIdx ≃ Option Nat`. -/

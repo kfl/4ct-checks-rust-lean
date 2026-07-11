@@ -112,7 +112,7 @@ def removeRing (n r : Nat) (degrees : Array Degree) (rotations : Array (Array In
     if remove[i]! then continue
     let k := (old2new[i]!).get!
     let d := (newRotations[k]!).filter (· != -1) |>.size
-    newDegrees := newDegrees.set! k ⟨(d : Int) + 1, INFTY⟩
+    newDegrees := newDegrees.set! k ⟨d + 1, INFTY⟩
   for i in [r:n] do
     let k := (old2new[i]!).get!
     newDegrees := newDegrees.set! k (degrees[i]!)
@@ -165,7 +165,7 @@ def fromFile (path : System.FilePath) : IO (Array Configuration) := do
     let t := (readAt idx).toNat; idx := idx + 1
     if t != u + 1 then panic! s!"configuration vertex index mismatch: {t} != {u+1}"
     let deg := (readAt idx).toNat; idx := idx + 1
-    degrees := degrees.set! u (Degree.exact (deg : Int))
+    degrees := degrees.set! u (Degree.exact deg)
     let mut rotU : Array Int := #[]
     for _ in [0:deg] do
       rotU := rotU.push (readAt idx - 1); idx := idx + 1
@@ -193,6 +193,17 @@ def fromFile (path : System.FilePath) : IO (Array Configuration) := do
   let configurations := extendFromCutVertices n r degrees rotations
   return configurations ++ getMirrors configurations
 
+/-- Validate at the I/O boundary that every degree lower bound is `≥ 1`. Degrees are
+vertex-degree bounds, never `< 1`; a smaller value means a corrupt input file (or a
+negative that `.toNat` clamped to `0` at the parser). Enforcing it here is what makes
+the `Nat` degree representation sound — in particular it discharges the `lower ≥ 1`
+assumption of the `Cartwheel` `lower - 1` refinement (`PROOFS.md`). `proofAssert`
+aborts (the C++ `assert`), so a bad file fails loudly rather than silently. -/
+def assertDegreesValid (degrees : Array Degree) (ctx : String) : IO Unit := do
+  for d in degrees do
+    proofAssert (d.lower ≥ 1)
+      s!"{ctx}: degree lower bound must be ≥ 1 (corrupt input?), got {d.lower}"
+
 /-- Load every `.conf` file in `confdir` (C++ `get_confs`).
 
 The 8200 files are read + parsed in parallel (`parMapM`): independent IO + CPU per
@@ -205,6 +216,7 @@ def getConfs (confdir : System.FilePath) : IO (Array Configuration) := do
     if entry.path.extension == some "conf" then some entry.path else none
   let perFile ← parMapM paths fromFile
   let confs := perFile.flatten
+  for c in confs do assertDegreesValid c.degrees "configuration"
   IO.println s!"Total {confs.size} configurations loaded."
   return confs
 
@@ -216,7 +228,7 @@ namespace PseudoConfiguration
 /-- Bucket darts by the fixed (head-degree, tail-degree) of their endpoints,
 dropping endpoints above `CONF_DEG_MAX` (C++ `darts_by_degree`, A.6.7). -/
 def dartsByDegree (pc : PseudoConfiguration) : Array (Array (Array Nat)) := Id.run do
-  let size := CONF_DEG_MAX.toNat + 1
+  let size := CONF_DEG_MAX + 1
   let mut buckets : Array (Array (Array Nat)) := Array.replicate size (Array.replicate size #[])
   for i in [0:pc.darts.size] do
     let e := pc.darts[i]!
@@ -225,9 +237,7 @@ def dartsByDegree (pc : PseudoConfiguration) : Array (Array (Array Nat)) := Id.r
     let dY := (pc.degrees[y]!).lower
     let dX := (pc.degrees[x]!).lower
     if dY > CONF_DEG_MAX || dX > CONF_DEG_MAX then continue
-    let yi := dY.toNat
-    let xi := dX.toNat
-    buckets := buckets.set! yi ((buckets[yi]!).set! xi (((buckets[yi]!)[xi]!).push i))
+    buckets := buckets.set! dY ((buckets[dY]!).set! dX (((buckets[dY]!)[dX]!).push i))
   return buckets
 
 /-- Whether `conf` embeds into `pc` rooted at `dartId`, with the configuration's
@@ -240,20 +250,27 @@ def rootedContainConf (pc : PseudoConfiguration) (dartId : Nat) (conf : Configur
 (C++ `contain_conf`, A.6.6). Serial with early-exit: a config-level `parAny` was
 measured and rejected (nested → worker-pool deadlock; non-nested → millions of
 µs-overhead tasks over tiny config-checks, and the early-exit lost — both far
-slower). The right parallelism granularity is the outer wheel/combination level. -/
+slower). The right parallelism granularity is the outer wheel/combination level.
+
+(Two refinements were prototyped + measured *not worthwhile* and dropped, see
+`PERF.md` §P13: reusing one generation-stamped scratch across the inner embedding
+checks — *slower*, the per-call alloc is already cheap; and pre-grouping `confs` by
+root-degree key to skip non-matching configs — *neutral*, the loop already skips
+them via an empty dart bucket, so the per-config key work is not redundant.)
+
+P14: the sweep is `Array.any` (short-circuiting — so the spec's first-match exit is
+preserved, where `foldl` would not) rather than nested `for … do … return`, avoiding
+the `forIn`/`ForInStep` closure + heartbeat lowering that cost `homCore` ~1.21×
+(`PERF.md` §P13). A candidate dart is skipped when the spec's `dY > 8` guard fires (a
+high-degree root maps only the dart whose head is the wheel `center`). -/
 def containConf (pc : PseudoConfiguration) (center : Nat) (confs : Array Configuration) : Bool :=
-    Id.run do
   let dbd := pc.dartsByDegree
-  for conf in confs do
+  confs.any fun conf =>
     let f := conf.darts[conf.dartId]!
-    let y := f.head
-    let x := (conf.darts[f.rev]!).head
-    let dY := (conf.degrees[y]!).lower
-    let dX := (conf.degrees[x]!).lower
-    for fStar in (dbd[dY.toNat]!)[dX.toNat]! do
-      if dY > 8 && (pc.darts[fStar]!).head != center then continue
-      if pc.rootedContainConf fStar conf then return true
-  return false
+    let dY := (conf.degrees[f.head]!).lower
+    let dX := (conf.degrees[(conf.darts[f.rev]!).head]!).lower
+    ((dbd[dY]!)[dX]!).any fun fStar =>
+      (dY ≤ 8 || (pc.darts[fStar]!).head == center) && pc.rootedContainConf fStar conf
 
 /-- Enumerate the fixed-degree representatives (C++ `representative_degree`,
 A.7.2). High degrees collapse to a single `exact upper` instead of expanding. -/
@@ -263,11 +280,14 @@ def representativeDegree (pc : PseudoConfiguration) (center : Nat) :
   let mut t : Array (Array Degree) := #[Array.replicate n ⟨1, INFTY⟩]
   for v in [0:n] do
     let degV := pc.degrees[v]!
-    let highThreshold : Int := if v == center then CONF_DEG_MAX else 8
+    let highThreshold : Nat := if v == center then CONF_DEG_MAX else 8
     let choices : Array Degree :=
       if degV.upper > highThreshold then #[Degree.exact degV.upper]
-      else (Array.range (degV.upper - degV.lower + 1).toNat).map
-        (fun k => Degree.exact (degV.lower + (Int.ofNat k)))
+      -- coerce to `Int` for the count: an *empty* range (`upper < lower`, a legitimate
+      -- `intersection` result) gives `≤ 0` ⇒ no choices, as in C++. `Nat` subtraction
+      -- would truncate to `0` and yield one spurious choice.
+      else (Array.range ((degV.upper : Int) - degV.lower + 1).toNat).map
+        (fun k => Degree.exact (degV.lower + k))
     let mut newT : Array (Array Degree) := #[]
     for degs in t do
       for d in choices do
