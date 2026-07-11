@@ -1,0 +1,37 @@
+node: n001.modi, degree: 7, start 2026-06-26 17:33:49
+staging data into /dev/shm/fulldiff.KpXgFK ...
+== Full differential (degrees: 7, wheel-limit 0) on Linux x86_64, 128-way ==
+   C++ =/home/tmb790_ku_dk/modi_mount/computer-checks/build/src/main
+   Rust=/home/tmb790_ku_dk/modi_mount/computer-checks/rust_port/target/release/main
+   Lean=/home/tmb790_ku_dk/modi_mount/computer-checks/lean4_port/.lake/build/bin/main
+-- combine_rules --
+   combined rules: 671  (paper: 671)  MATCH
+  combine_rules: rust == C++  OK
+  combine_rules: lean == C++  OK
+-- enum_wheels --
+   d7 wheels: 5439  (paper: 5439)  MATCH
+  enum_wheels d7: rust == C++  OK
+  enum_wheels d7: lean == C++  OK
+-- enum_cartwheels --
+   [cpp] enum_cartwheels: 5439 wheels, 128-way ...
+   [cpp] enum_cartwheels done: 5439 wheels in 267.45s
+   [rust] enum_cartwheels: 5439 wheels, 128-way ...
+   [rust] enum_cartwheels done: 5439 wheels in 325.39s
+   [lean] enum_cartwheels: 5439 wheels, 128-way ...
+   [lean] enum_cartwheels done: 5439 wheels in 1368.28s
+   bad cartwheels: 9366  (paper: 9366)  MATCH
+  enum_cartwheels: rust == C++  OK
+  enum_cartwheels: lean == C++  OK
+-- checks (no output files; ports must agree on pass/fail) --
+  check_deg7: all agree (exit 0)  OK
+  check_deg8: all agree (exit 0)  OK
+  check_7triangle: all agree (exit 0)  OK
+== Per-port wall-clock seconds (degrees 7; enum_cartwheels is 128-way parallel) ==
+   stage                   C++       Rust       Lean   Rust/C++   Lean/C++
+   combine                4.48       1.06       3.95      0.24x      0.88x
+   wheels                96.26       1.60      17.62      0.02x      0.18x
+   cart                 267.45     325.39    1368.28      1.22x      5.12x
+   check                151.75     140.61     708.60      0.93x      4.67x
+   TOTAL                519.94     468.66    2098.45      0.90x      4.04x
+All checks passed (degrees: 7): ports agree AND every count matches the published values.
+=> degree 7: PASS (exit 0); recorded in /home/tmb790_ku_dk/modi_mount/full-summary.txt

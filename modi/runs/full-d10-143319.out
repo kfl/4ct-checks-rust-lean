@@ -1,0 +1,37 @@
+node: n001.modi, degree: 10, start 2026-06-26 18:40:50
+staging data into /dev/shm/fulldiff.iR128I ...
+== Full differential (degrees: 10, wheel-limit 0) on Linux x86_64, 128-way ==
+   C++ =/home/tmb790_ku_dk/modi_mount/computer-checks/build/src/main
+   Rust=/home/tmb790_ku_dk/modi_mount/computer-checks/rust_port/target/release/main
+   Lean=/home/tmb790_ku_dk/modi_mount/computer-checks/lean4_port/.lake/build/bin/main
+-- combine_rules --
+   combined rules: 671  (paper: 671)  MATCH
+  combine_rules: rust == C++  OK
+  combine_rules: lean == C++  OK
+-- enum_wheels --
+   d10 wheels: 626  (paper: 626)  MATCH
+  enum_wheels d10: rust == C++  OK
+  enum_wheels d10: lean == C++  OK
+-- enum_cartwheels --
+   [cpp] enum_cartwheels: 626 wheels, 128-way ...
+   [cpp] enum_cartwheels done: 626 wheels in 8.45s
+   [rust] enum_cartwheels: 626 wheels, 128-way ...
+   [rust] enum_cartwheels done: 626 wheels in 15.48s
+   [lean] enum_cartwheels: 626 wheels, 128-way ...
+   [lean] enum_cartwheels done: 626 wheels in 33.63s
+   bad cartwheels: 0
+  enum_cartwheels: rust == C++  OK
+  enum_cartwheels: lean == C++  OK
+-- checks (no output files; ports must agree on pass/fail) --
+  check_deg7: all agree (exit 0)  OK
+  check_deg8: all agree (exit 0)  OK
+  check_7triangle: all agree (exit 0)  OK
+== Per-port wall-clock seconds (degrees 10; enum_cartwheels is 128-way parallel) ==
+   stage                   C++       Rust       Lean   Rust/C++   Lean/C++
+   combine                4.55       1.08       3.87      0.24x      0.85x
+   wheels              1329.10      24.93     209.46      0.02x      0.16x
+   cart                   8.45      15.48      33.63      1.83x      3.98x
+   check                  1.05       0.37       0.88      0.35x      0.84x
+   TOTAL               1343.15      41.86     247.84      0.03x      0.18x
+All checks passed (degrees: 10): ports agree AND every count matches the published values.
+=> degree 10: PASS (exit 0); recorded in /home/tmb790_ku_dk/modi_mount/full-summary.txt

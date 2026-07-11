@@ -206,11 +206,17 @@ def assertDegreesValid (degrees : Array Degree) (ctx : String) : IO Unit := do
 
 /-- Load every `.conf` file in `confdir` (C++ `get_confs`).
 
-The 8200 files are read + parsed in parallel (`parMapM`): independent IO + CPU per
-file, so this overlaps across cores instead of a serial loop. Containment only
-asks *whether* some config matches (`containConf` is an order-independent `any`),
-so the load order does not affect output — byte-identical (confirmed by the
-differential). -/
+The 8200 files (19754 configurations) are read + parsed in parallel (`parMapM`):
+independent IO + CPU per file, so this overlaps across cores instead of a serial loop.
+Containment only asks *whether* some config matches (`containConf` is an order-independent
+`any`), so the load order does not affect output — byte-identical (confirmed by the
+differential).
+
+This helps the *single-process* stages (`combine_rules`, `enum_wheels`, `check`), which load
+configs once. In the per-wheel `enum_cartwheels` stage the driver runs 128 of these processes
+at once and caps each to one thread (`LEAN_NUM_THREADS=1`) to avoid oversubscription — the
+parallelism there is across processes, not threads. (Measured: a "load once, parallel over
+wheels" variant was *slower* at 128 cores than the capped per-process model; see RESULTS.md.) -/
 def getConfs (confdir : System.FilePath) : IO (Array Configuration) := do
   let paths := (← confdir.readDir).filterMap fun entry =>
     if entry.path.extension == some "conf" then some entry.path else none

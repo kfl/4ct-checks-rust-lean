@@ -15,10 +15,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 NRULES="${1:-8}"
-CPP="${CPP:-../build/src/main}"
+CPP="${CPP:-../../computer-checks/build/src/main}"   # sibling C++ repo
 RUST="${RUST:-target/release/main}"
 
-[ -x "$CPP" ] || { echo "C++ oracle not found at $CPP — build it: cmake --build ../build"; exit 1; }
+[ -x "$CPP" ] || { echo "C++ oracle not found at $CPP — build it in the sibling computer-checks repo: cmake --build build"; exit 1; }
 
 # Fetch the data repos (shallow) if missing.
 [ -d discharging-rules ] || git clone --depth 1 https://github.com/near-linear-4ct/discharging-rules.git

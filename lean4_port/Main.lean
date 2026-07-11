@@ -115,12 +115,6 @@ def main (argv : List String) : IO UInt32 := do
       return 1
     runEnumCartwheels (need args "wheel") (need args "confdir") (need args "ruledir")
       (need args "combined_ruledir") (need args "outdir")
-  if args.has "enum_all_cartwheels" then
-    -- Lean-port addition: all wheels in `cartwheeldir`, configs loaded once.
-    unless (← existArgs args ["cartwheeldir", "confdir", "ruledir", "combined_ruledir", "outdir"]) do
-      return 1
-    runEnumAllCartwheels (need args "cartwheeldir") (need args "confdir") (need args "ruledir")
-      (need args "combined_ruledir") (need args "outdir")
   if args.has "check_deg8" then
     unless (← existArgs args ["cartwheeldir", "confdir"]) do return 1
     runCheckDeg8 (need args "cartwheeldir") (need args "confdir")

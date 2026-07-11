@@ -490,25 +490,4 @@ def runEnumCartwheels (wheelFile confdir ruledir combinedRuledir outdir : System
   for i in [0:enumedWheels.size] do
     enumedWheels[i]!.toFile (outdir / s!"{basename}_{i}.cartwheel")
 
-/-- Lemma A.3 step 2 over a *whole directory* of wheels in one process
-(Lean-port addition). The C++/Rust run one `enum_cartwheels` process per wheel,
-each reloading the ~19754 configs — measured to dominate that phase. This loads
-configs/rules/combined-rules **once** and runs `enumBadCartwheels` over every wheel
-in `wheelsdir` in parallel (`parForEach`), writing the same `{stem}_{i}.cartwheel`
-outputs. Byte-identical output set to the per-wheel runs; far less I/O. -/
-def runEnumAllCartwheels (wheelsdir confdir ruledir combinedRuledir outdir : System.FilePath) :
-    IO Unit := do
-  let confs ← Configuration.getConfs confdir
-  let rules ← getRules ruledir
-  let combinedRules ← getCombinedRules combinedRuledir
-  let wheelPaths := (← wheelsdir.readDir).filterMap fun e =>
-    if e.path.extension == some "cartwheel" then some e.path else none
-  IO.println s!"Processing {wheelPaths.size} wheels (configs loaded once)."
-  parForEach wheelPaths fun wheelPath => do
-    let cartwheel := CartWheel.ofString (← IO.FS.readFile wheelPath)
-    let enumed ← cartwheel.enumBadCartwheels rules combinedRules confs
-    let basename := wheelPath.fileStem.getD "wheel"
-    for i in [0:enumed.size] do
-      enumed[i]!.toFile (outdir / s!"{basename}_{i}.cartwheel")
-
 end NearLinear4ct
