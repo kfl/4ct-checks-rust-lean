@@ -1,0 +1,11 @@
+# Lake build artifacts
+/.lake/
+
+# Test scratch
+/test_tmp_*/
+
+# P7 data repos (cloned, like the Rust port)
+/reducible-configurations/
+/discharging-rules/
+/combined_rules/
+/wheels/

@@ -1,0 +1,18 @@
+# Lake build for the Lean 4 port of the near-linear 4CT computer checks.
+# Library `NearLinear4ct` + the `main` driver + a `test` executable.
+# Proof-obligation asserts are always-on (L1/R5); there is no debug/release
+# split that could compile them out.
+name = "NearLinear4ct"
+version = "0.1.0"
+defaultTargets = ["NearLinear4ct", "main", "test"]
+
+[[lean_lib]]
+name = "NearLinear4ct"
+
+[[lean_exe]]
+name = "main"
+root = "Main"
+
+[[lean_exe]]
+name = "test"
+root = "Test"
