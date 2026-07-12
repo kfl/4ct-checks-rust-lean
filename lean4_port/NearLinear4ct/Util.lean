@@ -1,11 +1,13 @@
 import NearLinear4ct.OptIdx
+import NearLinear4ct.Degree
 
 /-!
 Shared helpers.
 
 Contains `proofAssert` (the proof-obligation primitive), `Unionfind`, `lexMin`
-(lexicographically-minimal rotation test), the `FromFile` class, and the
-`getObjects` directory loader.
+(lexicographically-minimal rotation test), the token helpers for the flat
+integer file formats (`FORMAT.md`), the `FromFile` class, and the `getObjects`
+directory loader.
 -/
 
 namespace NearLinear4ct
@@ -181,6 +183,51 @@ fact), so the read is proof-carrying -- no `!`/`?` indexing. For
   else none
 
 end Queue
+
+/-! ### Token helpers for the flat integer file formats (`FORMAT.md`) -/
+
+/-- The whitespace-separated tokens of `s`, dropping the empty tokens that
+runs of whitespace and newlines produce. -/
+def tokens (s : String) : Array String :=
+  ((s.split Char.isWhitespace).filterMap (fun t =>
+    if t.isEmpty then none else some t.toString)).toArray
+
+/-- Parse an integer token. Panics on anything else: the inputs are
+machine-generated artefacts, so a malformed token is a corrupt file. -/
+def parseInt (tok : String) : Int :=
+  match tok.toInt? with
+  | some v => v
+  | none => panic! s!"expected integer token, got {tok}"
+
+/-- Decode a vertex row `v lower upper n₁ n₂ ...` of the shared
+`.rule`/`.cartwheel` layout (`FORMAT.md`): upper `0` means unbounded
+(`INFTY`), and the 1-based neighbour entries shift to 0-based with the `-1`
+boundary marker preserved. -/
+def parseVertexLine (toks : Array String) : Degree × Array Int := Id.run do
+  let lower := (parseInt toks[1]!).toNat
+  let upperRaw := (parseInt toks[2]!).toNat
+  let upper := if upperRaw == 0 then INFTY else upperRaw
+  let mut rot : Array Int := #[]
+  for k in [3:toks.size] do
+    let v := parseInt toks[k]!
+    rot := rot.push (if v != -1 then v - 1 else v)
+  return (⟨lower, upper⟩, rot)
+
+/-- Serialise the vertex rows of the shared `.rule`/`.cartwheel` layout, the
+write-side counterpart of `parseVertexLine`: `v lower upper n₁ n₂ ...`, all
+1-based, upper `INFTY` written as `0`, boundary `-1` kept, a trailing space
+per row (`FORMAT.md`). `vRotations` holds each vertex's neighbours 0-based,
+as `getVRotations` produces them. -/
+def writeVertexLines (degrees : Array Degree) (vRotations : Array (Array Int)) :
+    String := Id.run do
+  let mut res := ""
+  for v in [0:degrees.size] do
+    let upper := if (degrees[v]!).upper == INFTY then 0 else (degrees[v]!).upper
+    res := res ++ s!"{v + 1} {(degrees[v]!).lower} {upper} "
+    for w in vRotations[v]! do
+      res := res ++ (if w == -1 then "-1 " else s!"{w + 1} ")
+    res := res ++ "\n"
+  return res
 
 /-! ### Parallel combinators (pure, `Task`-based, order-preserving)
 

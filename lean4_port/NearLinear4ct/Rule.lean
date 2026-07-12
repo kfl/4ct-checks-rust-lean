@@ -29,16 +29,6 @@ structure CombinedRule extends Rule where
   combinedFlag : Array Bool
 deriving DecidableEq, Repr, Inhabited, BEq
 
-private def parseInt (tok : String) : Int :=
-  match tok.toInt? with
-  | some v => v
-  | none => panic! s!"expected integer token, got {tok}"
-
-/-- Split a line into whitespace tokens. -/
-private def lineToks (line : String) : Array String :=
-  ((line.split Char.isWhitespace).filterMap (fun s =>
-    if s.isEmpty then none else some s.toString)).toArray
-
 namespace Rule
 
 /-- Construct from `(st_id, amount, N, darts, degrees)`. -/
@@ -49,7 +39,7 @@ protected def new (stId : Nat) (amount : Int) (n : Nat) (darts : Array Dart) (de
 line), returning the rule and the advanced cursor. -/
 def parse (lines : Array String) (cursor : Nat) : Rule × Nat := Id.run do
   let mut cur := cursor + 1                     -- skip the format's leading blank line
-  let header := lineToks lines[cur]!
+  let header := tokens lines[cur]!
   cur := cur + 1
   let n := (parseInt header[0]!).toNat
   let s := parseInt header[1]! - 1
@@ -58,16 +48,9 @@ def parse (lines : Array String) (cursor : Nat) : Rule × Nat := Id.run do
   let mut degrees : Array Degree := Array.replicate n ⟨1, INFTY⟩
   let mut rotationVertices : Array (Array Int) := Array.replicate n #[]
   for u in [0:n] do
-    let toks := lineToks lines[cur]!
+    let (deg, rotU) := parseVertexLine (tokens lines[cur]!)
     cur := cur + 1
-    let lower := (parseInt toks[1]!).toNat
-    let upperRaw := (parseInt toks[2]!).toNat
-    let upper := if upperRaw == 0 then INFTY else upperRaw
-    degrees := degrees.set! u ⟨lower, upper⟩
-    let mut rotU : Array Int := #[]
-    for k in [3:toks.size] do
-      let v := parseInt toks[k]!
-      rotU := rotU.push (if v != -1 then v - 1 else v)
+    degrees := degrees.set! u deg
     rotationVertices := rotationVertices.set! u rotU
   let pc := PseudoConfiguration.fromVRotations n rotationVertices degrees
   let st := pc.getDarts t.toNat s.toNat
@@ -76,19 +59,10 @@ def parse (lines : Array String) (cursor : Nat) : Rule × Nat := Id.run do
 /-- Serialise to the `.rule` text format. The output is the proof
 artefact; its byte layout follows `FORMAT.md`, plus the trailing space after each
 vertex's neighbour list. -/
-def write (rule : Rule) : String := Id.run do
+def write (rule : Rule) : String :=
   let darts := rule.darts
-  let mut res := s!"\n{rule.n} {(darts[(darts[rule.stId]!).rev]!).head + 1} {(darts[rule.stId]!).head + 1} {rule.amount}\n"
-  let eRotations := rule.getERotations
-  for v in [0:rule.n] do
-    let upper := if (rule.degrees[v]!).upper == INFTY then 0 else (rule.degrees[v]!).upper
-    res := res ++ s!"{v + 1} {(rule.degrees[v]!).lower} {upper} "
-    for dartId in eRotations[v]! do
-      match dartId with
-      | none => res := res ++ "-1 "
-      | some e => res := res ++ s!"{(darts[(darts[e]!).rev]!).head + 1} "
-    res := res ++ "\n"
-  return res
+  s!"\n{rule.n} {(darts[(darts[rule.stId]!).rev]!).head + 1} {(darts[rule.stId]!).head + 1} {rule.amount}\n"
+    ++ writeVertexLines rule.degrees rule.getVRotations
 
 /-- Write to a file. -/
 def toFile (rule : Rule) (path : System.FilePath) : IO Unit :=

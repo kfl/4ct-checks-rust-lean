@@ -8,7 +8,7 @@
 //! ("unmapped"). `homomorphism` returns *partial* maps (unreached
 //! vertices/darts are `-1`), so the type must admit "no image". Using `Option`
 //! instead of an `i32` sentinel turns the C++ `== -1` checks into `is_none()`
-//! and -- crucially for trust -- turns the latent UB of indexing with `-1`
+//! and -- the trust gain -- turns the latent UB of indexing with `-1`
 //! (`map2[map1[i]]` when `map1[i] == -1`) into a defined `None`. On the domain
 //! actually exercised (total maps), the two are identical.
 

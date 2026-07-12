@@ -76,15 +76,6 @@ is closed and has no boundary `none`). -/
 private def centerDartsOf (pc : PseudoConfiguration) (center : Nat) : Array Nat :=
   (pc.getERotations[center]!).map (·.get!)
 
-private def parseInt (tok : String) : Int :=
-  match tok.toInt? with
-  | some v => v
-  | none => panic! s!"expected integer token, got {tok}"
-
-private def lineToks (line : String) : Array String :=
-  ((line.split Char.isWhitespace).filterMap (fun s =>
-    if s.isEmpty then none else some s.toString)).toArray
-
 /-- Construct from `(center, center_darts, N, darts, degrees)`. -/
 protected def new (center : Nat) (centerDarts : Array Nat) (n : Nat) (darts : Array Dart)
     (degrees : Array Degree) : CartWheel :=
@@ -93,19 +84,8 @@ protected def new (center : Nat) (centerDarts : Array Nat) (n : Nat) (darts : Ar
 
 /-- Serialise to the `.cartwheel` text format. The layout follows `FORMAT.md`,
 plus the trailing space per vertex line. -/
-def write (cw : CartWheel) : String := Id.run do
-  let darts := cw.darts
-  let mut res := s!"\n{cw.n} {cw.center + 1}\n"
-  let eRotations := cw.getERotations
-  for v in [0:cw.n] do
-    let upper := if (cw.degrees[v]!).upper == INFTY then 0 else (cw.degrees[v]!).upper
-    res := res ++ s!"{v + 1} {(cw.degrees[v]!).lower} {upper} "
-    for dartId in eRotations[v]! do
-      match dartId with
-      | none => res := res ++ "-1 "
-      | some e => res := res ++ s!"{(darts[(darts[e]!).rev]!).head + 1} "
-    res := res ++ "\n"
-  return res
+def write (cw : CartWheel) : String :=
+  s!"\n{cw.n} {cw.center + 1}\n" ++ writeVertexLines cw.degrees cw.getVRotations
 
 def toFile (cw : CartWheel) (path : System.FilePath) : IO Unit :=
   IO.FS.writeFile path cw.write
@@ -152,23 +132,16 @@ def ofString (content : String) : CartWheel := Id.run do
   let lines := (content.splitOn "\n").toArray
   let mut idx := 0
   while (lines[idx]!).trimAscii.toString.isEmpty do idx := idx + 1
-  let header := lineToks lines[idx]!
+  let header := tokens lines[idx]!
   idx := idx + 1
   let n := (parseInt header[0]!).toNat
   let center := (parseInt header[1]!).toNat - 1
   let mut degrees : Array Degree := Array.replicate n ⟨1, INFTY⟩
   let mut rotationVertices : Array (Array Int) := Array.replicate n #[]
   for u in [0:n] do
-    let toks := lineToks lines[idx]!
+    let (deg, rotU) := parseVertexLine (tokens lines[idx]!)
     idx := idx + 1
-    let lower := (parseInt toks[1]!).toNat
-    let upperRaw := (parseInt toks[2]!).toNat
-    let upper := if upperRaw == 0 then INFTY else upperRaw
-    degrees := degrees.set! u ⟨lower, upper⟩
-    let mut rotU : Array Int := #[]
-    for j in [3:toks.size] do
-      let v := parseInt toks[j]!
-      rotU := rotU.push (if v != -1 then v - 1 else v)
+    degrees := degrees.set! u deg
     rotationVertices := rotationVertices.set! u rotU
   let pc := PseudoConfiguration.fromVRotations n rotationVertices degrees
   return { toPseudoConfiguration := pc, center := center, centerDarts := centerDartsOf pc center }

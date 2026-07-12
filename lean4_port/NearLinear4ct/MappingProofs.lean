@@ -202,7 +202,7 @@ theorem getElem_composeMap {m1 m2 : IndexMap} {i : Nat} (hi : i < m1.size) :
       if (m1[i]'hi).isNone then OptIdx.none else m2[(m1[i]'hi).idx!]! := by
   simp [composeMap]
 
-/-- **The workhorse.** Under `Bounded`, composing maps is Kleisli composition
+/-- Under `Bounded`, composing maps is Kleisli composition
 of the functions they denote -- and the proof shows `composeMap`'s internal
 `map2[j.idx!]!` read (Mapping.lean) is in range, i.e. its panic branch is
 dead. (True even without `Bounded` -- an out-of-range `!` read defaults to

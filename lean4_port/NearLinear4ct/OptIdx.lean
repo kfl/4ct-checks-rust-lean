@@ -9,7 +9,7 @@ entry, because **Lean has no niche optimisation** (the optimisation that lets a
 Rust `Option<NonZeroU32>` be stored unboxed). So `OptIdx` recovers that unboxed
 representation by hand.
 
-Crucially, the `Option Nat` semantics are recovered by `get?`, and the encoding is
+The `Option Nat` semantics are recovered by `get?`, and the encoding is
 **proved sound** below (`get?_some`, `get?_none`, the round-trips): the compact
 representation is not merely encapsulated and tested but machine-checked to carry
 exactly the same information as `Option Nat` -- so using it, even in public types,

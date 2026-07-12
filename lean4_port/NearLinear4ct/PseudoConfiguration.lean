@@ -52,6 +52,22 @@ def display (pc : PseudoConfiguration) : String := Id.run do
     res := res ++ "\n"
   return res
 
+/-- Each vertex's rotation as 0-based neighbour vertices, `-1` at the
+boundary -- the view `fromVRotations` consumes, recovered from the dart
+structure. -/
+def getVRotations (pc : PseudoConfiguration) : Array (Array Int) := Id.run do
+  let darts := pc.darts
+  let eRotations := pc.getERotations
+  let mut res : Array (Array Int) := Array.mkEmpty pc.n
+  for v in [0:pc.n] do
+    let mut rotV : Array Int := #[]
+    for dartId in eRotations[v]! do
+      match dartId with
+      | none => rotV := rotV.push (-1)
+      | some e => rotV := rotV.push ((darts[(darts[e]!).rev]!).head : Int)
+    res := res.push rotV
+  return res
+
 /-- Build from vertex rotations + degrees.
 The `degrees.size() == N` requirement is a caller precondition, kept implicit. -/
 def fromVRotations (n : Nat) (vRotations : Array (Array Int)) (degrees : Array Degree) :

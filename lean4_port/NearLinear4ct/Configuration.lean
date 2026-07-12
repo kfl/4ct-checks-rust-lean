@@ -160,16 +160,10 @@ configurations, and each is paired with its mirror. Token-based (the degree give
 the neighbour count), so a flat whitespace token stream suffices. -/
 def fromFile (path : System.FilePath) : IO (Array Configuration) := do
   let content ← IO.FS.readFile path
-  -- whitespace-token stream, dropping empties from runs/newlines
-  let toks := (content.split Char.isWhitespace).filterMap (fun s =>
-    if s.isEmpty then none else some s)
-  let tokArr := toks.toArray
+  let tokArr := tokens content
   let mut idx : Nat := 0
   -- token reader over the captured array (with `--v` done by callers)
-  let readAt (i : Nat) : Int :=
-    match (tokArr[i]!).toInt? with
-    | some v => v
-    | none => panic! s!"integer token expected, got {tokArr[i]!}"
+  let readAt (i : Nat) : Int := parseInt tokArr[i]!
   let n := (readAt idx).toNat; idx := idx + 1
   let r := (readAt idx).toNat; idx := idx + 1
   let mut degrees : Array Degree := Array.replicate n ⟨1, INFTY⟩
