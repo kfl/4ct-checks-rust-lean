@@ -140,7 +140,9 @@ structure Mappings.WF (ms : Mappings) (n d n' d' : Nat) : Prop where
   vmap_wf : ms.vmap.WF n n'
   dmap_wf : ms.dmap.WF d d'
 
-namespace IndexMap
+section
+
+open IndexMap
 
 /-! ### L1 -- `initialMappings` is the paper's `id_X` (A.4.4) -/
 
@@ -163,27 +165,27 @@ theorem range_map_some_total {n : Nat} {f : Nat → Nat} :
   intro i h
   simp
 
-theorem initialMappings_vmap_wf (n d : Nat) : (Mappings.initialMappings n d).vmap.WF n n := by
+theorem Mappings.initialMappings_vmap_wf (n d : Nat) : (Mappings.initialMappings n d).vmap.WF n n := by
   simpa [Mappings.initialMappings] using
     (range_map_some_wf (n := n) (codom := n) (f := fun i => i) (fun _ hi => hi))
 
-theorem initialMappings_dmap_wf (n d : Nat) : (Mappings.initialMappings n d).dmap.WF d d := by
+theorem Mappings.initialMappings_dmap_wf (n d : Nat) : (Mappings.initialMappings n d).dmap.WF d d := by
   simpa [Mappings.initialMappings] using
     (range_map_some_wf (n := d) (codom := d) (f := fun i => i) (fun _ hi => hi))
 
-theorem initialMappings_wf (n d : Nat) :
+theorem Mappings.initialMappings_wf (n d : Nat) :
     (Mappings.initialMappings n d).WF n d n d :=
   ⟨initialMappings_vmap_wf n d, initialMappings_dmap_wf n d⟩
 
-theorem initialMappings_vmap_total (n d : Nat) : (Mappings.initialMappings n d).vmap.Total := by
+theorem Mappings.initialMappings_vmap_total (n d : Nat) : (Mappings.initialMappings n d).vmap.Total := by
   simpa [Mappings.initialMappings] using
     (range_map_some_total (n := n) (f := fun i => i))
 
-theorem initialMappings_dmap_total (n d : Nat) : (Mappings.initialMappings n d).dmap.Total := by
+theorem Mappings.initialMappings_dmap_total (n d : Nat) : (Mappings.initialMappings n d).dmap.Total := by
   simpa [Mappings.initialMappings] using
     (range_map_some_total (n := d) (f := fun i => i))
 
-theorem idx?_initialMappings_vmap (n d i : Nat) :
+theorem Mappings.idx?_initialMappings_vmap (n d i : Nat) :
     (Mappings.initialMappings n d).vmap.idx? i = if i < n then Option.some i else Option.none := by
   unfold idx?
   simp [Mappings.initialMappings]
@@ -298,7 +300,7 @@ theorem splitMap_fst_append_snd {m : IndexMap} {l : Nat} (hl : l ≤ m.size) :
 `idx?` twin via `toFun_val` + `option_fin_val_inj`) -/
 
 /-- `initialMappings` denotes the identity (the paper's `id_X`, A.4.4). -/
-theorem toFun_initialMappings_vmap {n d : Nat} (i : Fin n) :
+theorem Mappings.toFun_initialMappings_vmap {n d : Nat} (i : Fin n) :
     (Mappings.initialMappings n d).vmap.toFun (initialMappings_vmap_wf n d) i
       = Option.some i := by
   apply option_fin_val_inj
@@ -334,5 +336,5 @@ theorem toFun_splitMap_snd {m : IndexMap} {dom codom l : Nat}
   apply option_fin_val_inj
   rw [toFun_val, toFun_val, idx?_splitMap_snd]
 
-end IndexMap
+end
 end NearLinear4ct

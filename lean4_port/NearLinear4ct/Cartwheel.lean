@@ -69,24 +69,24 @@ structure CartWheel extends PseudoConfiguration where
   centerDarts : Array Nat
 deriving DecidableEq, Repr, Inhabited, BEq
 
+namespace CartWheel
+
 /-- The centre's darts in rotation order (the centre is interior, so the rotation
 is closed and has no boundary `none`). -/
 private def centerDartsOf (pc : PseudoConfiguration) (center : Nat) : Array Nat :=
   (pc.getERotations[center]!).map (·.get!)
 
-private def cwParseInt (tok : String) : Int :=
+private def parseInt (tok : String) : Int :=
   match tok.toInt? with
   | some v => v
   | none => panic! s!"expected integer token, got {tok}"
 
-private def cwLineToks (line : String) : Array String :=
+private def lineToks (line : String) : Array String :=
   ((line.split Char.isWhitespace).filterMap (fun s =>
     if s.isEmpty then none else some s.toString)).toArray
 
-namespace CartWheel
-
 /-- Construct from `(center, center_darts, N, darts, degrees)`. -/
-def new (center : Nat) (centerDarts : Array Nat) (n : Nat) (darts : Array Dart)
+protected def new (center : Nat) (centerDarts : Array Nat) (n : Nat) (darts : Array Dart)
     (degrees : Array Degree) : CartWheel :=
   { toPseudoConfiguration := PseudoConfiguration.new n darts degrees
     center := center, centerDarts := centerDarts }
@@ -152,22 +152,22 @@ def ofString (content : String) : CartWheel := Id.run do
   let lines := (content.splitOn "\n").toArray
   let mut idx := 0
   while (lines[idx]!).trimAscii.toString.isEmpty do idx := idx + 1
-  let header := cwLineToks lines[idx]!
+  let header := lineToks lines[idx]!
   idx := idx + 1
-  let n := (cwParseInt header[0]!).toNat
-  let center := (cwParseInt header[1]!).toNat - 1
+  let n := (parseInt header[0]!).toNat
+  let center := (parseInt header[1]!).toNat - 1
   let mut degrees : Array Degree := Array.replicate n ⟨1, INFTY⟩
   let mut rotationVertices : Array (Array Int) := Array.replicate n #[]
   for u in [0:n] do
-    let toks := cwLineToks lines[idx]!
+    let toks := lineToks lines[idx]!
     idx := idx + 1
-    let lower := (cwParseInt toks[1]!).toNat
-    let upperRaw := (cwParseInt toks[2]!).toNat
+    let lower := (parseInt toks[1]!).toNat
+    let upperRaw := (parseInt toks[2]!).toNat
     let upper := if upperRaw == 0 then INFTY else upperRaw
     degrees := degrees.set! u ⟨lower, upper⟩
     let mut rotU : Array Int := #[]
     for j in [3:toks.size] do
-      let v := cwParseInt toks[j]!
+      let v := parseInt toks[j]!
       rotU := rotU.push (if v != -1 then v - 1 else v)
     rotationVertices := rotationVertices.set! u rotU
   let pc := PseudoConfiguration.fromVRotations n rotationVertices degrees
@@ -188,18 +188,6 @@ def assertCenterValid (cw : CartWheel) (ctx : String) : IO Unit := do
     s!"{ctx}: centre lower degree {(cw.degrees[cw.center]!).lower} exceeds \
       spoke count {cw.centerDarts.size}"
 
-end CartWheel
-
-instance : FromFile CartWheel where
-  fromFile path := do return CartWheel.ofString (← IO.FS.readFile path)
-
-/-- Load every `.cartwheel` file in `cartwheeldir`. -/
-def getCartwheels (cartwheeldir : System.FilePath) : IO (Array CartWheel) := do
-  let cws ← getObjects CartWheel cartwheeldir ".cartwheel"
-  for cw in cws do cw.assertCenterValid "cartwheel"
-  IO.println s!"Total {cws.size} cartwheels loaded."
-  return cws
-
 /-- `CARTWHEEL_DEGREES` as an `Int` list, computed once; every digit menu
 `CARTWHEEL_DEGREES[iLowest:]` is one of its suffixes, shared via `drop`. -/
 private def cartwheelDegreesInt : List Int :=
@@ -215,8 +203,6 @@ boundary. -/
 private def wheelTails (iLowest k : Nat) : List (List Int) :=
   let digits := cartwheelDegreesInt.drop iLowest
   Nat.repeat (fun tails => digits.flatMap fun d => tails.map (d :: ·)) k [[]]
-
-namespace CartWheel
 
 /-- The lex-min neighbour-degree tuples for a centre of degree `centerDegree`,
 in enumeration order (A.9.5's digit enumeration and rotation check). The
@@ -448,6 +434,16 @@ def enumBadCartwheels (cw : CartWheel) (rules : Array Rule) (combinedRules : Arr
   return cartwheels
 
 end CartWheel
+
+instance : FromFile CartWheel where
+  fromFile path := do return CartWheel.ofString (← IO.FS.readFile path)
+
+/-- Load every `.cartwheel` file in `cartwheeldir`. -/
+def getCartwheels (cartwheeldir : System.FilePath) : IO (Array CartWheel) := do
+  let cws ← getObjects CartWheel cartwheeldir ".cartwheel"
+  for cw in cws do cw.assertCenterValid "cartwheel"
+  IO.println s!"Total {cws.size} cartwheels loaded."
+  return cws
 
 -- --- cartwheel-combination on PseudoConfiguration (consume CartWheel) --------
 namespace PseudoConfiguration

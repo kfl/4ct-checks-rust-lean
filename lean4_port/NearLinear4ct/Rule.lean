@@ -42,7 +42,7 @@ private def lineToks (line : String) : Array String :=
 namespace Rule
 
 /-- Construct from `(st_id, amount, N, darts, degrees)`. -/
-def new (stId : Nat) (amount : Int) (n : Nat) (darts : Array Dart) (degrees : Array Degree) : Rule :=
+protected def new (stId : Nat) (amount : Int) (n : Nat) (darts : Array Dart) (degrees : Array Degree) : Rule :=
   { toPseudoConfiguration := PseudoConfiguration.new n darts degrees, stId := stId, amount := amount }
 
 /-- Parse one rule from `lines` starting at `cursor` (after the leading blank
@@ -121,7 +121,7 @@ def getRules (ruledir : System.FilePath) : IO (Array Rule) := do
 namespace CombinedRule
 
 /-- Construct from `(combined_flag, st_id, amount, N, darts, degrees)`. -/
-def new (combinedFlag : Array Bool) (stId : Nat) (amount : Int) (n : Nat) (darts : Array Dart)
+protected def new (combinedFlag : Array Bool) (stId : Nat) (amount : Int) (n : Nat) (darts : Array Dart)
     (degrees : Array Degree) : CombinedRule :=
   { toRule := Rule.new stId amount n darts degrees, combinedFlag := combinedFlag }
 

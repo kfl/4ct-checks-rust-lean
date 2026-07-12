@@ -41,13 +41,13 @@ namespace OptIdx
 
 `@[match_pattern]`: usable in patterns, so call sites match an `OptIdx` like
 an `Option` without decoding through `get?`. -/
-@[match_pattern] def none : OptIdx := ⟨0⟩
+@[match_pattern] protected def none : OptIdx := ⟨0⟩
 
 /-- `some i` (mapped to index `i`).
 
 `@[match_pattern]`: the pattern `.some i` unfolds to `⟨i + 1⟩`, so
 `.none`/`.some i` matches are exhaustive. -/
-@[inline, match_pattern] def «some» (i : Nat) : OptIdx := ⟨i + 1⟩
+@[inline, match_pattern] protected def «some» (i : Nat) : OptIdx := ⟨i + 1⟩
 
 /-- Whether this is `some _` (no allocation -- for the hot loop). -/
 @[inline] def isSome (o : OptIdx) : Bool := o.raw != 0
@@ -65,13 +65,13 @@ def idx! (o : OptIdx) : Nat :=
 
 /-- Encode an `Option Nat`. -/
 def ofOption : Option Nat → OptIdx
-  | Option.none => none
-  | Option.some i => «some» i
+  | Option.none => .none
+  | Option.some i => .some i
 
 /-- Map the index if present, staying unboxed (mirrors `Option.map`; `map f ∘ get? =
 get? ∘ Option.map f`). -/
 @[inline] def map (f : Nat → Nat) (o : OptIdx) : OptIdx :=
-  if o.raw == 0 then none else «some» (f (o.raw - 1))
+  if o.raw == 0 then .none else .some (f (o.raw - 1))
 
 /-- Decode an optional index into an optional finite index, given a bound proof. -/
 def toFin? (o : OptIdx) (h : ∀ j, o.get? = Option.some j → j < n) :
@@ -120,7 +120,7 @@ trustworthy as `Option`. -/
   obtain ⟨raw⟩ := o
   cases raw with
   | zero => rfl
-  | succ n => simp [map, get?, «some»]
+  | succ n => simp [map, get?, OptIdx.some]
 
 /-- Round-trip the other way: `ofOption ∘ get? = id`. Together with `get?_ofOption`
 this is the bijection `OptIdx ≃ Option Nat`. -/

@@ -39,7 +39,7 @@ deriving DecidableEq, Repr
 namespace Configuration
 
 /-- Construct from `(dart_id, N, darts, degrees)`. -/
-def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree) : Configuration :=
+protected def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree) : Configuration :=
   let f := darts[dartId]!
   { toPseudoConfiguration := PseudoConfiguration.new n darts degrees, dartId := dartId
     rootHeadDeg := (degrees[f.head]!).lower
@@ -290,10 +290,6 @@ degrees included in `pc`'s (A.6.8). -/
 def rootedContainConf (pc : PseudoConfiguration) (dartId : Nat) (conf : Configuration) : Bool :=
   PseudoConfiguration.homomorphismExists conf.toPseudoConfiguration conf.dartId pc dartId
     Degree.includes
-
-end PseudoConfiguration
-
-namespace PseudoConfiguration
 
 /-- Whether this configuration contains any reducible configuration in `confs`
 (A.6.6). Serial with early exit -- the parallelism that pays off is at the

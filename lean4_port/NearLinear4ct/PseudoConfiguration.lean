@@ -28,7 +28,7 @@ deriving DecidableEq, Repr, Inhabited, BEq
 namespace PseudoConfiguration
 
 /-- Construct from `(N, darts, degrees)`. -/
-def new (n : Nat) (darts : Array Dart) (degrees : Array Degree) : PseudoConfiguration :=
+protected def new (n : Nat) (darts : Array Dart) (degrees : Array Degree) : PseudoConfiguration :=
   { toPseudoTriangulation := ⟨n, darts⟩, degrees := degrees }
 
 /-- Multi-line dump. -/

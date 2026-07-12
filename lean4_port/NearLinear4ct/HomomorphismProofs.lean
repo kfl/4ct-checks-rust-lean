@@ -29,8 +29,7 @@ in a few lines each. Completeness needs the BFS to actually return, so
 namespace NearLinear4ct
 
 -- The obligation type's members (`pack`, `pairBase`, `fst_pack`, ...) are used
--- throughout; the bare type `SmallNatPair` still appears in signatures. `OptIdx`
--- is deliberately *not* opened -- its `some`/`none` would collide with `Option`.
+-- throughout; the bare type `SmallNatPair` still appears in signatures.
 open SmallNatPair
 
 namespace IndexMap
@@ -84,8 +83,6 @@ theorem wf_replicate_none {n codom : Nat} :
 end IndexMap
 
 namespace PseudoConfiguration.HomState
-
-open NearLinear4ct
 
 /-- Active (not-yet-popped) queue entries: an index `≥ head` holding `p`. -/
 def Active (q : Queue SmallNatPair) (p : SmallNatPair) : Prop :=

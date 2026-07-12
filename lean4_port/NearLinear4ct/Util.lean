@@ -40,7 +40,7 @@ namespace Unionfind
 
 /-- A fresh forest of `n` singletons. Named `new` to avoid
 clashing with the structure's auto-generated `Unionfind.mk`. -/
-def new (n : Nat) : Unionfind := ⟨n, Array.replicate n none, by grind⟩
+protected def new (n : Nat) : Unionfind := ⟨n, Array.replicate n none, by grind⟩
 
 /-- Follow parent pointers from `x` for at most `fuel` steps. The range test
 is the comparison `getElem!` would make anyway, minus its panic path: on any
@@ -147,7 +147,7 @@ instance : Inhabited (Queue α) := ⟨⟨#[], 0, Nat.le_refl 0⟩⟩
 namespace Queue
 
 /-- The empty queue (pseudocode `Q ← ∅`). -/
-def empty : Queue α := ⟨#[], 0, Nat.le_refl 0⟩
+protected def empty : Queue α := ⟨#[], 0, Nat.le_refl 0⟩
 
 /-- An empty queue whose backing array reserves `cap` slots, so `push` never
 regrows mid-BFS (the final size is known up front). -/

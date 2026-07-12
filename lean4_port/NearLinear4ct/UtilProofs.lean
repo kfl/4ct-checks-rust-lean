@@ -467,7 +467,7 @@ theorem WF.rootsWF {uf : Unionfind} (h : uf.WF) : uf.RootsWF := by
 
 /-- `new n` is well-formed: every node is its own root. -/
 theorem wf_new (n : Nat) : (Unionfind.new n).WF where
-  reaches := fun z _ => ⟨z, [z], .root (by simp [new, replicate_none_get])⟩
+  reaches := fun z _ => ⟨z, [z], .root (by simp [Unionfind.new, replicate_none_get])⟩
 
 /-- `unite` preserves well-formedness (given both arguments are in range). The
 new edge points a root at a *different* root, which cannot reach back, so no
@@ -516,13 +516,13 @@ theorem relabel_wf (uf : Unionfind) (hwf : uf.WF) :
   have h := hwf.rootsWF
   have hm1wf : IndexMap.WF (uf.eachRoot.map OptIdx.some) uf.n uf.n := by
     simpa [eachRoot, Function.comp_def] using
-      (IndexMap.range_map_some_wf (n := uf.n) (codom := uf.n) (f := uf.root)
+      (range_map_some_wf (n := uf.n) (codom := uf.n) (f := uf.root)
         (fun i hi => (h i hi).1))
-  refine ⟨IndexMap.composeMap_wf hm1wf (uf.indexRoots_wf), ?_⟩
+  refine ⟨composeMap_wf hm1wf (uf.indexRoots_wf), ?_⟩
   intro i hi
   have hin : i < uf.n := by simpa using hi
   have hroot := h i hin
-  rw [IndexMap.getElem_composeMap (by simpa using hin)]
+  rw [getElem_composeMap (by simpa using hin)]
   simp [getElem!_indexRoots uf hroot.1, hroot.2]
 
 end Unionfind

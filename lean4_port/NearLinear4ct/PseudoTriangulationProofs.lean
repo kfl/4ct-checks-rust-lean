@@ -32,9 +32,11 @@ configuration `mirror` keep `WF`.
 
 namespace NearLinear4ct
 
+namespace Dart
+
 /-- All four dart fields point into the graph: `head` at a vertex (`< n`),
 `rev` at a dart (`< D`), and `succ`/`pred` -- when present -- at darts. -/
-structure Dart.InBounds (n D : Nat) (d : Dart) : Prop where
+structure InBounds (n D : Nat) (d : Dart) : Prop where
   head_lt : d.head < n
   rev_lt : d.rev < D
   succ_lt : ∀ j, d.succ.get? = Option.some j → j < D
@@ -42,19 +44,21 @@ structure Dart.InBounds (n D : Nat) (d : Dart) : Prop where
 
 /-- Executable `InBounds` (the `succ`/`pred` clauses via the raw encoding,
 no `Option` built). -/
-def Dart.inBoundsCheck (n D : Nat) (d : Dart) : Bool :=
+def inBoundsCheck (n D : Nat) (d : Dart) : Bool :=
   decide (d.head < n) && decide (d.rev < D)
     && decide (d.succ.raw ≤ D) && decide (d.pred.raw ≤ D)
 
 /-- The executable check decides `InBounds`. -/
-theorem Dart.inBoundsCheck_iff {n D : Nat} {d : Dart} :
+theorem inBoundsCheck_iff {n D : Nat} {d : Dart} :
     d.inBoundsCheck n D = true ↔ d.InBounds n D := by
   grind [inBoundsCheck, InBounds, OptIdx.raw_le_iff_get?_lt]
 
 /-- `InBounds` weakens along larger index sets. -/
-theorem Dart.InBounds.mono {n D n' D' : Nat} {d : Dart}
+theorem InBounds.mono {n D n' D' : Nat} {d : Dart}
     (h : d.InBounds n D) (hn : n ≤ n') (hD : D ≤ D') : d.InBounds n' D' := by
   grind [InBounds]
+
+end Dart
 
 namespace PseudoTriangulation
 
@@ -329,27 +333,31 @@ theorem disjointUnion_wf {l r : PseudoConfiguration}
 
 end PseudoConfiguration
 
+namespace Configuration
+
 /-- `mirror`'s dart array, definitionally (so `simp` can rewrite under
 `getElem`). -/
-private theorem Configuration.mirror_darts (conf : Configuration) :
+private theorem mirror_darts (conf : Configuration) :
     conf.mirror.darts
       = conf.darts.map fun d => { d with succ := d.pred, pred := d.succ } := rfl
 
 /-- `mirror` keeps the vertex count, definitionally. -/
-private theorem Configuration.mirror_n (conf : Configuration) :
+private theorem mirror_n (conf : Configuration) :
     conf.mirror.n = conf.n := rfl
 
 /-- `mirror` keeps the degrees, definitionally. -/
-private theorem Configuration.mirror_degrees (conf : Configuration) :
+private theorem mirror_degrees (conf : Configuration) :
     conf.mirror.degrees = conf.degrees := rfl
 
 /-- `mirror` (reflecting the configuration by swapping each dart's
 `succ`/`pred`) preserves well-formedness: `head`/`rev` are untouched and the
 two rotation clauses swap. -/
-theorem Configuration.mirror_wf {conf : Configuration}
+theorem mirror_wf {conf : Configuration}
     (h : conf.toPseudoConfiguration.WF) :
     conf.mirror.toPseudoConfiguration.WF := by
   grind [PseudoConfiguration.WF, PseudoTriangulation.WF, mirror_darts,
     mirror_n, mirror_degrees, Dart.InBounds]
+
+end Configuration
 
 end NearLinear4ct
