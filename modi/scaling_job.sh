@@ -16,10 +16,14 @@
 echo "node: $(hostname), cores: $(nproc)"
 cd "$HOME/modi_mount/4ct-checks-rust-lean"
 # scaling.sh locates libleanshared itself (searches $HOME/.elan). RUNS via --env.
-# If the image name differs, edit the .sif below to match `ls ~/modi_images/`.
 # `nproc` mis-reports 2 inside this env even though the job owns all 128 cores
 # (Cpus_allowed_list 0-127), so set the sweep explicitly rather than letting
 # scaling.sh derive it from nproc.
+# newest stock image -- a pinned name rotates out whenever MODI updates images
+IMG="${IMG:-$(ls -t "$HOME"/modi_images/hpc-notebook-*.sif 2>/dev/null | head -1)}"
+[ -n "$IMG" ] || IMG=$(ls -t "$HOME"/modi_images/*.sif 2>/dev/null | head -1)
+[ -n "$IMG" ] || { echo "no .sif image in ~/modi_images"; exit 1; }
+echo "image: $IMG"
 apptainer exec --bind "$HOME/modi_mount" \
   --env RUNS=3 --env THREADS="1 2 4 8 16 32 64 128" \
-  ~/modi_images/hpc-notebook-25.05.6.sif modi/scaling.sh
+  "$IMG" modi/scaling.sh

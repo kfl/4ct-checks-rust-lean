@@ -47,9 +47,9 @@ run_one() { # binary outdir <args...>
 diff_against() { # label cpp_out lean_out rust_out
     local label="$1" cpp="$2" lean="$3" rust="$4"
     local ok=1
-    if diff -r "$cpp" "$lean" >/dev/null; then echo "  $label vs C++:  IDENTICAL"; else echo "  $label vs C++:  DIFFER"; diff -r "$cpp" "$lean" | head; ok=0; fi
+    if diff -r "$cpp" "$lean" >/dev/null; then echo "  $label Lean vs C++:  IDENTICAL"; else echo "  $label Lean vs C++:  DIFFER"; diff -r "$cpp" "$lean" | head; ok=0; fi
     if [ -x "$RUST" ]; then
-        if diff -r "$rust" "$lean" >/dev/null; then echo "  $label vs Rust: IDENTICAL"; else echo "  $label vs Rust: DIFFER"; ok=0; fi
+        if diff -r "$rust" "$lean" >/dev/null; then echo "  $label Lean vs Rust: IDENTICAL"; else echo "  $label Lean vs Rust: DIFFER"; ok=0; fi
     fi
     [ "$ok" -eq 1 ] || exit 1
 }

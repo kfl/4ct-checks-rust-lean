@@ -3,9 +3,8 @@
 # The C++ binary must already be at computer-checks/build/src/main (the static
 # cpp_main from ERDA); Rust + Lean are the in-place ~/modi_mount builds.
 #
-#   cp ~/erda_mount/p7_job.sh ~/modi_mount/
-#   cd ~/modi_mount && sbatch p7_job.sh        # submit from ~/modi_mount so the
-#   cat ~/modi_mount/p7-*.out                  # relative output lands here
+#   cd ~/modi_mount && sbatch 4ct-checks-rust-lean/modi/p7_job.sh   # submit from
+#   cat ~/modi_mount/p7-*.out                  # ~/modi_mount so the output lands here
 #
 #SBATCH --partition=modi_short
 #SBATCH --nodes=1
@@ -15,5 +14,10 @@
 #SBATCH --output=p7-%j.out
 echo "node: $(hostname)"
 cd "$HOME/modi_mount/4ct-checks-rust-lean"
+# newest stock image -- a pinned name rotates out whenever MODI updates images
+IMG="${IMG:-$(ls -t "$HOME"/modi_images/hpc-notebook-*.sif 2>/dev/null | head -1)}"
+[ -n "$IMG" ] || IMG=$(ls -t "$HOME"/modi_images/*.sif 2>/dev/null | head -1)
+[ -n "$IMG" ] || { echo "no .sif image in ~/modi_images"; exit 1; }
+echo "image: $IMG"
 apptainer exec --bind "$HOME/modi_mount" \
-  ~/modi_images/hpc-notebook-25.05.6.sif modi/run_p7.sh 0
+  "$IMG" modi/run_p7.sh 0

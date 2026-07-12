@@ -30,6 +30,7 @@ to this repo, matching that layout (override with `CPP=...`).
 
 ## Files
 
+- **`modi_setup.sh`** -- one-shot, idempotent setup: clone/update the repos and data, stage the C++ binary from the ERDA root, install rustup/elan if missing, build both ports. Start here.
 - **`Dockerfile`** -- toolchain image to build the **C++ reference binary** (in the sibling `computer-checks` repo) as a static glibc-only ELF.
 - **`run_p7.sh`** -- the cheap byte-identical subset (combine_rules A.1/A.2); **run this first**.
 - **`p7_job.sh`** -- `sbatch` wrapper that runs `run_p7.sh 0` inside the stock image.
@@ -50,16 +51,28 @@ to this repo, matching that layout (override with `CPP=...`).
   **`modi_short`** (48 h) | **`modi_long`** (7 d) | **`modi_max`** (1 mo). No
   account/QOS needed.
 
-Deliver any script to MODI by `sftp` to the user's ERDA root, then
-`cp ~/erda_mount/<file> ~/modi_mount/...` -- the Jupyter terminal does not handle
-`cat <<EOF` heredocs, and `apptainer` only runs inside `sbatch` jobs (not the login node).
+Only `modi_setup.sh` (and the C++ `cpp_main`) need delivering by hand: `sftp` them
+to the user's ERDA root, visible on MODI as `~/erda_mount/`. Every other script is
+run from the cloned repo. (The Jupyter terminal does not handle `cat <<EOF`
+heredocs, and `apptainer` only runs inside `sbatch` jobs, not on the login node.)
 
-## 0. Get both repos into `~/modi_mount`
-From the MODI Jupyter terminal (which has internet):
+## 0. One-shot setup: `modi_setup.sh`
+`modi/modi_setup.sh` performs this section and the next end-to-end (clone/update,
+data repos, C++ binary staged from the ERDA root, toolchains, optimised builds).
+Bootstrap it once by `sftp` from your own machine, then run it on the MODI
+Jupyter terminal:
 ```
-git clone <this repo>                 ~/modi_mount/4ct-checks-rust-lean
-git clone <the computer-checks repo>  ~/modi_mount/computer-checks   # C++ reference
+# from your machine:              sftp <you>@io.erda.dk : put modi/modi_setup.sh
+# on the MODI Jupyter terminal:   sh ~/erda_mount/modi_setup.sh
 ```
+The manual equivalent follows. From the MODI Jupyter terminal (which has internet):
+```
+git clone https://github.com/kfl/4ct-checks-rust-lean.git ~/modi_mount/4ct-checks-rust-lean
+```
+The C++ source repo (https://github.com/near-linear-4ct/computer-checks) is *not*
+needed on MODI: it **cannot be compiled there** (its build dependencies are not
+available), so only its prebuilt binary is staged, at
+`~/modi_mount/computer-checks/build/src/main`.
 
 ## 1. Build the ports in place + supply the C++ binary
 Rust and Lean build without root using rustup/elan installed in `$HOME`; run them
@@ -76,19 +89,20 @@ git clone --depth 1 https://github.com/near-linear-4ct/reducible-configurations.
 cd ../..
 ```
 
-The **C++ reference binary** is built separately -- on any Mac/Linux box with Docker,
+The **C++ reference binary** cannot be built on MODI (its build dependencies are
+not available there), so it is built separately -- on any Mac/Linux box with Docker,
 via `modi/Dockerfile` + the `computer-checks` repo's `STATIC_DEPS` CMake option -- as a
 static, glibc-only ~2.9 MB binary, then shipped to
 `~/modi_mount/computer-checks/build/src/main`. Build commands are in `modi/Dockerfile`'s
-header; `sftp` the result to ERDA and `cp` it into place.
+header; `sftp` the result to the ERDA root as `cpp_main` (where one already lives,
+from the 2026-06 verification runs) -- `modi_setup.sh` copies it into place.
 
 ## 2. Run the cheap correctness check FIRST (minutes)
 The cross-platform determinism gate -- if it's `IDENTICAL` on Linux, the
 ordering/hashing is platform-stable and the multi-hour full run is trustworthy.
 p7 fits the default `modi_devel` 20-min limit. As a batch job (submit from `~/modi_mount`):
 ```
-cp ~/erda_mount/p7_job.sh ~/modi_mount/        # or use 4ct-checks-rust-lean/modi/p7_job.sh
-cd ~/modi_mount && sbatch p7_job.sh
+cd ~/modi_mount && sbatch 4ct-checks-rust-lean/modi/p7_job.sh
 cat ~/modi_mount/p7-*.out
 ```
 or interactively after `salloc`:
@@ -98,9 +112,9 @@ apptainer exec ~/modi_images/hpc-notebook-*.sif modi/run_p7.sh 0
 ```
 Expect:
 ```
-  A.1 (empty C) vs C++:  IDENTICAL
-  A.1 (empty C) vs Rust: IDENTICAL
-  A.2 (real configs) vs C++:  IDENTICAL
+  A.1 (empty C) Lean vs C++:  IDENTICAL
+  A.1 (empty C) Lean vs Rust: IDENTICAL
+  A.2 (real configs) Lean vs C++:  IDENTICAL
   ...
 All differential checks passed.
 ```
@@ -134,15 +148,14 @@ by degree so you can gate cheaply before the heavy run:
 
 ```
 # Cheap GATE first (degree 7, minutes) -- validates the machinery end-to-end:
-cp ~/erda_mount/full_job.sh ~/modi_mount/
-cd ~/modi_mount && sbatch full_job.sh
+cd ~/modi_mount && sbatch 4ct-checks-rust-lean/modi/full_job.sh
 cat ~/modi_mount/full-*.out
 
 # Even quicker smoke test (first 20 wheels of degree 7):
-cd ~/modi_mount && WHEEL_LIMIT=20 sbatch --export=ALL full_job.sh
+cd ~/modi_mount && WHEEL_LIMIT=20 sbatch --export=ALL 4ct-checks-rust-lean/modi/full_job.sh
 
 # FULL run (degrees 7..11, hours) once the gate is green:
-cd ~/modi_mount && SCOPE=all sbatch --export=ALL --partition=modi_long --time=24:00:00 full_job.sh
+cd ~/modi_mount && SCOPE=all sbatch --export=ALL --partition=modi_long --time=24:00:00 4ct-checks-rust-lean/modi/full_job.sh
 ```
 
 For the full run prefer the **job array** `full_array.sh` over a single `SCOPE=all` job:
@@ -151,8 +164,7 @@ it runs each degree as its own whole-node job and records a PASS/FAIL line per d
 completed ones -- re-submitting simply skips degrees already marked PASS.
 
 ```
-cp ~/erda_mount/full_array.sh ~/modi_mount/
-cd ~/modi_mount && sbatch full_array.sh        # degrees 7..11, 2 at a time
+cd ~/modi_mount && sbatch 4ct-checks-rust-lean/modi/full_array.sh   # degrees 7..11, 2 at a time
 cat ~/modi_mount/full-summary.txt              # ledger; one line per finished degree
 cat ~/modi_mount/full-d10-*.out                # full per-stage detail for a degree
 ```

@@ -5,8 +5,7 @@
 # a degree that times out or fails never loses the others, and you just re-run the
 # stragglers. Each degree's full per-stage detail lands in its own output file.
 #
-#   cp ~/erda_mount/full_array.sh ~/modi_mount/
-#   cd ~/modi_mount && sbatch full_array.sh
+#   cd ~/modi_mount && sbatch 4ct-checks-rust-lean/modi/full_array.sh
 #   cat ~/modi_mount/full-summary.txt     # the ledger: one line per finished degree
 #   cat ~/modi_mount/full-d8-*.out        # full per-stage detail for a degree
 #
@@ -16,15 +15,17 @@
 #   - Already did degree 7 via full_job.sh? Skip it: sbatch --array=8-11%2 full_array.sh
 #   - Redo one degree: delete its line from full-summary.txt and re-submit (or just
 #     SCOPE=N sbatch full_job.sh).
+#   - The measured 2026 runtimes are <2.5 h per degree (d11 the longest), so
+#     modi_short with 4 h headroom is the right request.
 #
-#SBATCH --partition=modi_long
+#SBATCH --partition=modi_short
 #SBATCH --array=7-11%2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --exclusive
 #SBATCH --mem=0                  # all node RAM: enum_cartwheels runs up to 128 workers,
-#SBATCH --time=48:00:00          # each loading the full config/rule set (--exclusive
+#SBATCH --time=04:00:00          # each loading the full config/rule set (--exclusive
 #SBATCH --output=full-d%a-%A.out # alone may leave the cgroup capped at the 1G default)
 set -u
 D="$SLURM_ARRAY_TASK_ID"
@@ -37,9 +38,14 @@ fi
 
 echo "node: $(hostname), degree: $D, start $(date '+%F %T')"
 cd "$HOME/modi_mount/4ct-checks-rust-lean"
+# newest stock image -- a pinned name rotates out whenever MODI updates images
+IMG="${IMG:-$(ls -t "$HOME"/modi_images/hpc-notebook-*.sif 2>/dev/null | head -1)}"
+[ -n "$IMG" ] || IMG=$(ls -t "$HOME"/modi_images/*.sif 2>/dev/null | head -1)
+[ -n "$IMG" ] || { echo "no .sif image in ~/modi_images"; exit 1; }
+echo "image: $IMG"
 apptainer exec --bind "$HOME/modi_mount" \
   --env MAX_JOBS="${SLURM_CPUS_ON_NODE:-128}" \
-  ~/modi_images/hpc-notebook-25.05.6.sif bash modi/full_differential.sh "$D"
+  "$IMG" bash modi/full_differential.sh "$D"
 rc=$?
 
 verdict="FAIL"; [ "$rc" -eq 0 ] && verdict="PASS"

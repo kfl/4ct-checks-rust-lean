@@ -23,6 +23,11 @@
 SCOPE="${SCOPE:-7}"
 echo "node: $(hostname), scope: $SCOPE, wheel_limit: ${WHEEL_LIMIT:-none}"
 cd "$HOME/modi_mount/4ct-checks-rust-lean"
+# newest stock image -- a pinned name rotates out whenever MODI updates images
+IMG="${IMG:-$(ls -t "$HOME"/modi_images/hpc-notebook-*.sif 2>/dev/null | head -1)}"
+[ -n "$IMG" ] || IMG=$(ls -t "$HOME"/modi_images/*.sif 2>/dev/null | head -1)
+[ -n "$IMG" ] || { echo "no .sif image in ~/modi_images"; exit 1; }
+echo "image: $IMG"
 apptainer exec --bind "$HOME/modi_mount" \
   --env WHEEL_LIMIT="${WHEEL_LIMIT:-0}" --env MAX_JOBS="${SLURM_CPUS_ON_NODE:-128}" \
-  ~/modi_images/hpc-notebook-25.05.6.sif bash modi/full_differential.sh "$SCOPE"
+  "$IMG" bash modi/full_differential.sh "$SCOPE"
