@@ -112,11 +112,22 @@ def check787 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array Ca
       let center := (mappingsCw.vmap[cartwheel.center]!).idx!
       proofAssert (containX combined center) "check787: combination must contain X"
 
+/-- The round-robin slice `{xs[k] | k ≡ i (mod n)}` a `--shard i/n` worker owns
+(`none` keeps everything). Only the list of cartwheels *checked* shrinks; each
+check still combines against the full candidate set, so the union of the `n`
+shards performs exactly the unsharded check. -/
+def shardSlice (shard : Option (Nat × Nat)) (xs : Array α) : Array α :=
+  match shard with
+  | .none => xs
+  | .some (i, n) => (Array.range xs.size).filterMap fun k =>
+      if k % n == i then xs[k]? else none
+
 /-- Lemma A.4 check: a vertex of degree 8. -/
-def checkDeg8 (allCartwheels : Array CartWheel) (confs : Array Configuration) : IO Unit := do
+def checkDeg8 (allCartwheels : Array CartWheel) (confs : Array Configuration)
+    (shard : Option (Nat × Nat) := none) : IO Unit := do
   let cartwheels := deleteDegreeFromKTo9 allCartwheels 9
   IO.println s!"After removing cartwheels with degree 9, {cartwheels.size} cartwheels remain."
-  parForEach cartwheels fun cartwheel => do
+  parForEach (shardSlice shard cartwheels) fun cartwheel => do
     if cartwheel.degrees[cartwheel.center]! != Degree.exact 8 then return
     let centerDarts := cartwheel.centerDartsByDegree
     if !(centerDarts[8]!).isEmpty then
@@ -129,18 +140,20 @@ def checkDeg8 (allCartwheels : Array CartWheel) (confs : Array Configuration) : 
       proofAssert false "checkDeg8: degree-8 centre with no degree-7/8 spokes"
   IO.println "Finished checking degree 8 vertices."
 
-def runCheckDeg8 (cartwheeldir confdir : System.FilePath) : IO Unit := do
+def runCheckDeg8 (cartwheeldir confdir : System.FilePath)
+    (shard : Option (Nat × Nat) := none) : IO Unit := do
   let cartwheels ← getCartwheels cartwheeldir
   let confs ← Configuration.getConfs confdir
-  checkDeg8 cartwheels confs
+  checkDeg8 cartwheels confs shard
 
 -- --- Lemma A.5: a 7-triangle -------------------------------------------------
 
 /-- Lemma A.5 check: a 7-triangle. -/
-def check7triangle (allCartwheels : Array CartWheel) (confs : Array Configuration) : IO Unit := do
+def check7triangle (allCartwheels : Array CartWheel) (confs : Array Configuration)
+    (shard : Option (Nat × Nat) := none) : IO Unit := do
   let cartwheels := deleteDegreeFromKTo9 (deleteDegreeFromKTo9 allCartwheels 9) 8
   IO.println s!"After removing cartwheels with degree 8 and 9, {cartwheels.size} remain."
-  parForEach cartwheels fun cartwheel => do
+  parForEach (shardSlice shard cartwheels) fun cartwheel => do
     for e in cartwheel.centerDarts do
       let f := (cartwheel.darts[e]!).succ.idx!
       let revE := (cartwheel.darts[e]!).rev
@@ -155,10 +168,11 @@ def check7triangle (allCartwheels : Array CartWheel) (confs : Array Configuratio
         proofAssert combined.isEmpty "check_7triangle: a combination survived"
   IO.println "Finished checking 7-triangles."
 
-def runCheck7triangle (cartwheeldir confdir : System.FilePath) : IO Unit := do
+def runCheck7triangle (cartwheeldir confdir : System.FilePath)
+    (shard : Option (Nat × Nat) := none) : IO Unit := do
   let cartwheels ← getCartwheels cartwheeldir
   let confs ← Configuration.getConfs confdir
-  check7triangle cartwheels confs
+  check7triangle cartwheels confs shard
 
 -- --- Lemma A.6: a vertex of degree 7 -----------------------------------------
 
@@ -181,11 +195,12 @@ def check777 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array Ca
       proofAssert combined.isEmpty "check777: a combination survived"
 
 /-- Lemma A.6 check: a vertex of degree 7. -/
-def checkDeg7 (allCartwheels : Array CartWheel) (confs0 : Array Configuration) : IO Unit := do
+def checkDeg7 (allCartwheels : Array CartWheel) (confs0 : Array Configuration)
+    (shard : Option (Nat × Nat) := none) : IO Unit := do
   let cartwheels := delete7triangle (deleteDegreeFromKTo9 (deleteDegreeFromKTo9 allCartwheels 9) 8)
   IO.println s!"After removing degree 8/9 and 7-triangle cartwheels, {cartwheels.size} remain."
   let confs := confs0.push get7triangle
-  parForEach cartwheels fun cartwheel => do
+  parForEach (shardSlice shard cartwheels) fun cartwheel => do
     let centerDarts := cartwheel.centerDartsByDegree
     if (centerDarts[7]!).size == 1 then
       check77 cartwheel centerDarts[7]! cartwheels confs
@@ -195,9 +210,10 @@ def checkDeg7 (allCartwheels : Array CartWheel) (confs0 : Array Configuration) :
       proofAssert false "checkDeg7: degree-7 centre with no degree-7 spokes"
   IO.println "Finished checking degree 7 vertices."
 
-def runCheckDeg7 (cartwheeldir confdir : System.FilePath) : IO Unit := do
+def runCheckDeg7 (cartwheeldir confdir : System.FilePath)
+    (shard : Option (Nat × Nat) := none) : IO Unit := do
   let cartwheels ← getCartwheels cartwheeldir
   let confs ← Configuration.getConfs confdir
-  checkDeg7 cartwheels confs
+  checkDeg7 cartwheels confs shard
 
 end NearLinear4ct

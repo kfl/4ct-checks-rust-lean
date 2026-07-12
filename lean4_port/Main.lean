@@ -28,7 +28,7 @@ def shortToLong : List (Char × String) :=
 /-- Options that take a value (everything else is a boolean switch). -/
 def valuedOptions : List String :=
   ["confdir", "ruledir", "combined_ruledir", "cartwheeldir",
-   "wheel", "degree", "outdir", "verbosity"]
+   "wheel", "degree", "outdir", "verbosity", "shard"]
 
 def isValued (name : String) : Bool := valuedOptions.contains name
 
@@ -86,11 +86,29 @@ def helpText : String :=
   "  -w [ --wheel ] arg        A wheel file\n" ++
   "  -d [ --degree ] arg       Degree of the center vertex of wheels\n" ++
   "  -o [ --outdir ] arg       Output directory\n" ++
+  "  --shard arg               i/n: check_* only handles cartwheels k = i mod n\n" ++
   "  -H [ --help ]             Display options\n" ++
   "  -v [ --verbosity ] arg    1 for debug, 2 for trace"
 
 /-- Fetch a required option, assuming `existArgs` already validated its presence. -/
 def need (args : Args) (key : String) : String := (args.get? key).getD ""
+
+/-- Parse `--shard i/n` (worker `i` of `n`, round-robin over the check's
+cartwheel list); `none` when absent. Errors on a malformed value rather than
+silently running the full check. -/
+def shardArg (a : Args) : IO (Option (Nat × Nat)) := do
+  match a.get? "shard" with
+  | none => return none
+  | some s =>
+    match s.splitOn "/" with
+    | [i, n] =>
+      match i.toNat?, n.toNat? with
+      | some i, some n =>
+        if n == 0 || i >= n then
+          throw (IO.userError s!"--shard {s}: need 0 <= i < n")
+        else return some (i, n)
+      | _, _ => throw (IO.userError s!"--shard {s}: expected i/n")
+    | _ => throw (IO.userError s!"--shard {s}: expected i/n")
 
 def main (argv : List String) : IO UInt32 := do
   let args := parse argv {}
@@ -114,11 +132,11 @@ def main (argv : List String) : IO UInt32 := do
       (need args "combined_ruledir") (need args "outdir")
   if args.has "check_deg8" then
     unless (← existArgs args ["cartwheeldir", "confdir"]) do return 1
-    runCheckDeg8 (need args "cartwheeldir") (need args "confdir")
+    runCheckDeg8 (need args "cartwheeldir") (need args "confdir") (← shardArg args)
   if args.has "check_7triangle" then
     unless (← existArgs args ["cartwheeldir", "confdir"]) do return 1
-    runCheck7triangle (need args "cartwheeldir") (need args "confdir")
+    runCheck7triangle (need args "cartwheeldir") (need args "confdir") (← shardArg args)
   if args.has "check_deg7" then
     unless (← existArgs args ["cartwheeldir", "confdir"]) do return 1
-    runCheckDeg7 (need args "cartwheeldir") (need args "confdir")
+    runCheckDeg7 (need args "cartwheeldir") (need args "confdir") (← shardArg args)
   return 0
