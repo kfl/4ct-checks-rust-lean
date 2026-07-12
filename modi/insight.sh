@@ -15,7 +15,9 @@
 #   PORTS="lean rust"               ports covered by the sweep modes
 #   RUNS=1          repetitions per point (min is reported)
 #   PHASE=check_deg7  the phase shard-check / perf-check drives
-#   SHARDS=128      worker count for shard-check
+#   SHARDS=128      shard count for shard-check
+#   WORKERS=min(SHARDS, cpus)  concurrent shard processes; SHARDS > WORKERS
+#                   gives work-stealing (xargs backfills as shards finish)
 #   BADCW=dir       pre-staged bad-cartwheel dir; unset -> generated with Rust
 #   OUTDIR=$PWD     where .tsv / perf artefacts land
 set -euo pipefail
@@ -119,7 +121,8 @@ shard-check)
   stage_badcw
   TSV="$OUTDIR/insight-shard-$PHASE-d$DEGREE.tsv"
   echo -e "shard\tseconds\texit" > "$TSV"
-  echo "-- $PHASE as $SHARDS x LEAN_NUM_THREADS=1 processes"
+  WORKERS="${WORKERS:-$(( SHARDS < NP ? SHARDS : NP ))}"
+  echo "-- $PHASE as $SHARDS x LEAN_NUM_THREADS=1 shards, $WORKERS concurrent"
   t0=$(now)
   cat > "$WORK/shardworker.sh" <<EOF
 #!/bin/sh
@@ -132,10 +135,10 @@ printf '%s\t%s\t%s\n' "\$i" "\$(awk -v a="\$t0" -v b="\$t1" 'BEGIN{printf "%.2f"
 exit \$rc
 EOF
   chmod +x "$WORK/shardworker.sh"
-  seq 0 $((SHARDS-1)) | xargs -P "$SHARDS" -n 1 "$WORK/shardworker.sh" \
+  seq 0 $((SHARDS-1)) | xargs -P "$WORKERS" -n 1 "$WORK/shardworker.sh" \
     || echo "   (a shard exited non-zero -- inspect $TSV)"
   wall="$(el "$t0" "$(now)")"
-  awk -F'\t' -v wall="$wall" -v n="$SHARDS" 'NR>1{s+=$2; if($2>mx)mx=$2; c++}
+  awk -F'\t' -v wall="$wall" -v n="$WORKERS" 'NR>1{s+=$2; if($2>mx)mx=$2; c++}
     END{if(c>0) printf "   wall %.2fs | %d shards, sum %.2fs, max %.2fs | efficiency (sum/(n*wall)) %.2f\n", wall, c, s, mx, s/(n*wall); else print "   no shards recorded"}' "$TSV"
   echo "wrote $TSV (per-shard wall-clocks; sort -k2 -n for the histogram)" ;;
 
