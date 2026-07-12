@@ -22,7 +22,7 @@ This is two independent results:
 
 Run on MODI (University of Copenhagen, SCIENCE HPC centre): 2 x AMD EPYC 7501
 nodes -- 64 physical cores presenting 128 SMT hardware threads -- with 256 GB
-RAM. Measured at commit `2f330d1` (SLURM job array 229); the raw per-degree
+RAM. Measured at commit `0d05d5e` (SLURM job array 229); the raw per-degree
 logs are archived in [`modi/runs/`](modi/runs/). For *how* to build and run,
 see [`modi/README.md`](modi/README.md).
 

@@ -4,7 +4,7 @@ Raw output of the full A.3-A.6 differential on MODI (one 64-core /
 128-SMT-thread node per degree). Two runs are archived, named by SLURM job
 array id:
 
-- **`229`** -- repository state `2f330d1`. The primary evidence behind
+- **`229`** -- repository state `0d05d5e`. The primary evidence behind
   [`../../RESULTS.md`](../../RESULTS.md).
 - **`143319`** -- an earlier run of the pre-optimisation port state (predates
   the published history, so it has no git ref). Kept as an archive; its
