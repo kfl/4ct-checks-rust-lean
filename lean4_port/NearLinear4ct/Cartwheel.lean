@@ -422,17 +422,24 @@ def getCartwheels (cartwheeldir : System.FilePath) : IO (Array CartWheel) := do
 namespace PseudoConfiguration
 
 /-- Glue each cartwheel onto `dart`, keeping results not blocked by a reducible
-configuration (A.10.2). -/
+configuration (A.10.2).
+
+The candidate sweep is one independent trial per cartwheel, run as an
+order-preserving `parFlatMap` (one task per candidate -- the natural unit),
+so the survivor list is identical to the sequential sweep's at any thread
+count. This inner level is what lets the check drivers absorb per-cartwheel
+cost skew: even a single expensive cartwheel's check is thousands of tasks
+wide. -/
 def combineEachCartwheel (pc : PseudoConfiguration) (dart : Nat) (cartwheels : Array CartWheel)
-    (confs : Array Configuration) : Array (PseudoConfiguration × Mappings) := Id.run do
-  let mut zs : Array (PseudoConfiguration × Mappings) := #[]
-  for cartwheel in cartwheels do
+    (confs : Array Configuration) : Array (PseudoConfiguration × Mappings) :=
+  parFlatMap cartwheels fun cartwheel => Id.run do
+    let mut zs : Array (PseudoConfiguration × Mappings) := #[]
     for centerDart in cartwheel.centerDarts do
       let fhs := freeHomomorphismPair pc cartwheel.toPseudoConfiguration dart centerDart
       for (zStar, mappingsPc, _) in fhs do
         if zStar.blockedByReducibleConfiguration 0 confs then continue
         zs := zs.push (zStar, mappingsPc)
-  return zs
+    return zs
 
 /-- Glue cartwheels onto two darts in sequence (A.10.3). -/
 def combineEachCartwheelTwice (pc : PseudoConfiguration) (dart1 dart2 : Nat)
