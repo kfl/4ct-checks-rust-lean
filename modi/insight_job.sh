@@ -36,7 +36,7 @@ IMG="${IMG:-$(ls -t "$HOME"/modi_images/hpc-notebook-*.sif 2>/dev/null | head -1
 echo "image: $IMG ($(date -r "$IMG" '+%Y-%m-%d' 2>/dev/null || echo '?'))"
 
 ENVARGS=()
-for v in DEGREE THREADS PORTS RUNS PHASE SHARDS BADCW OUTDIR; do
+for v in DEGREE THREADS PORTS RUNS PHASE SHARDS BADCW OUTDIR PERF; do
   [ -n "${!v:-}" ] && ENVARGS+=(--env "$v=${!v}")
 done
 apptainer exec --bind "$HOME/modi_mount" "${ENVARGS[@]}" "$IMG" modi/insight.sh "$MODE"

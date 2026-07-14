@@ -19,6 +19,8 @@
 #   WORKERS=min(SHARDS, cpus)  concurrent shard processes; SHARDS > WORKERS
 #                   gives work-stealing (xargs backfills as shards finish)
 #   BADCW=dir       pre-staged bad-cartwheel dir; unset -> generated with Rust
+#   PERF=perf       the perf binary perf-check uses (e.g. a delivered static build);
+#                   perf-check profiles at the first THREADS entry (default: all cpus)
 #   OUTDIR=$PWD     where .tsv / perf artefacts land
 set -euo pipefail
 MODE="${1:?usage: insight.sh sweep-wheels|sweep-check|shard-check|perf-check}"
@@ -145,20 +147,22 @@ EOF
 
 perf-check)
   stage_badcw
-  command -v perf >/dev/null || { echo "perf not available in this image"; exit 1; }
-  echo "-- perf_event_paranoid: $(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo '?')"
-  CMDL=(env LEAN_NUM_THREADS="$NP" "$LEAN" --"$PHASE" -W "$WORK/zero" -C "$C")
+  PERF="${PERF:-perf}"
+  command -v "$PERF" >/dev/null || { echo "perf not available ($PERF)"; exit 1; }
+  echo "-- perf: $("$PERF" --version 2>/dev/null || echo '?'), perf_event_paranoid: $(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo '?')"
+  PT="${THREADS%% *}"
+  CMDL=(env LEAN_NUM_THREADS="${PT:-$NP}" "$LEAN" --"$PHASE" -W "$WORK/zero" -C "$C")
   echo "-- perf stat"
-  perf stat -d -- "${CMDL[@]}" >/dev/null 2>"$OUTDIR/insight-perfstat-$PHASE-d$DEGREE.txt" || true
+  "$PERF" stat -d -- "${CMDL[@]}" >/dev/null 2>"$OUTDIR/insight-perfstat-$PHASE-d$DEGREE.txt" || true
   tail -25 "$OUTDIR/insight-perfstat-$PHASE-d$DEGREE.txt"
   echo "-- perf record (cycles, 99 Hz)"
-  perf record -F 99 -g -o "$WORK/perf.data" -- "${CMDL[@]}" >/dev/null 2>&1 || true
-  perf report --stdio --no-children -i "$WORK/perf.data" 2>/dev/null | head -50 \
+  "$PERF" record -F 99 -g -o "$WORK/perf.data" -- "${CMDL[@]}" >/dev/null 2>&1 || true
+  "$PERF" report --stdio --no-children -i "$WORK/perf.data" 2>/dev/null | head -50 \
     | tee "$OUTDIR/insight-perfreport-$PHASE-d$DEGREE.txt"
   cp "$WORK/perf.data" "$OUTDIR/insight-$PHASE-d$DEGREE.perf.data" 2>/dev/null || true
   echo "-- perf c2c (cache-line contention; may be unsupported)"
-  if perf c2c record -o "$WORK/c2c.data" -- "${CMDL[@]}" >/dev/null 2>&1; then
-    perf c2c report --stdio -i "$WORK/c2c.data" 2>/dev/null | head -40 \
+  if "$PERF" c2c record -o "$WORK/c2c.data" -- "${CMDL[@]}" >/dev/null 2>&1; then
+    "$PERF" c2c report --stdio -i "$WORK/c2c.data" 2>/dev/null | head -40 \
       | tee "$OUTDIR/insight-c2c-$PHASE-d$DEGREE.txt"
   else
     echo "   c2c unavailable on this node/kernel"
