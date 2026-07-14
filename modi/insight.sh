@@ -153,17 +153,17 @@ perf-check)
   PT="${THREADS%% *}"
   CMDL=(env LEAN_NUM_THREADS="${PT:-$NP}" "$LEAN" --"$PHASE" -W "$WORK/zero" -C "$C")
   echo "-- perf stat"
-  "$PERF" stat -d -- "${CMDL[@]}" >/dev/null 2>"$OUTDIR/insight-perfstat-$PHASE-d$DEGREE.txt" || true
-  tail -25 "$OUTDIR/insight-perfstat-$PHASE-d$DEGREE.txt"
+  "$PERF" stat -d -- "${CMDL[@]}" >/dev/null 2>"$OUTDIR/insight-perfstat-$PHASE-d$DEGREE-j$RUNID.txt" || true
+  tail -25 "$OUTDIR/insight-perfstat-$PHASE-d$DEGREE-j$RUNID.txt"
   echo "-- perf record (cycles, 99 Hz)"
   "$PERF" record -F 99 -g -o "$WORK/perf.data" -- "${CMDL[@]}" >/dev/null 2>&1 || true
   "$PERF" report --stdio --no-children -i "$WORK/perf.data" 2>/dev/null | head -50 \
-    | tee "$OUTDIR/insight-perfreport-$PHASE-d$DEGREE.txt"
-  cp "$WORK/perf.data" "$OUTDIR/insight-$PHASE-d$DEGREE.perf.data" 2>/dev/null || true
+    | tee "$OUTDIR/insight-perfreport-$PHASE-d$DEGREE-j$RUNID.txt"
+  cp "$WORK/perf.data" "$OUTDIR/insight-$PHASE-d$DEGREE-j$RUNID.perf.data" 2>/dev/null || true
   echo "-- perf c2c (cache-line contention; may be unsupported)"
   if "$PERF" c2c record -o "$WORK/c2c.data" -- "${CMDL[@]}" >/dev/null 2>&1; then
     "$PERF" c2c report --stdio -i "$WORK/c2c.data" 2>/dev/null | head -40 \
-      | tee "$OUTDIR/insight-c2c-$PHASE-d$DEGREE.txt"
+      | tee "$OUTDIR/insight-c2c-$PHASE-d$DEGREE-j$RUNID.txt"
   else
     echo "   c2c unavailable on this node/kernel"
   fi ;;
