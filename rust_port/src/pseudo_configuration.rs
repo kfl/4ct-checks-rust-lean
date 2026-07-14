@@ -21,7 +21,6 @@
 //!   `CartWheel`.
 
 use crate::cartwheel::CartWheel;
-use rayon::prelude::*;
 use crate::compact_index::OptIdx;
 use crate::configuration::Configuration;
 use crate::degree::{CARTWHEEL_DEG_MAX, CONF_DEG_MAX, Degree, INFTY};
@@ -29,6 +28,7 @@ use crate::mapping::Mappings;
 use crate::pseudo_triangulation::{Dart, PseudoTriangulation};
 use crate::rule::{CombinedRule, Rule};
 use crate::work_queue::WorkQueue;
+use rayon::prelude::*;
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
