@@ -46,7 +46,11 @@ protected def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree)
     rootTailDeg := (degrees[(darts[f.rev]!).head]!).lower
     root_deg_invariant := ⟨rfl, rfl⟩ }
 
-instance : Inhabited Configuration := ⟨Configuration.new 0 0 #[] #[]⟩
+/-- Literal fields: no panicking empty-array reads in the initialiser. -/
+instance : Inhabited Configuration :=
+  ⟨{ toPseudoConfiguration := ⟨⟨0, #[]⟩, #[]⟩, dartId := 0,
+     rootHeadDeg := 0, rootTailDeg := 0,
+     root_deg_invariant := ⟨rfl, rfl⟩ }⟩
 
 /-- Reflect the configuration by swapping each dart's `succ`/`pred`. -/
 def mirror (conf : Configuration) : Configuration :=
