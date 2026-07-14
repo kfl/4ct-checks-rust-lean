@@ -57,13 +57,9 @@ def rootAux (uf : Unionfind) : Nat → Nat → Nat
       | some p => uf.rootAux p fuel
     else x
 
-/-- Representative of `x`. The C++ recurses with no path compression, so this is
-behaviourally identical on a well-formed forest. Total via a fuel bound of
-`uf.n`: a well-formed parent chain visits distinct in-range nodes, so `n` steps
-always reach a root (proved as `Unionfind.WF.root_spec` in `UtilProofs.lean`).
-
-TODO: revisit whether omitting path compression here is the intended algorithm --
-confirm we have not diverged from the reference. -/
+/-- Representative of `x`. Total via a fuel bound of `uf.n`: a well-formed
+parent chain visits distinct in-range nodes, so `n` steps always reach a root
+(proved as `Unionfind.WF.root_spec` in `UtilProofs.lean`). -/
 def root (uf : Unionfind) (x : Nat) : Nat := uf.rootAux x uf.n
 
 /-- Attach `x`'s tree under `y`'s root: `parents[root(x)] = root(y)`. The

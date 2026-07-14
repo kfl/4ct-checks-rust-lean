@@ -24,11 +24,7 @@ impl Unionfind {
         }
     }
 
-    /// Representative of `x`. Iterative; the C++ recurses but does no path
-    /// compression, so this is behaviourally identical.
-    ///
-    /// TODO: revisit whether omitting path compression here is the intended
-    /// algorithm -- confirm we have not diverged from the reference.
+    /// Representative of `x`.
     pub fn root(&self, mut x: usize) -> usize {
         while let Some(p) = self.parents[x] {
             x = p;
