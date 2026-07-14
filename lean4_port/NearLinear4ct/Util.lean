@@ -75,12 +75,7 @@ def unite (uf : Unionfind) (x y : Nat) : Unionfind :=
   let ry := uf.root y
   if h : rx == ry || uf.n ≤ ry then uf
   else
-    ⟨uf.n, uf.parents.set! rx (some ry), by
-      obtain ⟨hs, hin⟩ := uf.unionfind_invariant
-      refine ⟨by simpa using hs, fun z hz p hp => ?_⟩
-      by_cases hzr : z = rx
-      · grind
-      · exact hin z hz p (by grind)⟩
+    ⟨uf.n, uf.parents.set! rx (some ry), by grind [Unionfind]⟩
 
 def same (uf : Unionfind) (x y : Nat) : Bool := uf.root x == uf.root y
 
