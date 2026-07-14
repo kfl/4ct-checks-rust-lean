@@ -508,11 +508,9 @@ impl PseudoConfiguration {
     }
 
     /// Glue each cartwheel onto `dart`, keeping results not blocked by a
-    /// reducible configuration.
-    ///
-    /// The candidate sweep runs as a nested `par_iter` (one work item per
-    /// candidate cartwheel); rayon's `collect` keeps the survivors in the
-    /// sequential order, so results are thread-count independent.
+    /// reducible configuration. The sweep is a `par_iter` over the candidates;
+    /// `collect` preserves the sequential order, so results are
+    /// thread-count independent.
     pub fn combine_each_cartwheel(
         &self,
         dart: usize,
