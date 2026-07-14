@@ -6,6 +6,8 @@
 #   insight.sh shard-check    one check phase as SHARDS single-thread processes
 #                             (--shard i/n); per-shard wall-clocks -> imbalance
 #   insight.sh perf-check     perf stat/record (+ c2c) on an in-process check run
+#   insight.sh syscount-check strace -c syscall accounting of an in-process run
+#                             (fixed --shard 0/64 slice; needs STRACE=path)
 #
 # Run inside the container:  apptainer exec IMG modi/insight.sh <mode>
 #
@@ -21,6 +23,7 @@
 #   BADCW=dir       pre-staged bad-cartwheel dir; unset -> generated with Rust
 #   PERF=perf       the perf binary perf-check uses (e.g. a delivered static build);
 #                   perf-check profiles at the first THREADS entry (default: all cpus)
+#   STRACE=strace   the strace binary syscount-check uses (delivered bundle)
 #   OUTDIR=$PWD     where .tsv / perf artefacts land
 set -euo pipefail
 MODE="${1:?usage: insight.sh sweep-wheels|sweep-check|shard-check|perf-check}"
@@ -167,6 +170,18 @@ perf-check)
   else
     echo "   c2c unavailable on this node/kernel"
   fi ;;
+
+syscount-check)
+  stage_badcw
+  STRACE="${STRACE:-strace}"
+  command -v "$STRACE" >/dev/null || { echo "strace not available ($STRACE)"; exit 1; }
+  PT="${THREADS%% *}"
+  OUT="$OUTDIR/insight-syscount-$PHASE-d$DEGREE-j$RUNID.txt"
+  echo "-- $PHASE at LEAN_NUM_THREADS=${PT:-$NP}, --shard 0/64 slice, strace -f -c"
+  "$STRACE" -f -c -o "$OUT" env LEAN_NUM_THREADS="${PT:-$NP}" \
+    "$LEAN" --"$PHASE" -W "$WORK/zero" -C "$C" --shard 0/64 >/dev/null 2>&1 || true
+  head -20 "$OUT"
+  echo "wrote $OUT" ;;
 
 *) echo "unknown mode: $MODE"; exit 1 ;;
 esac
