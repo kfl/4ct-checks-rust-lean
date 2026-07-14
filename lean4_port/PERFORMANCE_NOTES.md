@@ -174,6 +174,30 @@ samples only):
   offset the win. Pre-sizing with `mkEmpty` and fusing `flatMap` spines measured
   exactly nothing.
 
+## Nested check parallelism and its thread-count sensitivity
+
+- The check drivers are parallel at two levels: `parForEach` over the checked
+  cartwheels and, inside each, `combineEachCartwheel`'s candidate sweep as an
+  order-preserving `parFlatMap` (one task per candidate). At full thread
+  count this removes the per-cartwheel tail floor -- previously a single
+  ~440 s (d7) / ~3000 s (d8) cartwheel pinned the stage's wall-clock at any
+  concurrency. Measured on a 128-SMT EPYC node: d7 check 1421 -> 929 s, d8
+  check 2736 -> 1018 s.
+- **Known sensitivity**: at explicitly reduced thread counts on many-core
+  nodes, the tens of millions of fine tasks tax Lean's eager task pool --
+  spawn/completion/join traffic through the shared queue is ~2 futex
+  transitions per task, measured at 96% of syscall time and ~69% of total
+  CPU (kernel side) at 32 threads -- costing `check_7triangle` 1014 -> 1975 s
+  at x32. Sum-bound small machines pay ~8% (`check_deg7`, 10-core M1). The
+  default (all hardware threads) is the winning configuration everywhere
+  measured.
+- The granularity itself is not the defect: the identical one-combinator
+  change in the Rust port (inner `par_iter`) wins uniformly at every thread
+  count under rayon's work-stealing (d7 check ALL 406/381/477 ->
+  208/211/312 s at x128/x64/x32) -- unstolen work never becomes a scheduled
+  task and joins steal instead of sleeping. A work-stealing layer under the
+  `par*` combinators is the planned remedy for the Lean side.
+
 ## Levers deliberately not pulled
 
 - **Fused zero-alloc BFS + epoch scratch** (the loop-fusion prototype from the
