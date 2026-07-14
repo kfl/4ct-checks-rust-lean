@@ -37,6 +37,7 @@ RUNS="${RUNS:-1}"
 PHASE="${PHASE:-check_deg7}"
 SHARDS="${SHARDS:-128}"
 OUTDIR="${OUTDIR:-$PWD}"
+RUNID="${SLURM_JOB_ID:-$$}"    # result files carry the job id: concurrent jobs must never share a TSV
 NP="${SLURM_CPUS_ON_NODE:-$(nproc --all 2>/dev/null || nproc)}"
 THREADS="${THREADS:-}"
 if [ -z "$THREADS" ]; then for t in 128 64 32 16 8 4 2 1; do [ "$t" -le "$NP" ] && THREADS="$THREADS $t"; done; fi
@@ -88,7 +89,7 @@ best_of() {  # best_of <runs> <cmd...> -> min wall seconds
 
 case "$MODE" in
 sweep-wheels)
-  TSV="$OUTDIR/insight-wheels-d$DEGREE.tsv"
+  TSV="$OUTDIR/insight-wheels-d$DEGREE-j$RUNID.tsv"
   echo -e "port\tthreads\tseconds" > "$TSV"
   [ -x "$CPP" ] && { mkdir -p "$WORK/w-cpp"; s="$(best_of "$RUNS" "$CPP" --enum_wheels -d "$DEGREE" -R "$R" -C "$C" -S "$WORK/nb" -o "$WORK/w-cpp")"; echo "   cpp (serial): ${s}s"; echo -e "cpp\t1\t$s" >> "$TSV"; }
   for p in $PORTS; do
@@ -102,7 +103,7 @@ sweep-wheels)
 
 sweep-check)
   stage_badcw
-  TSV="$OUTDIR/insight-check-d$DEGREE.tsv"
+  TSV="$OUTDIR/insight-check-d$DEGREE-j$RUNID.tsv"
   echo -e "port\tthreads\tphase\tseconds" > "$TSV"
   for p in $PORTS; do
     for t in $THREADS; do
@@ -119,7 +120,7 @@ sweep-check)
 
 shard-check)
   stage_badcw
-  TSV="$OUTDIR/insight-shard-$PHASE-d$DEGREE.tsv"
+  TSV="$OUTDIR/insight-shard-$PHASE-d$DEGREE-j$RUNID.tsv"
   echo -e "shard\tseconds\texit" > "$TSV"
   WORKERS="${WORKERS:-$(( SHARDS < NP ? SHARDS : NP ))}"
   echo "-- $PHASE as $SHARDS x LEAN_NUM_THREADS=1 shards, $WORKERS concurrent"
