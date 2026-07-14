@@ -432,13 +432,16 @@ cost skew: even a single expensive cartwheel's check is thousands of tasks
 wide. -/
 def combineEachCartwheel (pc : PseudoConfiguration) (dart : Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : Array (PseudoConfiguration × Mappings) :=
+  -- EXPERIMENT ONLY: blocked test first, `splitMap` surgery only for survivors.
   parFlatMap cartwheels fun cartwheel => Id.run do
     let mut zs : Array (PseudoConfiguration × Mappings) := #[]
     for centerDart in cartwheel.centerDarts do
-      let fhs := freeHomomorphismPair pc cartwheel.toPseudoConfiguration dart centerDart
-      for (zStar, mappingsPc, _) in fhs do
+      let fhs := freeHomomorphismPairRaw pc cartwheel.toPseudoConfiguration dart centerDart
+      for (zStar, mappings) in fhs do
         if zStar.blockedByReducibleConfiguration 0 confs then continue
-        zs := zs.push (zStar, mappingsPc)
+        let (vmap0, _) := splitMap mappings.vmap pc.n
+        let (dmap0, _) := splitMap mappings.dmap pc.darts.size
+        zs := zs.push (zStar, ⟨vmap0, dmap0⟩)
     return zs
 
 /-- Glue cartwheels onto two darts in sequence (A.10.3). -/

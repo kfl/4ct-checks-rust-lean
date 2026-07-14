@@ -329,5 +329,15 @@ def freeHomomorphismPair (pc0 pc1 : PseudoConfiguration) (dartId0 dartId1 : Nat)
     let (dmap0, dmap1) := splitMap mappings.dmap pc0.darts.size
     (identifiedPc, ⟨vmap0, dmap0⟩, ⟨vmap1, dmap1⟩)
 
+/-- EXPERIMENT ONLY (allocation-tax measurement): `freeHomomorphismPair`
+without the per-side `Mappings` split -- the quotient plus the raw
+whole-union maps, so callers that reject most results can defer the split
+to survivors. -/
+def freeHomomorphismPairRaw (pc0 pc1 : PseudoConfiguration) (dartId0 dartId1 : Nat) :
+    Array (PseudoConfiguration × Mappings) :=
+  let pc := PseudoConfiguration.disjointUnion pc0 pc1
+  let dartId1 := dartId1 + pc0.darts.size
+  pc.freeHomomorphism #[(dartId0, dartId1)]
+
 end PseudoConfiguration
 end NearLinear4ct
