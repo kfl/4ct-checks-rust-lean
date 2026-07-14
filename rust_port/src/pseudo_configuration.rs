@@ -21,6 +21,7 @@
 //!   `CartWheel`.
 
 use crate::cartwheel::CartWheel;
+use rayon::prelude::*;
 use crate::compact_index::OptIdx;
 use crate::configuration::Configuration;
 use crate::degree::{CARTWHEEL_DEG_MAX, CONF_DEG_MAX, Degree, INFTY};
@@ -508,30 +509,37 @@ impl PseudoConfiguration {
 
     /// Glue each cartwheel onto `dart`, keeping results not blocked by a
     /// reducible configuration.
+    ///
+    /// The candidate sweep runs as a nested `par_iter` (one work item per
+    /// candidate cartwheel); rayon's `collect` keeps the survivors in the
+    /// sequential order, so results are thread-count independent.
     pub fn combine_each_cartwheel(
         &self,
         dart: usize,
         cartwheels: &[CartWheel],
         confs: &[Configuration],
     ) -> Vec<(PseudoConfiguration, Mappings)> {
-        let mut zs = Vec::new();
-        for cartwheel in cartwheels {
-            for &center_dart in &cartwheel.center_darts {
-                let fhs = PseudoConfiguration::free_homomorphism_pair(
-                    self,
-                    &cartwheel.pc,
-                    dart,
-                    center_dart,
-                );
-                for (z_star, mappings_pc, _) in fhs {
-                    if z_star.blocked_by_reducible_configuration(0, confs) {
-                        continue;
+        cartwheels
+            .par_iter()
+            .flat_map_iter(|cartwheel| {
+                let mut zs = Vec::new();
+                for &center_dart in &cartwheel.center_darts {
+                    let fhs = PseudoConfiguration::free_homomorphism_pair(
+                        self,
+                        &cartwheel.pc,
+                        dart,
+                        center_dart,
+                    );
+                    for (z_star, mappings_pc, _) in fhs {
+                        if z_star.blocked_by_reducible_configuration(0, confs) {
+                            continue;
+                        }
+                        zs.push((z_star, mappings_pc));
                     }
-                    zs.push((z_star, mappings_pc));
                 }
-            }
-        }
-        zs
+                zs.into_iter()
+            })
+            .collect()
     }
 
     /// Glue cartwheels onto two darts in sequence.
