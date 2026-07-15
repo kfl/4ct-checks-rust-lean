@@ -86,6 +86,35 @@ These discharge the sentinel-soundness obligation by proof -- the compact encodi
 is verified equivalent to `Option Nat`, so exposing `OptIdx` in public types is as
 trustworthy as `Option`. -/
 
+@[simp, grind .] theorem some_ne_none (i : Nat) : OptIdx.some i ≠ OptIdx.none := by
+  simp [OptIdx.some, OptIdx.none]
+
+@[simp, grind .] theorem none_ne_some (i : Nat) : OptIdx.none ≠ OptIdx.some i := by
+  simp [OptIdx.some, OptIdx.none]
+
+@[simp, grind =] theorem some_inj {i j : Nat} : OptIdx.some i = OptIdx.some j ↔ i = j := by
+  simp [OptIdx.some]
+
+@[simp] theorem isNone_none : OptIdx.none.isNone = true := rfl
+
+@[simp, grind =] theorem default_eq_none : (default : OptIdx) = OptIdx.none := rfl
+
+/-- Canonicalise raw literals (as exposed by a `match`) to the smart
+constructors, so the `grind`-tagged lemmas above and below apply to them. -/
+@[grind =] theorem mk_zero : (⟨0⟩ : OptIdx) = OptIdx.none := rfl
+
+@[grind =] theorem mk_succ (i : Nat) : (⟨i + 1⟩ : OptIdx) = OptIdx.some i := rfl
+
+/-- `Option`-shaped case analysis: `cases o with | none => .. | some i => ..`,
+as if `some`/`none` were constructors (they are defs, so the structural
+eliminator would expose `⟨raw⟩`). Tactic-level only; `grind` gets its
+`OptIdx` reasoning from the tagged lemmas above instead. -/
+@[cases_eliminator] protected def casesIdx {motive : OptIdx → Sort u} (o : OptIdx)
+    (none : motive .none) (some : (i : Nat) → motive (.some i)) : motive o :=
+  match o with
+  | .none => none
+  | .some i => some i
+
 @[simp] theorem get?_none : OptIdx.none.get? = Option.none := rfl
 
 @[simp] theorem get?_some (i : Nat) : (OptIdx.«some» i).get? = Option.some i := by

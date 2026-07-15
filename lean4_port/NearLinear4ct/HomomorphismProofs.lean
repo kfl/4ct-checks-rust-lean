@@ -453,7 +453,7 @@ theorem homStep_next_sound
       simp only [ite_done_none_eq_next] at hst
       obtain ⟨hcons, hst⟩ := hst
       cases hst
-      grind [sound_pop, IndexMap.idx?_eq_of_getElem!, OptIdx.some]
+      grind [sound_pop, IndexMap.idx?_eq_of_getElem!]
     · -- unmapped: expand
       rename_i hdv
       have hfresh : dmap.idx? packed.fst = Option.none :=

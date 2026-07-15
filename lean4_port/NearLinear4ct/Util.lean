@@ -23,18 +23,18 @@ def proofAssert (cond : Bool) (msg : String) : IO Unit :=
 /-- Disjoint-set forest (union-find) without path compression or union-by-rank,
 matching the C++ `Unionfind`.
 
-The C++ marks a root with `parents[x] < 0` (value `-1`). Here a root is
-`none`; an interior node is `some parent`. Mutating operations return an updated
-`Unionfind` (the underlying `Array.set` is in-place when uniquely referenced). -/
+The C++ marks a root with `-1`; here a root is `.none` and an interior node
+`.some parent`. Mutating operations return an updated `Unionfind` (the
+underlying `Array.set` is in-place when uniquely referenced). -/
 structure Unionfind where
   n : Nat
-  parents : Array (Option Nat)
+  parents : Array OptIdx
   /-- One slot per node, and every parent pointer lands in range: a
   `Unionfind` is structurally well-formed by construction (erased at
   runtime). Acyclicity is *not* carried here -- that stays a proof-side
   invariant (`Unionfind.WF`). -/
   unionfind_invariant :
-    parents.size = n ∧ ∀ z, z < n → ∀ p, parents[z]! = some p → p < n
+    parents.size = n ∧ ∀ z, z < n → ∀ p, parents[z]! = .some p → p < n
 
 instance : Inhabited Unionfind := ⟨⟨0, #[], by simp⟩⟩
 
@@ -42,7 +42,7 @@ namespace Unionfind
 
 /-- A fresh forest of `n` singletons. Named `new` to avoid
 clashing with the structure's auto-generated `Unionfind.mk`. -/
-protected def new (n : Nat) : Unionfind := ⟨n, Array.replicate n none, by grind⟩
+protected def new (n : Nat) : Unionfind := ⟨n, Array.replicate n .none, by grind⟩
 
 /-- Follow parent pointers from `x` for at most `fuel` steps. The range test
 is the comparison `getElem!` would make anyway, minus its panic path: on any
@@ -53,8 +53,8 @@ def rootAux (uf : Unionfind) : Nat → Nat → Nat
   | x, fuel + 1 =>
     if h : x < uf.parents.size then
       match uf.parents[x] with
-      | none => x
-      | some p => uf.rootAux p fuel
+      | .none => x
+      | .some p => uf.rootAux p fuel
     else x
 
 /-- Representative of `x`. Total via a fuel bound of `uf.n`: a well-formed
@@ -71,7 +71,7 @@ def unite (uf : Unionfind) (x y : Nat) : Unionfind :=
   let ry := uf.root y
   if h : rx == ry || uf.n ≤ ry then uf
   else
-    ⟨uf.n, uf.parents.set! rx (some ry), by grind [Unionfind]⟩
+    ⟨uf.n, uf.parents.set! rx (.some ry), by grind [Unionfind]⟩
 
 def same (uf : Unionfind) (x y : Nat) : Bool := uf.root x == uf.root y
 

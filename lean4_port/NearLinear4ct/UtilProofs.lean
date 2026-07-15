@@ -220,13 +220,7 @@ theorem rootRank_lt_rootRank (uf : Unionfind) {i j : Nat} (hij : i < j)
     (hi : uf.parents[i]!.isNone) : uf.rootRank i < uf.rootRank j := by
   induction j with
   | zero => omega
-  | succ k ih =>
-    rw [rootRank_succ]
-    rcases Nat.lt_or_ge i k with h | h
-    · have := ih h; omega
-    · have : i = k := by omega
-      subst this
-      simp [hi]
+  | succ k ih => grind [rootRank_succ]
 
 /-- The step function of `indexRoots`' loop (state: next index × output). -/
 private def indexRootsStep (uf : Unionfind) (i : Nat)
@@ -251,16 +245,8 @@ private theorem foldl_indexRootsStep (uf : Unionfind) :
         = ⟨uf.rootRank (i + k), uf.outPrefix (i + k)⟩
   | 0, i => by simp
   | k + 1, i => by
-    rw [List.range'_succ, List.foldl_cons]
-    have hstep : uf.indexRootsStep i ⟨uf.rootRank i, uf.outPrefix i⟩
-        = ⟨uf.rootRank (i + 1), uf.outPrefix (i + 1)⟩ := by
-      unfold indexRootsStep
-      rw [rootRank_succ, outPrefix_succ]
-      split <;> simp_all
-    rw [hstep]
-    have harith : i + 1 + k = i + (k + 1) := by omega
     have := foldl_indexRootsStep uf k (i + 1)
-    rw [this, harith]
+    grind [List.range'_succ, indexRootsStep, rootRank_succ, outPrefix_succ]
 
 /-- **The bridge**: the push loop computes the functional model. -/
 theorem indexRoots_eq_fun (uf : Unionfind) : uf.indexRoots = uf.indexRootsFun := by
@@ -296,22 +282,19 @@ theorem numRoots_eq_rootRank (uf : Unionfind) : uf.numRoots = uf.rootRank uf.n :
   rw [numRoots, allRoots, rootRank, ← Array.countP_eq_size_filter,
     ← Array.countP_toList, Array.toList_range]
 
+private theorem get?_indexRoots (uf : Unionfind) {i : Nat}
+    (h : i < uf.indexRoots.size) :
+    (uf.indexRoots[i]'h).get? = if uf.parents[i]!.isNone then some (uf.rootRank i) else none := by
+  rw [← getElem!_pos uf.indexRoots i h, getElem!_indexRoots uf (by simpa using h)]
+  split <;> simp
+
 /-- **`indexRoots` is a well-formed relabelling map** `uf.n → uf.numRoots`
 (the compact codomain of the quotient renumbering; genuinely *not* `Total` --
 non-roots are unmapped by design). -/
 theorem indexRoots_wf (uf : Unionfind) :
     IndexMap.WF uf.indexRoots uf.n uf.numRoots := by
-  constructor
-  · simp
-  · intro i h j hj
-    rw [← getElem!_pos uf.indexRoots i (by simpa using h),
-      getElem!_indexRoots uf (by simpa using h)] at hj
-    by_cases hr : uf.parents[i]!.isNone
-    · simp [hr] at hj
-      subst hj
-      rw [numRoots_eq_rootRank]
-      exact uf.rootRank_lt_rootRank (by simpa using h) hr
-    · simp [hr] at hj
+  grind [IndexMap.WF, IndexMap.Bounded, size_indexRoots,
+    get?_indexRoots, numRoots_eq_rootRank, rootRank_lt_rootRank]
 
 /-! ### `root` totality: `RootsWF` from a preserved acyclicity invariant
 
@@ -324,13 +307,13 @@ in-range nodes (the pigeonhole `nodup_lt_length_le`). -/
 /-- Following parents `k` then `j` steps = following `k + j` steps: once a root
 is hit the walk stutters, so the two agree. The composition law behind
 everything else. -/
-theorem rootAux_none {uf : Unionfind} {x : Nat} (h : uf.parents[x]! = none) :
+theorem rootAux_none {uf : Unionfind} {x : Nat} (h : uf.parents[x]! = .none) :
     ∀ j, uf.rootAux x j = x
   | 0 => rfl
   | _ + 1 => by grind [rootAux]
 
 /-- Unfold one step at a non-root: `rootAux x (fuel+1) = rootAux (parent x) fuel`. -/
-theorem rootAux_succ_some {uf : Unionfind} {x p : Nat} (h : uf.parents[x]! = some p)
+theorem rootAux_succ_some {uf : Unionfind} {x p : Nat} (h : uf.parents[x]! = .some p)
     (fuel : Nat) : uf.rootAux x (fuel + 1) = uf.rootAux p fuel := by
   grind [rootAux]
 
@@ -345,7 +328,7 @@ theorem rootAux_add (uf : Unionfind) (j : Nat) : ∀ x k,
     | some p => rw [Nat.succ_add, rootAux_succ_some hpx, rootAux_succ_some hpx, ih p]
 
 /-- Once the walk hits a root it stays: `rootAux x k` a root ⇒ more fuel is idempotent. -/
-theorem rootAux_stable {uf : Unionfind} {x k : Nat} (h : uf.parents[uf.rootAux x k]! = none)
+theorem rootAux_stable {uf : Unionfind} {x k : Nat} (h : uf.parents[uf.rootAux x k]! = .none)
     (j : Nat) : uf.rootAux x (k + j) = uf.rootAux x k := by
   rw [rootAux_add]; exact rootAux_none h j
 
@@ -353,23 +336,21 @@ theorem rootAux_stable {uf : Unionfind} {x k : Nat} (h : uf.parents[uf.rootAux x
 so this encodes acyclicity; its `Nodup` is that content and its length bounds
 the fuel `rootAux` needs. -/
 inductive Chain (uf : Unionfind) : Nat → Nat → List Nat → Prop where
-  | root {x} : uf.parents[x]! = none → Chain uf x x [x]
-  | step {x p r l} : uf.parents[x]! = some p → Chain uf p r l → Chain uf x r (x :: l)
+  | root {x} : uf.parents[x]! = .none → Chain uf x x [x]
+  | step {x p r l} : uf.parents[x]! = .some p → Chain uf p r l → Chain uf x r (x :: l)
 
 /-- `rootAux` at the path length reaches the path's root. -/
 theorem Chain.rootAux_length {uf : Unionfind} {x r : Nat} {l : List Nat}
     (h : Chain uf x r l) : uf.rootAux x l.length = r := by
-  induction h with
-  | root hx => exact rootAux_none hx 1
-  | step hp _ ih => rw [List.length_cons, rootAux_succ_some hp]; exact ih
+  induction h with grind [rootAux_none, rootAux_succ_some]
 
 theorem Chain.isNone {uf : Unionfind} {x r : Nat} {l : List Nat}
-    (h : Chain uf x r l) : uf.parents[r]! = none := by
+    (h : Chain uf x r l) : uf.parents[r]! = .none := by
   induction h with grind
 
 /-- The path's root is in range. -/
 theorem Chain.lt {uf : Unionfind}
-    (hin : ∀ z, z < uf.n → ∀ p, uf.parents[z]! = some p → p < uf.n) :
+    (hin : ∀ z, z < uf.n → ∀ p, uf.parents[z]! = .some p → p < uf.n) :
     ∀ {x r l}, Chain uf x r l → x < uf.n → r < uf.n := by
   intro x r l h
   induction h with
@@ -378,28 +359,22 @@ theorem Chain.lt {uf : Unionfind}
 
 /-- Every node on the path is in range. -/
 theorem Chain.mem_lt {uf : Unionfind}
-    (hin : ∀ z, z < uf.n → ∀ p, uf.parents[z]! = some p → p < uf.n) :
+    (hin : ∀ z, z < uf.n → ∀ p, uf.parents[z]! = .some p → p < uf.n) :
     ∀ {x r l}, Chain uf x r l → x < uf.n → ∀ z ∈ l, z < uf.n := by
   intro x r l h
-  induction h with
-  | root _ => grind
-  | step hp _ ih => grind
+  induction h <;> grind
 
 /-- Parent paths are unique (the parent map is a function). -/
 theorem Chain.unique {uf : Unionfind} : ∀ {a r₁ r₂ l₁ l₂},
     Chain uf a r₁ l₁ → Chain uf a r₂ l₂ → l₁ = l₂ := by
   intro a r₁ r₂ l₁ l₂ h₁
-  induction h₁ generalizing r₂ l₂ with
-  | root hx => intro h₂; cases h₂ <;> grind
-  | step hp _ ih => intro h₂; cases h₂ <;> grind
+  induction h₁ generalizing r₂ l₂ <;> intro h₂ <;> cases h₂ <;> grind
 
 /-- A node on the path starts its own (no-longer) subpath. -/
 theorem Chain.mem_subchain {uf : Unionfind} : ∀ {a r l z},
     Chain uf a r l → z ∈ l → ∃ l', Chain uf z r l' ∧ l'.length ≤ l.length := by
   intro a r l z h
-  induction h with
-  | root hx => grind [Chain.root]
-  | step hp _ ih => intro hz; grind [Chain.step]
+  induction h <;> grind [Chain.root, Chain.step]
 
 /-- The acyclicity payoff: a parent path repeats no node. -/
 theorem Chain.nodup {uf : Unionfind} : ∀ {x r l}, Chain uf x r l → l.Nodup := by
@@ -432,14 +407,14 @@ def RootsWF (uf : Unionfind) : Prop :=
   ∀ i, i < uf.n → uf.root i < uf.n ∧ uf.parents[uf.root i]!.isNone
 
 /-- Array read helpers for the `set!`/`replicate` updates in `new`/`unite`. -/
-private theorem set!_self {a : Array (Option Nat)} {i : Nat} {v : Option Nat}
+private theorem set!_self {a : Array OptIdx} {i : Nat} {v : OptIdx}
     (h : i < a.size) : (a.set! i v)[i]! = v := by grind
 
-private theorem set!_ne {a : Array (Option Nat)} {i j : Nat} {v : Option Nat}
+private theorem set!_ne {a : Array OptIdx} {i j : Nat} {v : OptIdx}
     (hne : j ≠ i) : (a.set! i v)[j]! = a[j]! := by grind
 
 private theorem replicate_none_get {n z : Nat} :
-    (Array.replicate n (none : Option Nat))[z]! = none := by grind
+    (Array.replicate n (OptIdx.none))[z]! = .none := by grind
 
 /-- **Well-formedness**: every node reaches a root -- the acyclicity content.
 The structural half (sizes match, parents in range) is carried by the type
@@ -451,7 +426,7 @@ structure WF (uf : Unionfind) : Prop where
 /-- Under `WF`, `root` lands on a genuine in-range root. The fuel `uf.n` reaches
 it because the parent path is `Nodup` and in range, so at most `n` long. -/
 theorem WF.root_spec {uf : Unionfind} (h : uf.WF) {x : Nat} (hx : x < uf.n) :
-    uf.parents[uf.root x]! = none ∧ uf.root x < uf.n := by
+    uf.parents[uf.root x]! = .none ∧ uf.root x < uf.n := by
   obtain ⟨r, l, hl⟩ := h.reaches x hx
   have hlen : l.length ≤ uf.n :=
     nodup_lt_length_le uf.n l hl.nodup (hl.mem_lt uf.unionfind_invariant.2 hx)
