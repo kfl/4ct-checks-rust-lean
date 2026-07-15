@@ -7,21 +7,32 @@ name: CI
   pull_request:
   workflow_dispatch:
 
+# The workflow only reads the repo; no token write access.
+permissions:
+  contents: read
+
+# Supersede in-flight runs of the same ref (a burst of pushes needs only the
+# latest result).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
     name: Rust (fmt + clippy + test)
     runs-on: ubuntu-latest
+    # Normal runs take under a minute; don't let a wedged build hold a runner.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: rust_port
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          toolchain: stable
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust_port
+          cache-workspaces: rust_port
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -32,8 +43,11 @@ jobs:
   lean:
     name: Lean (build + test)
     runs-on: ubuntu-latest
+    # Normal runs take under a minute (warm cache); a hung elaboration (e.g. a
+    # looping grind) must not hold a runner for the default six hours.
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Reads lean4_port/lean-toolchain, installs elan + the pinned Lean,
       # caches ~/.elan and .lake, and runs `lake build`.
       # --wfail promotes lint findings (the beyond-default linters enabled in
