@@ -273,8 +273,7 @@ theorem getElem!_indexRoots (uf : Unionfind) {i : Nat} (h : i < uf.n) :
 universally). -/
 theorem isSome_indexRoots_iff (uf : Unionfind) {i : Nat} (h : i < uf.n) :
     (uf.indexRoots[i]!).isSome ↔ uf.parents[i]!.isNone := by
-  rw [getElem!_indexRoots uf h]
-  by_cases hr : uf.parents[i]!.isNone <;> simp [hr]
+  grind [getElem!_indexRoots, OptIdx.isSome_some, OptIdx.isSome_none]
 
 /-- `numRoots` is the root count over the whole range -- i.e. `rootRank` at
 the end. -/

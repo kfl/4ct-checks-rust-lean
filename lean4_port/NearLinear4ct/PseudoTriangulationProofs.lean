@@ -42,16 +42,15 @@ structure InBounds (n D : Nat) (d : Dart) : Prop where
   succ_lt : ∀ j, d.succ.get? = Option.some j → j < D
   pred_lt : ∀ j, d.pred.get? = Option.some j → j < D
 
-/-- Executable `InBounds` (the `succ`/`pred` clauses via the raw encoding,
-no `Option` built). -/
+/-- Executable `InBounds` (the `succ`/`pred` clauses via `OptIdx.boundedBy`). -/
 def inBoundsCheck (n D : Nat) (d : Dart) : Bool :=
   decide (d.head < n) && decide (d.rev < D)
-    && decide (d.succ.raw ≤ D) && decide (d.pred.raw ≤ D)
+    && d.succ.boundedBy D && d.pred.boundedBy D
 
 /-- The executable check decides `InBounds`. -/
 theorem inBoundsCheck_iff {n D : Nat} {d : Dart} :
     d.inBoundsCheck n D = true ↔ d.InBounds n D := by
-  grind [inBoundsCheck, InBounds, OptIdx.raw_le_iff_get?_lt]
+  grind [inBoundsCheck, InBounds, OptIdx.boundedBy_iff]
 
 /-- `InBounds` weakens along larger index sets. -/
 theorem InBounds.mono {n D n' D' : Nat} {d : Dart}
@@ -236,7 +235,7 @@ private theorem inBounds_replicate_default (n fresh : Nat) (d : Dart)
     (hd : d.head = 0 ∧ d.rev = 0 ∧ d.succ = OptIdx.none ∧ d.pred = OptIdx.none)
     (hn : 0 < fresh → 0 < n) (i : Nat) (hi : i < (Array.replicate fresh d).size) :
     ((Array.replicate fresh d)[i]'hi).InBounds n (Array.replicate fresh d).size := by
-  grind [Dart.InBounds, Array.size_replicate, OptIdx.get?, OptIdx.none]
+  grind [Dart.InBounds, Array.size_replicate, OptIdx.get?_none]
 
 /-- `InBounds` is preserved by a phase-2 write, provided the written dart is in
 bounds whenever its target index is valid. -/
@@ -297,7 +296,7 @@ theorem fromVRotations_wf (n : Nat) (rotations : Array (Array Int)) :
     intro he
     refine ⟨lt_of_mem_range_toList (by assumption), ?_, ?_, ?_⟩ <;>
       simp only [hsz] <;>
-      grind [DartOfWF, OptIdx.ofOption_get?, OptIdx.get?, OptIdx.none, panicWithPosWithDecl_nat]
+      grind [DartOfWF, OptIdx.get?_ofOption, OptIdx.get?_none, panicWithPosWithDecl_nat]
   all_goals assumption
 
 end

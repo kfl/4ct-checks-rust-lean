@@ -24,16 +24,7 @@ Construct with `OptIdx.none` / `OptIdx.some` / `OptIdx.ofOption`; read with the
 structure OptIdx where
   /-- Raw encoding: `0 = none`, `i+1 = some i`. Prefer the smart constructors. -/
   raw : Nat
-deriving DecidableEq, Repr, Inhabited, BEq, Hashable
-
-/-- The derived `BEq` is lawful (it is `Nat` equality on `raw`). Not provided by
-`deriving BEq` upstream, but needed to reason about the `!=` consistency test in
-the homomorphism BFS loop. -/
-instance : LawfulBEq OptIdx where
-  eq_of_beq {a b} h := by
-    have hr : a.raw = b.raw := eq_of_beq (show (a.raw == b.raw) = true from h)
-    cases a; cases b; simp_all
-  rfl {a} := by show (a.raw == a.raw) = true; simp
+deriving DecidableEq, Repr, Inhabited, BEq, ReflBEq, LawfulBEq, Hashable
 
 namespace OptIdx
 
@@ -72,6 +63,10 @@ def ofOption : Option Nat → OptIdx
 get? ∘ Option.map f`). -/
 @[inline] def map (f : Nat → Nat) (o : OptIdx) : OptIdx :=
   if o.raw == 0 then .none else .some (f (o.raw - 1))
+
+/-- Whether any held index is below `bound` (`none` passes): `0 ≤ bound`
+covers `none`, and `i + 1 ≤ bound` is `i < bound`. -/
+def boundedBy (o : OptIdx) (bound : Nat) : Bool := o.raw ≤ bound
 
 /-- Decode an optional index into an optional finite index, given a bound proof. -/
 def toFin? (o : OptIdx) (h : ∀ j, o.get? = Option.some j → j < n) :
@@ -132,6 +127,8 @@ eliminator would expose `⟨raw⟩`). Tactic-level only; `grind` gets its
 @[simp] theorem isNone_raw_succ (i : Nat) : ({ raw := i + 1 } : OptIdx).isNone = false := by
   simp [isNone]
 
+@[simp] theorem isSome_none : OptIdx.none.isSome = false := rfl
+
 @[simp] theorem isSome_some (i : Nat) : (OptIdx.«some» i).isSome := by
   simp [OptIdx.«some», isSome]
 
@@ -139,54 +136,66 @@ eliminator would expose `⟨raw⟩`). Tactic-level only; `grind` gets its
   simp [isSome]
 
 @[simp] theorem isSome_eq (o : OptIdx) : o.isSome = o.get?.isSome := by
-  simp [isSome, get?]; split <;> simp_all
+  grind [isSome, get?]
 
-@[simp] theorem ofOption_get? (o : Option Nat) : (ofOption o).get? = o := by
-  cases o <;> simp [ofOption]
+@[simp] theorem get?_ofOption (o : Option Nat) : (ofOption o).get? = o := by
+  grind [ofOption.eq_def, get?, OptIdx.some, OptIdx.none]
+
+@[simp] theorem map_none (f : Nat → Nat) : OptIdx.none.map f = OptIdx.none := rfl
+
+@[simp] theorem map_some (f : Nat → Nat) (i : Nat) :
+    (OptIdx.some i).map f = OptIdx.some (f i) := by
+  grind [map, OptIdx.some]
 
 /-- `map` mirrors `Option.map` under the `Option Nat` view. -/
 @[simp] theorem get?_map (f : Nat → Nat) (o : OptIdx) : (map f o).get? = o.get?.map f := by
-  obtain ⟨raw⟩ := o
-  cases raw with
-  | zero => rfl
-  | succ n => simp [map, get?, OptIdx.some]
+  grind [map, get?, OptIdx.some, OptIdx.none]
 
 /-- Round-trip the other way: `ofOption ∘ get? = id`. Together with `get?_ofOption`
 this is the bijection `OptIdx ≃ Option Nat`. -/
-theorem get?_ofOption (o : OptIdx) : ofOption o.get? = o := by
-  obtain ⟨raw⟩ := o
-  cases raw with
-  | zero => rfl
-  | succ n => simp [get?, ofOption, OptIdx.«some»]
+@[simp] theorem ofOption_get? (o : OptIdx) : ofOption o.get? = o := by
+  grind [OptIdx, get?, ofOption, OptIdx.none, OptIdx.some]
+
+/-- `get?` is injective (immediate from the round-trip). -/
+@[simp] theorem get?_inj {a b : OptIdx} :
+    a.get? = b.get? ↔ a = b := by
+  grind [ofOption_get?]
+
+/-- `==` agrees across the `Option Nat` view. -/
+theorem beq_get? (a b : OptIdx) :
+    (a == b) = (a.get? == b.get?) := by
+  grind [get?_inj]
 
 /-- A mapped `get?` pins down the value: `some` is the only preimage. -/
 theorem get?_eq_some_iff {o : OptIdx} {j : Nat} :
     o.get? = Option.some j ↔ o = OptIdx.«some» j := by
   grind [OptIdx, get?, OptIdx.«some»]
 
-/-- Raw bounds are exactly bounds on the decoded value, when present. -/
-theorem raw_le_iff_get?_lt {o : OptIdx} {bound : Nat} :
-    o.raw ≤ bound ↔ ∀ j, o.get? = Option.some j → j < bound := by
-  obtain ⟨raw⟩ := o
-  cases raw with
-  | zero => simp [get?]
-  | succ k => simp [get?]; omega
+@[simp] theorem boundedBy_none (bound : Nat) :
+    OptIdx.none.boundedBy bound = true := by
+  simp [boundedBy, OptIdx.none]
+
+@[simp] theorem boundedBy_some (i bound : Nat) :
+    (OptIdx.some i).boundedBy bound = (i < bound) := by
+  grind [boundedBy, OptIdx.some]
+
+/-- `boundedBy` under the `Option Nat` view: any held index is below the bound. -/
+theorem boundedBy_iff {o : OptIdx} {bound : Nat} :
+    o.boundedBy bound ↔ ∀ j, o.get? = Option.some j → j < bound := by
+  cases o <;> grind [boundedBy, get?, OptIdx.none, OptIdx.some]
 
 /-- `toFin?` is the decoded optional index under `Fin.val`. -/
 @[simp] theorem toFin?_val {o : OptIdx} (h : ∀ j, o.get? = Option.some j → j < n) :
     (o.toFin? h).map Fin.val = o.get? := by
-  unfold toFin?
-  split <;> simp_all
+  grind [toFin?]
 
 @[simp] theorem toFin?_isSome {o : OptIdx} (h : ∀ j, o.get? = Option.some j → j < n) :
     (o.toFin? h).isSome = o.get?.isSome := by
-  unfold toFin?
-  split <;> simp_all
+  grind [toFin?]
 
 /-- `isNone` under the `Option Nat` view. -/
 theorem isNone_iff_get? {o : OptIdx} : o.isNone ↔ o.get? = Option.none := by
-  obtain ⟨raw⟩ := o
-  cases raw <;> simp [isNone, get?]
+  grind [isNone, get?]
 
 /-- `isNone` under the `Option Nat` view, as a `Bool` rewrite. -/
 theorem isNone_eq (o : OptIdx) : o.isNone = o.get?.isNone := by
@@ -195,10 +204,7 @@ theorem isNone_eq (o : OptIdx) : o.isNone = o.get?.isNone := by
 /-- The `!`-discharge converter: a `get?` fact justifies the panicking read. -/
 theorem idx!_of_get?_some {o : OptIdx} {j : Nat} (h : o.get? = Option.some j) :
     o.idx! = j := by
-  obtain ⟨raw⟩ := o
-  cases raw with
-  | zero => simp [get?] at h
-  | succ n => simp [get?] at h; simp [idx!, h]
+  grind [idx!, get?]
 
 end OptIdx
 end NearLinear4ct

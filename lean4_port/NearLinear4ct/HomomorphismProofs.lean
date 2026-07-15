@@ -148,24 +148,22 @@ theorem bounded_pushLink {src dst : PseudoConfiguration}
     (hs : ∀ j, os.get? = Option.some j → j < src.darts.size)
     (hd : ∀ j, od.get? = Option.some j → j < dst.darts.size) :
     Bounded src dst (pushLink q os od) vmap dmap := by
-  obtain ⟨_ | s⟩ := os <;> obtain ⟨_ | t⟩ := od
-  · exact hb
-  · exact hb
-  · exact hb
-  · exact bounded_push hb (pack_bounded hpack (hs s rfl) (hd t rfl))
+  cases os <;> cases od
+  all_goals try exact hb
+  exact bounded_push hb (pack_bounded hpack (hs _ rfl) (hd _ rfl))
 
 /-- **Re-pop branch preservation**: popping (maps unchanged) keeps `Bounded`. -/
 theorem bounded_pop {src dst : PseudoConfiguration}
     {q q' : Queue SmallNatPair} {x : SmallNatPair} {vmap dmap : IndexMap}
     (hp : q.pop? = some (x, q')) (hb : Bounded src dst q vmap dmap) :
     Bounded src dst q' vmap dmap := by
-  exact ⟨fun p hp' => hb.queued_bd p (active_pop hp hp'), hb.vmap_wf, hb.dmap_wf⟩
+  grind [Bounded, active_pop]
 
 /-- The dart at an in-range index is `InBounds` (unfolding the `!`-read). The
 shared `hsrcD`/`hdstD` step in every loop-body proof. -/
 theorem dart_inBounds {c : PseudoConfiguration} (hwf : c.WF) {i : Nat}
     (h : i < c.darts.size) : (c.darts[i]!).InBounds c.n c.darts.size := by
-  rw [getElem!_pos c.darts i h]; exact hwf.1 i h
+  simpa only [getElem!_pos c.darts i h] using hwf.1 i h
 
 /-- **One step preserves `Bounded`**: a continuing step's state is `Bounded`,
 and a `done` exit that answers `some` is well-formed output. Recursion-free --
@@ -184,13 +182,12 @@ theorem homStep_bounded
     grind [OutputWF, Bounded]
   · -- q not empty: pop, then re-pop / expand
     have hfb := hb.queued_bd packed (active_head heq)
-    have hbpop : Bounded src dst q1 vmap dmap := bounded_pop heq hb
     have hsrcD := dart_inBounds hsrc hfb.1
     have hdstD := dart_inBounds hdst hfb.2
     have hbase : Bounded src dst q1
         (vmap.set! (src.darts[packed.fst]!).head (OptIdx.some (dst.darts[packed.snd]!).head))
         (dmap.set! packed.fst (OptIdx.some packed.snd)) :=
-      ⟨hbpop.queued_bd,
+      ⟨(bounded_pop heq hb).queued_bd,
         IndexMap.wf_set!_some hb.vmap_wf hdstD.head_lt,
         IndexMap.wf_set!_some hb.dmap_wf hfb.2⟩
     -- `Bounded` through the three pushes, in order
@@ -215,14 +212,7 @@ theorem homCoreGo_output_wf
     (motive := fun q vmap dmap r => Bounded src dst q vmap dmap → OutputWF src dst r)
     ?step q vmap dmap r hrun
   intro rec ih q vmap dmap r hstep hb
-  split at hstep
-  · rename_i r' heq
-    have h : ∀ p, r' = some p → OutputWF src dst p := by
-      simpa only [heq] using homStep_bounded (degreeTest := degreeTest) hsrc hdst hpack hb
-    exact h r hstep
-  · rename_i q' vmap' dmap' heq
-    refine ih q' vmap' dmap' r hstep ?_
-    simpa only [heq] using homStep_bounded (degreeTest := degreeTest) hsrc hdst hpack hb
+  grind [homStep_bounded]
 
 /-! ### The semantic `Sound` layer (dart-local consistency = paper Sec. 9)
 
@@ -250,9 +240,7 @@ theorem not_active_of_isEmpty {q : Queue SmallNatPair} (h : q.isEmpty = true)
 theorem done_of_isEmpty {q : Queue SmallNatPair} {dmap : IndexMap} {f fStar : Nat}
     (h : q.isEmpty = true) (hd : DoneOrQueued q dmap f fStar) :
     dmap.idx? f = Option.some fStar := by
-  rcases hd with hdone | ⟨p, ha, _, _⟩
-  · exact hdone
-  · exact absurd ha (not_active_of_isEmpty h p)
+  grind [DoneOrQueued, Queued, not_active_of_isEmpty]
 
 /-- `push` only adds to the active set. -/
 theorem active_push_mono {q : Queue SmallNatPair} {x p : SmallNatPair}
@@ -322,7 +310,7 @@ theorem LinkPending.transport {q q' : Queue SmallNatPair} {dmap dmap' : IndexMap
     {srcLink dstLink : OptIdx} (hlp : LinkPending q dmap srcLink dstLink)
     (htrans : ∀ {f fStar}, DoneOrQueued q dmap f fStar → DoneOrQueued q' dmap' f fStar) :
     LinkPending q' dmap' srcLink dstLink := by
-  intro s hs; obtain ⟨t, ht, hdq⟩ := hlp s hs; exact ⟨t, ht, htrans hdq⟩
+  grind [LinkPending]
 
 /-- The fresh-dart (`g = f`) half of `succ_pending`/`pred_pending`: once `f` is
 mapped and its `succ`/`pred` obligation pushed, that link is `LinkPending`. -/
@@ -332,12 +320,14 @@ theorem freshLink_pending {q' : Queue SmallNatPair} {dmap' : IndexMap} {os od : 
     (hactive : ∀ s t, os = OptIdx.some s → od = OptIdx.some t → Active q' (pack s t)) :
     LinkPending q' dmap' os od := by
   intro s hs
-  obtain ⟨_ | so⟩ := os
-  · exact absurd hs (by simp [OptIdx.get?])
-  · obtain rfl : so = s := by simpa [OptIdx.get?] using hs
-    obtain ⟨_ | t⟩ := od
-    · exact absurd hg (by simp [OptIdx.isSome, OptIdx.isNone])
-    · have hlt : t < pairBase := Nat.lt_of_lt_of_le (hdb t rfl) hpack
+  cases os with
+  | none => exact absurd hs (by simp)
+  | some so =>
+    obtain rfl : so = s := by simpa using hs
+    cases od with
+    | none => exact absurd hg (by simp)
+    | some t =>
+      have hlt : t < pairBase := Nat.lt_of_lt_of_le (hdb t rfl) hpack
       exact ⟨t, rfl, Or.inr ⟨pack so t, hactive so t rfl rfl,
         fst_pack so t hlt, snd_pack so t hlt⟩⟩
 
@@ -392,12 +382,8 @@ theorem isRootedHom_of_sound_isEmpty
     {src dst : PseudoConfiguration} {degreeTest : Degree → Degree → Bool}
     {dartFrom dartTo : Nat} {q : Queue SmallNatPair} {vmap dmap : IndexMap}
     (hs : Sound src dst degreeTest dartFrom dartTo q vmap dmap) (hq : q.isEmpty = true) :
-    IsRootedHom src dst degreeTest dartFrom dartTo vmap dmap :=
-  ⟨done_of_isEmpty hq hs.root_pending,
-    fun f fStar hf => ⟨hs.dart_head_ok f fStar hf, done_of_isEmpty hq (hs.rev_pending f fStar hf),
-      (hs.succ_pending f fStar hf · · |>.imp fun _ ⟨w1, w2⟩ => ⟨w1, done_of_isEmpty hq w2⟩),
-      (hs.pred_pending f fStar hf · · |>.imp fun _ ⟨w1, w2⟩ => ⟨w1, done_of_isEmpty hq w2⟩)⟩,
-    hs.degree_ok⟩
+    IsRootedHom src dst degreeTest dartFrom dartTo vmap dmap := by
+  grind [IsRootedHom, Sound, LinkPending, done_of_isEmpty]
 
 /-- Discharge the re-pop consistency test: `¬(dv != some n)` means `dv = some n`. -/
 theorem optIdx_eq_of_not_bne {dv : OptIdx} {n : Nat}
@@ -413,12 +399,8 @@ theorem sound_pop {src dst : PseudoConfiguration} {degreeTest : Degree → Degre
     (hs : Sound src dst degreeTest dartFrom dartTo q vmap dmap)
     (hp : q.pop? = some (x, q'))
     (hdone : dmap.idx? x.fst = Option.some x.snd) :
-    Sound src dst degreeTest dartFrom dartTo q' vmap dmap :=
-  ⟨bounded_pop hp hs.toBounded, doneOrQueued_pop hp hdone hs.root_pending,
-    hs.dart_head_ok, hs.degree_ok,
-    (hs.rev_pending · · · |> doneOrQueued_pop hp hdone),
-    (hs.succ_pending · · · |>.transport (doneOrQueued_pop hp hdone)),
-    (hs.pred_pending · · · |>.transport (doneOrQueued_pop hp hdone))⟩
+    Sound src dst degreeTest dartFrom dartTo q' vmap dmap := by
+  grind [Sound, bounded_pop, doneOrQueued_pop, LinkPending.transport]
 
 /-- Flatten a guard: an early `done none` exit equals `.next` iff the guard
 fails and the continuation reaches `.next` -- the `HomNext` sibling of
@@ -427,7 +409,7 @@ theorem ite_done_none_eq_next {c : Prop} [Decidable c] {x : HomNext}
     {q : Queue SmallNatPair} {vmap dmap : IndexMap} :
     ((if c then HomNext.done none else x) = HomNext.next q vmap dmap)
       ↔ ¬c ∧ x = HomNext.next q vmap dmap := by
-  split <;> simp_all
+  grind
 
 /-- **One step preserves `Sound`**: a continuing step's state is `Sound`.
 Base case of the invariant argument; recursion-free. -/
@@ -442,11 +424,11 @@ theorem homStep_next_sound
   unfold homStep at hst
   simp only [] at hst
   split at hst
-  · exact absurd hst (by simp)
+  · grind
   · rename_i packed q1 heq
-    have hpk : Active q packed := active_head heq
-    have hfb := hs.queued_bd packed hpk
-    have hfsz : packed.fst < dmap.size := by rw [hs.dmap_wf.size_eq]; exact hfb.1
+    have hfb := hs.queued_bd packed (active_head heq)
+    have hfsz : packed.fst < dmap.size := by
+      simpa only [hs.dmap_wf.size_eq] using hfb.1
     split at hst
     · -- already mapped; the consistency guard passes, then re-pop
       rename_i d hdd
@@ -466,13 +448,7 @@ theorem homStep_next_sound
       obtain ⟨hvvc, hdeg, hsg, hpg, hst⟩ := hst
       cases hst
       have hvsz : src.darts[packed.fst]!.head < vmap.size := by
-        rw [hs.vmap_wf.size_eq]; exact hsrcD.head_lt
-      have hvmap'_wf := IndexMap.wf_set!_some
-        (i := src.darts[packed.fst]!.head) hs.vmap_wf hdstD.head_lt
-      have hdmap'_wf := IndexMap.wf_set!_some (i := packed.fst) hs.dmap_wf hfb.2
-      have hq1_qbd : ∀ p, Active q1 p →
-          p.fst < src.darts.size ∧ p.snd < dst.darts.size :=
-        (bounded_pop heq hs.toBounded).queued_bd
+        simpa only [hs.vmap_wf.size_eq] using hsrcD.head_lt
       have hvv : vmap.idx? src.darts[packed.fst]!.head = Option.none ∨
           vmap.idx? src.darts[packed.fst]!.head =
             Option.some dst.darts[packed.snd]!.head := by
@@ -483,7 +459,9 @@ theorem homStep_next_sound
       have hbase : Bounded src dst q1
           (vmap.set! src.darts[packed.fst]!.head (OptIdx.some dst.darts[packed.snd]!.head))
           (dmap.set! packed.fst (OptIdx.some packed.snd)) :=
-        ⟨hq1_qbd, hvmap'_wf, hdmap'_wf⟩
+        ⟨(bounded_pop heq hs.toBounded).queued_bd,
+          IndexMap.wf_set!_some hs.vmap_wf hdstD.head_lt,
+          IndexMap.wf_set!_some hs.dmap_wf hfb.2⟩
       have hexp : ∀ {g gStar}, DoneOrQueued q dmap g gStar →
           DoneOrQueued q1 (dmap.set! packed.fst (OptIdx.some packed.snd)) g gStar :=
         fun hdq => doneOrQueued_expand_pop heq hfsz hfresh hdq
@@ -544,14 +522,7 @@ theorem homStep_done_sound
     (hs : Sound src dst degreeTest dartFrom dartTo q vmap dmap)
     (hst : homStep src dst degreeTest q vmap dmap = .done (some p)) :
     IsRootedHom src dst degreeTest dartFrom dartTo p.1 p.2 := by
-  unfold homStep at hst
-  simp only [] at hst
-  split at hst
-  · rename_i heq
-    obtain rfl : (vmap, dmap) = p := by simpa using hst
-    exact isRootedHom_of_sound_isEmpty hs (Queue.pop?_none heq)
-  · -- every non-exhausted arm answers `.done none` or `.next`
-    split at hst <;> grind
+  grind [homStep, isRootedHom_of_sound_isEmpty, Queue.pop?_none]
 
 /-- **Soundness of `homCoreGo`**: from a `Sound` state, any `some (vmap, dmap)`
 result is a genuine rooted homomorphism (`IsRootedHom`) -- the BFS decides the
@@ -572,11 +543,7 @@ theorem homCoreGo_sound
       IsRootedHom src dst degreeTest dartFrom dartTo r.1 r.2)
     ?step q vmap dmap r hrun
   intro rec ih q vmap dmap r hstep hs
-  split at hstep
-  · rename_i r' heq
-    exact homStep_done_sound hs (hstep ▸ heq)
-  · rename_i q' vmap' dmap' heq
-    exact ih q' vmap' dmap' r hstep (homStep_next_sound hsrc hdst hpack hs heq)
+  grind [homStep_done_sound, homStep_next_sound]
 
 /-- An `emptyWithCapacity` queue has nothing active. -/
 theorem not_active_emptyWithCapacity {cap : Nat} (p : SmallNatPair) :
@@ -609,7 +576,6 @@ theorem homCore_sound {src dst : PseudoConfiguration} {degreeTest : Degree → D
   refine ⟨⟨?_, IndexMap.wf_replicate_none, IndexMap.wf_replicate_none⟩,
     Or.inr ⟨pack dartFrom dartTo, active_push_self, hxfst, hxsnd⟩,
     ?_, ?_, ?_, ?_, ?_⟩
-  · intro p hp; grind
   all_goals grind [IndexMap.idx?_replicate_none]
 
 /-- **`homomorphismExists` is sound**: if the `.isSome` fast path reports a
@@ -645,19 +611,7 @@ theorem homCoreGoImp_le {src dst : PseudoConfiguration} {degreeTest : Degree →
     ∀ fuel q vmap dmap r, homCoreGoImp src dst degreeTest fuel q vmap dmap = some r →
       homCoreGo src dst degreeTest q vmap dmap = some r := by
   intro fuel
-  induction fuel with
-  | zero => intro q vmap dmap r h; simp [homCoreGoImp] at h
-  | succ fuel ih =>
-    intro q vmap dmap r h
-    simp only [homCoreGoImp] at h
-    rw [homCoreGo.eq_def]
-    split at h
-    · rename_i r' heq
-      simp only [heq]
-      exact h
-    · rename_i q' vmap' dmap' heq
-      simp only [heq]
-      exact ih _ _ _ _ h
+  induction fuel <;> grind [homCoreGoImp, homCoreGo.eq_def]
 
 /-- The **completeness invariant**: the BFS state agrees with a fixed reference
 homomorphism `(vm, dm)`. The built maps are restrictions of the reference, and
@@ -685,12 +639,7 @@ def measure (q : Queue SmallNatPair) (dmap : IndexMap) : Nat :=
 Mathlib; proved here). -/
 private theorem countP_le {α} (p q : α → Bool) (l : List α)
     (h : ∀ x ∈ l, q x = true → p x = true) : l.countP q ≤ l.countP p := by
-  induction l with
-  | nil => simp
-  | cons a t ih =>
-    have ht := ih (fun x hx => h x (List.mem_cons_of_mem _ hx))
-    have := h a List.mem_cons_self
-    grind
+  induction l <;> grind
 
 /-- Strict `countP` decrease: a weaker predicate with one strictly-dropped
 element counts less. -/
@@ -699,7 +648,7 @@ private theorem countP_lt {α} (p q : α → Bool) (l : List α)
     (x : α) (hx : x ∈ l) (hpx : p x = true) (hqx : q x = false) :
     l.countP q < l.countP p := by
   induction l with
-  | nil => simp at hx
+  | nil => grind
   | cons a t ih =>
     have hat : ∀ y ∈ t, q y = true → p y = true := fun y hy => hle y (List.mem_cons_of_mem _ hy)
     have := hle a List.mem_cons_self
@@ -769,12 +718,10 @@ theorem agrees_pushLink {src dst : PseudoConfiguration} {vm dm : IndexMap}
     (hf : ∀ s t, os = OptIdx.some s → od = OptIdx.some t →
       s < src.darts.size ∧ t < dst.darts.size ∧ dm.idx? s = Option.some t) :
     Agrees src dst vm dm (pushLink q os od) vmap dmap := by
-  obtain ⟨_ | s⟩ := os <;> obtain ⟨_ | t⟩ := od
-  · exact ha
-  · exact ha
-  · exact ha
-  · obtain ⟨h1, h2, h3⟩ := hf s t rfl rfl
-    exact agrees_push_pack ha hpk h1 h2 h3
+  cases os <;> cases od
+  all_goals try exact ha
+  obtain ⟨h1, h2, h3⟩ := hf _ _ rfl rfl
+  exact agrees_push_pack ha hpk h1 h2 h3
 
 /-- The updated maps + queue after an expand still agree with the reference
 (base case, before the ≤3 pushes). -/
@@ -800,12 +747,7 @@ theorem link_guard {dm : IndexMap} {os od : OptIdx}
     (hhom : ∀ s, os.get? = Option.some s →
       ∃ t, od.get? = Option.some t ∧ dm.idx? s = Option.some t) :
     ¬(os.isSome && od.isNone) = true := by
-  obtain ⟨_ | s⟩ := os
-  · simp [OptIdx.isSome]
-  · obtain ⟨_ | t⟩ := od
-    · obtain ⟨t, ht, -⟩ := hhom s rfl
-      exact absurd ht (by simp [OptIdx.get?])
-    · simp [OptIdx.isNone]
+  grind [OptIdx.isSome_eq, OptIdx.isNone_eq, Option.isSome_iff_exists]
 
 /-- The reference makes the pushed link pair a correct in-bounds obligation --
 exactly what `agrees_pushLink` wants. -/
@@ -819,7 +761,7 @@ theorem link_obligation {dm : IndexMap} {os od : OptIdx} {sSize dSize : Nat}
   rintro s t rfl rfl
   obtain ⟨t', ht', hd⟩ := hhom s (OptIdx.get?_some s)
   obtain rfl : t = t' := by simpa using ht'
-  exact ⟨hsb s (OptIdx.get?_some s), hdb t (OptIdx.get?_some t), hd⟩
+  grind [OptIdx.get?_some]
 
 /-- **One step under a reference homomorphism**: from an `Agrees` state the
 step never answers `none` (the reference witnesses every consistency check),
@@ -843,24 +785,23 @@ theorem homStep_agrees {src dst : PseudoConfiguration}
     have hcorrect : dm.idx? packed.fst = Option.some packed.snd := ha.queue_ok packed hpk
     have hf : packed.fst < src.darts.size := hbd.1
     have hfs : packed.snd < dst.darts.size := hbd.2
-    have hfsz : packed.fst < dmap.size := by rw [ha.toBounded.dmap_wf.size_eq]; exact hf
+    have hfsz : packed.fst < dmap.size := by
+      simpa only [ha.toBounded.dmap_wf.size_eq] using hf
     have hagr1 : Agrees src dst vm dm q1 vmap dmap := agrees_pop ha hpq
     have hmeas1 : measure q1 dmap < measure q dmap := measure_pop_lt hpq
-    rcases hdd : dmap[packed.fst]! with ⟨_ | d⟩ <;> simp only []
+    cases hdd : dmap[packed.fst]! <;> simp only []
     · -- unmapped: expand -- the reference hom witnesses every check, so no `none`
       obtain ⟨hhead, hrev, hsucc, hpred⟩ := hom.2.1 packed.fst packed.snd hcorrect
       have hsrcD := dart_inBounds hsrc hf
       have hdstD := dart_inBounds hdst hfs
       have hhsz : src.darts[packed.fst]!.head < vmap.size := by
-        rw [ha.toBounded.vmap_wf.size_eq]; exact hsrcD.head_lt
+        simpa only [ha.toBounded.vmap_wf.size_eq] using hsrcD.head_lt
       have hfresh : dmap.idx? packed.fst = Option.none :=
-        IndexMap.idx?_eq_none_of_not_isSome hfsz (by grind [OptIdx.isSome])
+        IndexMap.idx?_eq_none_of_not_isSome hfsz (by simp [hdd])
       -- head consistency: if `vmap[h]` is set it already agrees with the hom
       have hvhead : vmap[src.darts[packed.fst]!.head]!.isSome = true →
           vmap[src.darts[packed.fst]!.head]! = OptIdx.some dst.darts[packed.snd]!.head := by
-        intro hs
-        have := ha.vmap_le _ _ (idx?_of_isSome hhsz hs); rw [hhead] at this
-        rw [getElem!_eq_of_idx? (idx?_of_isSome hhsz hs)]; grind
+        grind [Agrees, idx?_of_isSome, getElem!_eq_of_idx?]
       -- discharge the four `none` guards; the reference witnesses the two
       -- boundary guards (`link_guard`)
       rw [if_neg (by grind), if_neg (by have := hom.2.2 _ _ hhead; grind),
@@ -873,9 +814,9 @@ theorem homStep_agrees {src dst : PseudoConfiguration}
           hpack (link_obligation hpred hsrcD.pred_lt hdstD.pred_lt), ?_⟩
       grind [measure, Queue.live_push, live_pushLink_le, Queue.live_pop]
     · -- already mapped, and correctly (`hcorrect`)
-      have hd : dmap.idx? packed.fst = Option.some d :=
-        IndexMap.idx?_eq_of_getElem! hfsz (by grind [OptIdx.some])
-      have heqd : dm.idx? packed.fst = Option.some d := ha.dmap_le _ _ hd
+      rename_i d
+      have heqd : dm.idx? packed.fst = Option.some d :=
+        ha.dmap_le _ _ (IndexMap.idx?_eq_of_getElem! hfsz hdd)
       rw [if_neg (by grind)]
       exact ⟨hagr1, hmeas1⟩
 
@@ -890,16 +831,16 @@ theorem homCoreGoImp_complete {src dst : PseudoConfiguration}
       ∃ r, homCoreGoImp src dst degreeTest fuel q vmap dmap = some r := by
   intro fuel
   induction fuel with
-  | zero => intro q vmap dmap _ hm; exact absurd hm (by simp)
+  | zero => grind
   | succ fuel ih =>
     intro q vmap dmap ha hm
     have h := homStep_agrees hsrc hdst hpack hom ha
     rw [homCoreGoImp]
     rcases heq : homStep src dst degreeTest q vmap dmap with r | ⟨q', vmap', dmap'⟩ <;>
       simp only []
-    · exact Option.isSome_iff_exists.mp (by simpa only [heq] using h)
+    · grind [Option.isSome_iff_exists]
     · obtain ⟨ha', hlt⟩ : _ ∧ _ := by simpa only [heq] using h
-      exact ih q' vmap' dmap' ha' (by omega)
+      exact ih q' vmap' dmap' ha' (by grind)
 
 /-- **Completeness of `homCore`**: if a rooted homomorphism `src → dst` exists,
 the seeded BFS returns `some`. The seed state `Agrees` with the reference hom
@@ -917,10 +858,9 @@ theorem homCore_complete {src dst : PseudoConfiguration} {degreeTest : Degree �
       (Array.replicate src.n OptIdx.none) (Array.replicate src.darts.size OptIdx.none) := by
     refine ⟨⟨fun p hp => ?_,
       IndexMap.wf_replicate_none, IndexMap.wf_replicate_none⟩, ?_, ?_, fun p hp => ?_⟩
-    · rw [hactive p hp]; exact ⟨by rw [hxfst]; exact hdf, by rw [hxsnd]; exact hdt⟩
-    · grind [IndexMap.idx?_replicate_none]
-    · grind [IndexMap.idx?_replicate_none]
-    · rw [hactive p hp, hxfst, hxsnd]; exact hom.1
+    · rw [hactive p hp]
+      grind
+    all_goals grind [IndexMap.idx?_replicate_none, IsRootedHom]
   obtain ⟨r, hr⟩ := homCoreGoImp_complete hsrc hdst hpack hom _ _ _ _ hagr (Nat.lt_succ_self _)
   exact ⟨r, homCoreGoImp_le _ _ _ _ _ hr⟩
 
@@ -934,9 +874,7 @@ theorem homomorphismExists_complete {src dst : PseudoConfiguration}
     (hdf : dartFrom < src.darts.size) (hdt : dartTo < dst.darts.size)
     (h : ∃ vm dm, IsRootedHom src dst degreeTest dartFrom dartTo vm dm) :
     homomorphismExists src dartFrom dst dartTo degreeTest = true := by
-  obtain ⟨vm, dm, hom⟩ := h
-  obtain ⟨r, hr⟩ := homCore_complete hsrc hdst hpack hdf hdt hom
-  unfold homomorphismExists; rw [hr]; rfl
+  grind [homomorphismExists, homCore_complete]
 
 end PseudoConfiguration.HomState
 

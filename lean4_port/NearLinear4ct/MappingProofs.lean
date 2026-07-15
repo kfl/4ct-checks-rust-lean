@@ -49,7 +49,7 @@ def Total (m : IndexMap) : Prop := ∀ i (h : i < m.size), (m[i]'h).isSome
 /-- Executable well-formedness check (`Test.lean` tripwires; boundary
 `proofAssert` if an `IndexMap` ever crosses the I/O boundary). -/
 def wfCheck (m : IndexMap) (dom codom : Nat) : Bool :=
-  m.size == dom && m.all (fun o => decide (o.raw ≤ codom))
+  m.size == dom && m.all (fun o => o.boundedBy codom)
 
 /-! ### Plumbing -/
 
@@ -65,16 +65,15 @@ theorem wf_iff {m : IndexMap} {dom codom : Nat} :
     m.WF dom codom ↔ m.size = dom ∧ m.Bounded codom :=
   ⟨fun h => ⟨h.size_eq, h.bounded⟩, fun h => ⟨h.1, h.2⟩⟩
 
-/-- `Bounded` in terms of the raw encoding (`raw 0 = none`;
-`raw (j+1) ≤ codom ↔ j < codom`). -/
-theorem bounded_iff_raw_le {m : IndexMap} {codom : Nat} :
-    m.Bounded codom ↔ ∀ i (h : i < m.size), (m[i]'h).raw ≤ codom := by
-  simp [Bounded, OptIdx.raw_le_iff_get?_lt]
+/-- `Bounded` in terms of the entry-wise executable check. -/
+theorem bounded_iff_boundedBy {m : IndexMap} {codom : Nat} :
+    m.Bounded codom ↔ ∀ i (h : i < m.size), (m[i]'h).boundedBy codom := by
+  simp [Bounded, OptIdx.boundedBy_iff]
 
 /-- The executable check decides `WF`. -/
 theorem wfCheck_iff {m : IndexMap} {dom codom : Nat} :
     m.wfCheck dom codom = true ↔ m.WF dom codom := by
-  rw [wf_iff, bounded_iff_raw_le, wfCheck, Bool.and_eq_true]
+  rw [wf_iff, bounded_iff_boundedBy, wfCheck, Bool.and_eq_true]
   simp
 
 theorem idx?_eq_some_iff {m : IndexMap} {i j : Nat} :
@@ -222,13 +221,8 @@ theorem idx?_composeMap {m1 m2 : IndexMap} (hb : m1.Bounded m2.size) (i : Nat) :
 
 theorem composeMap_wf {m1 m2 : IndexMap} {a b c : Nat}
     (h1 : m1.WF a b) (h2 : m2.WF b c) : (composeMap m1 m2).WF a c := by
-  constructor
-  · simp [h1.size_eq]
-  · rw [bounded_iff_idx?_lt]
-    intro i j hj
-    rw [idx?_composeMap (h2.size_eq ▸ h1.bounded)] at hj
-    obtain ⟨k, hk1, hk2⟩ := Option.bind_eq_some_iff.mp hj
-    exact idx?_lt_of_bounded h2.bounded hk2
+  grind [IndexMap.WF, size_composeMap, bounded_iff_idx?_lt, idx?_composeMap,
+    idx?_lt_of_bounded, Option.bind_eq_some_iff]
 
 theorem composeMap_total {m1 m2 : IndexMap}
     (t1 : m1.Total) (hb : m1.Bounded m2.size) (t2 : m2.Total) :
@@ -264,23 +258,11 @@ theorem idx?_splitMap_snd (m : IndexMap) (l i : Nat) :
 
 theorem splitMap_fst_wf {m : IndexMap} {dom codom l : Nat}
     (h : m.WF dom codom) (hl : l ≤ dom) : (splitMap m l).1.WF l codom := by
-  constructor
-  · simp [h.size_eq]; omega
-  · rw [bounded_iff_idx?_lt]
-    intro i j hj
-    rw [idx?_splitMap_fst (h.size_eq ▸ hl)] at hj
-    split at hj
-    · exact idx?_lt_of_bounded h.bounded hj
-    · contradiction
+  grind [IndexMap.WF, size_splitMap_fst, bounded_iff_idx?_lt, idx?_splitMap_fst, idx?_lt_of_bounded]
 
 theorem splitMap_snd_wf {m : IndexMap} {dom codom l : Nat}
     (h : m.WF dom codom) : (splitMap m l).2.WF (dom - l) codom := by
-  constructor
-  · simp [h.size_eq]
-  · rw [bounded_iff_idx?_lt]
-    intro i j hj
-    rw [idx?_splitMap_snd] at hj
-    exact idx?_lt_of_bounded h.bounded hj
+  grind [IndexMap.WF, size_splitMap_snd, bounded_iff_idx?_lt, idx?_splitMap_snd, idx?_lt_of_bounded]
 
 theorem splitMap_fst_total {m : IndexMap} {l : Nat} (ht : m.Total) :
     (splitMap m l).1.Total := by
