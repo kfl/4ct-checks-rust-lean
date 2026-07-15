@@ -1,5 +1,6 @@
 import NearLinear4ct.OptIdx
 import NearLinear4ct.Degree
+import Linen
 
 /-!
 Shared helpers.
@@ -220,48 +221,45 @@ def writeVertexLines (degrees : Array Degree) (vRotations : Array (Array Int)) :
     res := res ++ "\n"
   return res
 
-/-! ### Parallel combinators (pure, `Task`-based, order-preserving)
+/-! ### Parallel combinators (Linen, order-preserving)
 
 A small vocabulary of order-preserving parallel patterns. Each spawns its work on
-the `Task` scheduler and joins in index order, so the result is **identical to the
-sequential version regardless of thread count** -- valid for a read-only `f` over
-shared immutable data. The parallelism is wall-clock only; it never changes
-results. Centralising the `Task` plumbing here means the parallelism is audited
-once, and call sites read as the pattern they are (`parFilterMap`, `parFlatMap`). -/
+the bounded `Linen` worker team and restores input order, so the result is
+**identical to the sequential version regardless of thread count** -- valid for
+a read-only `f` over shared immutable data. The parallelism is wall-clock only;
+it never changes results. Centralising the scheduling here means the parallelism
+is audited once, and call sites read as the pattern they are (`parFilterMap`,
+`parFlatMap`). -/
 
 /-- Parallel `Array.map` (≡ `xs.map f`, order-preserving). -/
-def parMap (xs : Array α) (f : α → β) : Array β :=
-  (xs.map (fun x => Task.spawn (fun _ => f x))).map (·.get)
+def parMap.{u, v} {α : Type u} {β : Type v}
+    (xs : Array α) (f : α → β) : Array β := Linen.map xs f
 
 /-- Parallel `Array.filterMap` (≡ `xs.filterMap f`): map in parallel, keep the
 `some`s in order. -/
 def parFilterMap (xs : Array α) (f : α → Option β) : Array β :=
-  (parMap xs f).filterMap id
+  Linen.filterMap xs f
 
 /-- Parallel flat-map (≡ `(xs.map f).flatten`): map each element to an array in
 parallel, then concatenate in order. -/
 def parFlatMap (xs : Array α) (f : α → Array β) : Array β :=
-  (parMap xs f).flatten
+  Linen.flatMap xs f
 
 /-- Map an `IO` action over `xs` in parallel, preserving order and re-raising the
-first failure. Each `f x` is spawned with `IO.asTask`; results are joined in index
-order. For independent IO (e.g. reading + parsing many files), this overlaps the
-work across cores. -/
+first failure in index order. The bounded workers still run every element before
+the ordered result pass. For independent IO (e.g. reading + parsing many files),
+this overlaps the work across cores. -/
 def parMapM (xs : Array α) (f : α → IO β) : IO (Array β) := do
-  let tasks ← xs.mapM (fun x => IO.asTask (f x))
-  tasks.mapM (fun t => IO.ofExcept t.get)
+  Linen.mapIO xs f
 
 /-- Run `f` on every element in parallel and fail the whole computation if any
-invocation fails. Each `f x` is spawned as a `Task`; we then join every task and
-re-raise the first error -- so a failing `proofAssert` inside a worker aborts the
-process with a non-zero exit. The closures only read shared immutable data (shared
-by reference-counting, not copied), so results are thread-count independent. -/
-def parForEach (xs : Array α) (f : α → IO Unit) : IO Unit := do
-  let tasks ← xs.mapM (fun x => IO.asTask (f x))
-  for t in tasks do
-    match t.get with
-    | .ok _ => pure ()
-    | .error e => throw e
+invocation fails. The bounded team runs all invocations, then the ordered result
+pass re-raises the first error -- so a failing `proofAssert` inside a worker
+aborts the process with a non-zero exit. The closures only read shared immutable
+data (shared by reference-counting, not copied), so results are thread-count
+independent. -/
+def parForEach (xs : Array α) (f : α → IO Unit) : IO Unit :=
+  Linen.forEach xs f
 
 /-- A type loadable from a single file. `fromFile` runs in `IO` because parsing
 reads the file; it may fail (throw) on malformed input. -/

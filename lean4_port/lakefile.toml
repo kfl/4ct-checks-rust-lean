@@ -1,7 +1,7 @@
-# Library `NearLinear4ct` + the `main` driver + a `test` executable.
+# Stand-alone-ready `Linen`, the `NearLinear4ct` library, and their executables.
 name = "NearLinear4ct"
 version = "0.1.0"
-defaultTargets = ["NearLinear4ct", "main", "test"]
+defaultTargets = ["Linen", "NearLinear4ct", "main", "test", "linenTest"]
 
 # Beyond-default linters
 moreLeanArgs = [
@@ -18,6 +18,9 @@ moreServerOptions = [
 ]
 
 [[lean_lib]]
+name = "Linen"
+
+[[lean_lib]]
 name = "NearLinear4ct"
 
 [[lean_exe]]
@@ -27,3 +30,11 @@ root = "Main"
 [[lean_exe]]
 name = "test"
 root = "Test"
+
+[[lean_exe]]
+name = "linenTest"
+root = "LinenTest"
+
+[[lean_exe]]
+name = "linenBench"
+root = "LinenBench"
