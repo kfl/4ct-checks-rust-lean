@@ -261,6 +261,16 @@ before it. -/
 def rootRank (uf : Unionfind) (i : Nat) : Nat :=
   (List.range i).countP (fun j => uf.parents[j]!.isNone)
 
+/-- In a filtered list, an element occurs after exactly the accepted elements
+in its strict prefix. -/
+private theorem getElem!_filter_countP_take [Inhabited α] (p : α → Bool)
+    (xs : List α) {i : Nat} (hi : i < xs.length) (hp : p xs[i]! = true) :
+    (xs.filter p)[(xs.take i).countP p]! = xs[i]! := by
+  induction xs generalizing i with
+  | nil => grind
+  | cons x xs ih =>
+      cases i <;> grind
+
 /-- The functional model of `indexRoots`. -/
 def indexRootsFun (uf : Unionfind) : IndexMap :=
   (Array.range uf.n).map fun i =>
@@ -457,6 +467,16 @@ theorem nodup_lt_length_le : ∀ (n : Nat) (l : List Nat),
     have hle := ih (l.erase n) (hnd.erase n) (by grind [List.Nodup.mem_erase_iff])
     grind
 
+/-- A well-formed parent chain computes the same representative as `root`. -/
+theorem Chain.root_eq {uf : Unionfind} {x r : Nat} {l : List Nat}
+    (h : Chain uf x r l) (hx : x < uf.n) : uf.root x = r := by
+  have hlen : l.length ≤ uf.n :=
+    nodup_lt_length_le uf.n l h.nodup
+      (h.mem_lt uf.unionfind_invariant.2 hx)
+  have hsum : l.length + (uf.n - l.length) = uf.n := by omega
+  rw [Unionfind.root, ← hsum, rootAux_stable (h.rootAux_length ▸ h.isNone),
+    h.rootAux_length]
+
 /-- Reachability well-formedness: every representative lands in range, on a
 root. Derived from `WF` below. -/
 def RootsWF (uf : Unionfind) : Prop :=
@@ -505,6 +525,21 @@ theorem WF.rootsWF {uf : Unionfind} (h : uf.WF) : uf.RootsWF := by
 theorem mem_allRoots_lt {uf : Unionfind} {i : Nat} (h : i ∈ uf.allRoots) :
     i < uf.n := by
   grind [allRoots]
+
+/-- `allRoots` and `rootRank` are inverse on roots: the root with `r` roots
+before it occupies slot `r`. -/
+theorem getElem!_allRoots_rootRank {uf : Unionfind} {r : Nat}
+    (hr : r < uf.n) (hroot : uf.parents[r]!.isNone) :
+    uf.allRoots[uf.rootRank r]! = r := by
+  have hrange : (List.range uf.n)[r]! = r := by
+    simp [List.getElem?_range hr]
+  have h := getElem!_filter_countP_take
+    (fun j : Nat => uf.parents[j]!.isNone) (List.range uf.n) (i := r) (by simpa using hr)
+    (by simpa only [hrange] using hroot)
+  have h' : ((List.range uf.n).filter fun j => uf.parents[j]!.isNone)[uf.rootRank r]! = r := by
+    simpa only [rootRank, List.take_range, Nat.min_eq_left (Nat.le_of_lt hr), hrange] using h
+  rw [← Array.getElem!_toList]
+  simpa only [allRoots, Array.toList_filter, Array.toList_range] using h'
 
 /-- `new n` is well-formed: every node is its own root. -/
 theorem wf_new (n : Nat) : (Unionfind.new n).WF where
@@ -566,6 +601,38 @@ theorem relabel_wf (uf : Unionfind) (hwf : uf.WF) :
   rw [getElem_composeMap (by simpa using hin)]
   simp [getElem!_indexRoots uf hroot.1, hroot.2]
 
+/-- The quotient relabelling sends a node to the compact rank of its root. -/
+theorem relabel_idx? (uf : Unionfind) (hwf : uf.WF) {i : Nat} (hi : i < uf.n) :
+    (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).idx? i =
+      Option.some (uf.rootRank (uf.root i)) := by
+  have hroot := hwf.root_spec hi
+  rw [IndexMap.idx?_pos (by simp [hi])]
+  rw [getElem_composeMap (by simp [hi])]
+  simp [getElem!_indexRoots uf hroot.2, hroot.1]
+
+/-- Entry-level form of `relabel_idx?`, used by quotient construction code. -/
+theorem relabel_getElem! (uf : Unionfind) (hwf : uf.WF) {i : Nat} (hi : i < uf.n) :
+    (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]! =
+      OptIdx.some (uf.rootRank (uf.root i)) := by
+  have hsz : i < (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).size := by
+    simp [hi]
+  apply OptIdx.get?_eq_some_iff.mp
+  calc
+    ((composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]!).get? =
+        ((composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]'hsz).get? :=
+      congrArg OptIdx.get?
+        (getElem!_pos (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots) i hsz)
+    _ = (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).idx? i :=
+      (IndexMap.idx?_pos hsz).symm
+    _ = Option.some (uf.rootRank (uf.root i)) := uf.relabel_idx? hwf hi
+
+/-- Panicking-index form of `relabel_idx?`; its panic branch is dead in range. -/
+theorem relabel_idx! (uf : Unionfind) (hwf : uf.WF) {i : Nat} (hi : i < uf.n) :
+    ((composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]!).idx! =
+      uf.rootRank (uf.root i) := by
+  rw [uf.relabel_getElem! hwf hi]
+  exact OptIdx.idx!_of_get?_some (by simp)
+
 /-! ### `unite` bookkeeping for the gluing loop's termination measure
 
 The gluing BFS (`freeHomomorphism`, `PseudoTriangulationProofs.lean`)
@@ -587,6 +654,107 @@ private theorem parents_unite {uf : Unionfind} {x y : Nat}
     (hry : uf.root y < uf.n) (hne : uf.root x ≠ uf.root y) :
     (uf.unite x y).parents = uf.parents.set! (uf.root x) (.some (uf.root y)) := by
   grind [unite]
+
+/-- Exact class update performed by `unite`: the left class is redirected to
+the right representative and every other representative is unchanged. -/
+theorem root_unite_of_ne {uf : Unionfind} (hwf : uf.WF) {x y z : Nat}
+    (hx : x < uf.n) (hy : y < uf.n) (hz : z < uf.n)
+    (hne : uf.root x ≠ uf.root y) :
+    (uf.unite x y).root z =
+      if uf.root z = uf.root x then uf.root y else uf.root z := by
+  obtain ⟨hrxn, hrxlt⟩ := hwf.root_spec hx
+  obtain ⟨hryn, hrylt⟩ := hwf.root_spec hy
+  obtain ⟨r, l, hl⟩ := hwf.reaches z hz
+  have hlroot : Chain uf z (uf.root z) l := by
+    simpa only [hl.root_eq hz] using hl
+  have lift_changed : ∀ {a r l}, Chain uf a r l → r = uf.root x →
+      ∃ l', Chain (uf.unite x y) a (uf.root y) l' := by
+    intro a r l h
+    induction h with
+    | @root w _ =>
+      intro hr
+      subst w
+      refine ⟨_, .step ?_ (.root ?_)⟩
+      · rw [parents_unite hrylt hne,
+          set!_self (uf.unionfind_invariant.1 ▸ hrxlt)]
+      · rw [parents_unite hrylt hne, set!_ne hne.symm]
+        exact hryn
+    | @step a p _ _ hap _ ih =>
+      intro hr
+      have ha : a ≠ uf.root x := by rintro rfl; grind
+      obtain ⟨l', hl'⟩ := ih hr
+      refine ⟨_, .step ?_ hl'⟩
+      rw [parents_unite hrylt hne, set!_ne ha]
+      exact hap
+  have lift_unchanged : ∀ {a r l}, Chain uf a r l → r ≠ uf.root x →
+      ∃ l', Chain (uf.unite x y) a r l' := by
+    intro a r l h hr
+    induction h with
+    | root har =>
+      refine ⟨_, .root ?_⟩
+      rw [parents_unite hrylt hne, set!_ne hr]
+      exact har
+    | @step a p _ _ hap _ ih =>
+      have ha : a ≠ uf.root x := by rintro rfl; grind
+      obtain ⟨l', hl'⟩ := ih hr
+      refine ⟨_, .step ?_ hl'⟩
+      rw [parents_unite hrylt hne, set!_ne ha]
+      exact hap
+  by_cases hzx : uf.root z = uf.root x
+  · rw [if_pos hzx]
+    obtain ⟨l', hl'⟩ := lift_changed hlroot hzx
+    exact hl'.root_eq (by simpa using hz)
+  · rw [if_neg hzx]
+    obtain ⟨l', hl'⟩ := lift_unchanged hlroot hzx
+    exact hl'.root_eq (by simpa using hz)
+
+/-- Following `root` twice is the same as following it once. -/
+theorem WF.root_root {uf : Unionfind} (hwf : uf.WF) {x : Nat} (hx : x < uf.n) :
+    uf.root (uf.root x) = uf.root x :=
+  root_eq_self (hwf.root_spec hx).1
+
+/-- Passing representatives explicitly to `unite` performs the same update. -/
+theorem unite_roots {uf : Unionfind} (hwf : uf.WF) {x y : Nat}
+    (hx : x < uf.n) (hy : y < uf.n) :
+    uf.unite (uf.root x) (uf.root y) = uf.unite x y := by
+  simp only [Unionfind.unite, hwf.root_root hx, hwf.root_root hy]
+
+/-- An existing class equality remains true after uniting two other classes. -/
+theorem root_unite_of_ne_eq {uf : Unionfind} (hwf : uf.WF)
+    {x y a b : Nat} (hx : x < uf.n) (hy : y < uf.n)
+    (ha : a < uf.n) (hb : b < uf.n) (hne : uf.root x ≠ uf.root y)
+    (hab : uf.root a = uf.root b) :
+    (uf.unite x y).root a = (uf.unite x y).root b := by
+  rw [root_unite_of_ne hwf hx hy ha hne,
+    root_unite_of_ne hwf hx hy hb hne]
+  grind
+
+/-- The two arguments of a successful `unite` have the same new root. -/
+theorem root_unite_of_ne_same {uf : Unionfind} (hwf : uf.WF)
+    {x y : Nat} (hx : x < uf.n) (hy : y < uf.n)
+    (hne : uf.root x ≠ uf.root y) :
+    (uf.unite x y).root x = (uf.unite x y).root y := by
+  rw [root_unite_of_ne hwf hx hy hx hne,
+    root_unite_of_ne hwf hx hy hy hne]
+  grind
+
+/-- `unite` is monotone on the equivalence relation induced by `root`. -/
+theorem root_unite_eq {uf : Unionfind} (hwf : uf.WF)
+    {x y a b : Nat} (hx : x < uf.n) (hy : y < uf.n)
+    (ha : a < uf.n) (hb : b < uf.n) (hab : uf.root a = uf.root b) :
+    (uf.unite x y).root a = (uf.unite x y).root b := by
+  by_cases hne : uf.root x = uf.root y
+  · simpa [Unionfind.unite, hne] using hab
+  · exact root_unite_of_ne_eq hwf hx hy ha hb hne hab
+
+/-- The arguments of `unite` are in the same class afterwards, including the
+no-op case where they were already equal. -/
+theorem root_unite_same {uf : Unionfind} (hwf : uf.WF)
+    {x y : Nat} (hx : x < uf.n) (hy : y < uf.n) :
+    (uf.unite x y).root x = (uf.unite x y).root y := by
+  by_cases hne : uf.root x = uf.root y
+  · simp [Unionfind.unite, hne]
+  · exact root_unite_of_ne_same hwf hx hy hne
 
 /-- Flipping one counted entry to uncounted drops `countP` over the range by
 exactly one. -/
