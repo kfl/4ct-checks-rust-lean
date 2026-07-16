@@ -12,46 +12,24 @@ names a dart. No rotation-system laws (rev involution, succ/pred inverse) are
 stated -- those are tier-2 and must first be falsified empirically on the
 corpus, since intermediates of the gluing (A.3) may violate them.
 
+The predicates, their executable checkers (`inBoundsCheck`/`wfCheck`) and
+decidability bridges (`_iff`) live beside the structure definitions
+(`PseudoTriangulation.lean`/`PseudoConfiguration.lean`), where
+`WFConfig.attach?` certifies loaded objects; this file holds the proofs.
+
 This is the graph-side counterpart of `IndexMap.WF` (`MappingProofs.lean`),
 and it is exactly the hypothesis the `homCoreGo` termination argument needs:
-on a `WF` graph every worklist push (`rev`/`succ`/
-`pred`, Algorithm A.2) stays in `[0, darts.size)`, so `dmap.set!` always
-marks. Three layers, as in `MappingProofs`:
+on a `WF` graph every worklist push (`rev`/`succ`/`pred`, Algorithm A.2)
+stays in `[0, darts.size)`, so `dmap.set!` always marks.
 
-- Props (`InBounds`/`WF`) in `Nat`-with-bounds vocabulary;
-- executable checkers (`inBoundsCheck`/`wfCheck`) with decidability bridges
-  (`_iff`), for `Test.lean` tripwires and I/O-boundary `proofAssert`s;
-- `Fin`-typed read-only views (`headOf`/`revOf`/`succOf?`/`predOf?`), each
-  taking the `WF` proof -- zero runtime presence, but they let the
-  homomorphism-soundness statement (`HomomorphismProofs.lean`) be *written*
-  against total functions between finite index sets (a rooted graph map
-  `Fin |D_src| → Fin |D_dst|`).
-
-Preservation: `disjointUnion` (A.3's side-by-side union) and the
-configuration `mirror` keep `WF`.
+Contents: preservation -- `fromVRotations` (unconditional), `disjointUnion`,
+the free homomorphism (quotient well-formedness and coherence), the A.4
+degree-resolution steps, and the configuration `mirror`.
 -/
 
 namespace NearLinear4ct
 
 namespace Dart
-
-/-- All four dart fields point into the graph: `head` at a vertex (`< n`),
-`rev` at a dart (`< D`), and `succ`/`pred` -- when present -- at darts. -/
-structure InBounds (n D : Nat) (d : Dart) : Prop where
-  head_lt : d.head < n
-  rev_lt : d.rev < D
-  succ_lt : ∀ j, d.succ.get? = Option.some j → j < D
-  pred_lt : ∀ j, d.pred.get? = Option.some j → j < D
-
-/-- Executable `InBounds` (the `succ`/`pred` clauses via `OptIdx.boundedBy`). -/
-def inBoundsCheck (n D : Nat) (d : Dart) : Bool :=
-  decide (d.head < n) && decide (d.rev < D)
-    && d.succ.boundedBy D && d.pred.boundedBy D
-
-/-- The executable check decides `InBounds`. -/
-theorem inBoundsCheck_iff {n D : Nat} {d : Dart} :
-    d.inBoundsCheck n D = true ↔ d.InBounds n D := by
-  grind [inBoundsCheck, InBounds, OptIdx.boundedBy_iff]
 
 /-- `InBounds` weakens along larger index sets. -/
 theorem InBounds.mono {n D n' D' : Nat} {d : Dart}
@@ -84,81 +62,6 @@ def Coherent (maps : Mappings) (src dst : PseudoTriangulation) : Prop :=
 end Mappings
 
 namespace PseudoTriangulation
-
-/-- Tier-1 graph well-formedness: every dart's indices are in bounds.
-Index bounds ONLY -- no rotation-system laws. -/
-def WF (pt : PseudoTriangulation) : Prop :=
-  ∀ i (h : i < pt.darts.size), (pt.darts[i]'h).InBounds pt.n pt.darts.size
-
-/-- An in-range panicking read has the bounds supplied by graph well-formedness. -/
-private theorem WF.read_inBounds {pt : PseudoTriangulation} (h : pt.WF)
-    {i : Nat} (hi : i < pt.darts.size) :
-    (pt.darts[i]!).InBounds pt.n pt.darts.size := by
-  simpa only [getElem!_pos pt.darts i hi] using h i hi
-
-/-- Executable well-formedness check (`Test.lean` tripwires; boundary
-`proofAssert` if a graph ever crosses the I/O boundary). -/
-def wfCheck (pt : PseudoTriangulation) : Bool :=
-  pt.darts.all fun d => d.inBoundsCheck pt.n pt.darts.size
-
-/-- The executable check decides `WF`. -/
-theorem wfCheck_iff {pt : PseudoTriangulation} : pt.wfCheck = true ↔ pt.WF := by
-  grind [wfCheck, WF, Array.all_eq_true, Dart.inBoundsCheck_iff]
-
-/-! ### Fin-typed read-only views
-
-Each takes the `WF` proof and decodes a raw field into `Fin` -- the graph-side
-analogue of `IndexMap.toFun` (`MappingProofs.lean`). Proof-carrying only: no
-runtime code calls these; their purpose is that the homomorphism-soundness
-statement (`HomomorphismProofs.lean`) can be written against total functions
-between finite index sets.
-Each has a `_val` coherence lemma tying the view to the raw field, so every
-view theorem is a transport of a raw-field theorem (the `toFun_val`
-pattern). -/
-
-/-- The vertex a dart points at, as a function `Fin |D| → Fin n`. -/
-def headOf (pt : PseudoTriangulation) (h : pt.WF) (f : Fin pt.darts.size) :
-    Fin pt.n :=
-  ⟨(pt.darts[f.val]'f.isLt).head, (h f.val f.isLt).head_lt⟩
-
-@[simp] theorem headOf_val {pt : PseudoTriangulation} (h : pt.WF)
-    (f : Fin pt.darts.size) :
-    (pt.headOf h f).val = (pt.darts[f.val]'f.isLt).head := rfl
-
-/-- The reverse dart, as a function `Fin |D| → Fin |D|`. -/
-def revOf (pt : PseudoTriangulation) (h : pt.WF) (f : Fin pt.darts.size) :
-    Fin pt.darts.size :=
-  ⟨(pt.darts[f.val]'f.isLt).rev, (h f.val f.isLt).rev_lt⟩
-
-@[simp] theorem revOf_val {pt : PseudoTriangulation} (h : pt.WF)
-    (f : Fin pt.darts.size) :
-    (pt.revOf h f).val = (pt.darts[f.val]'f.isLt).rev := rfl
-
-/-- The next dart in the rotation (`none` at a boundary), decoded to
-`Option (Fin |D|)`. -/
-def succOf? (pt : PseudoTriangulation) (h : pt.WF) (f : Fin pt.darts.size) :
-    Option (Fin pt.darts.size) :=
-  (pt.darts[f.val]'f.isLt).succ.toFin? (h f.val f.isLt).succ_lt
-
-/-- Coherence: `succOf?` is the raw `succ` under `Fin.val`. -/
-theorem succOf?_val {pt : PseudoTriangulation} (h : pt.WF)
-    (f : Fin pt.darts.size) :
-    (pt.succOf? h f).map Fin.val = (pt.darts[f.val]'f.isLt).succ.get? := by
-  unfold succOf?
-  simp
-
-/-- The previous dart in the rotation (`none` at a boundary), decoded to
-`Option (Fin |D|)`. -/
-def predOf? (pt : PseudoTriangulation) (h : pt.WF) (f : Fin pt.darts.size) :
-    Option (Fin pt.darts.size) :=
-  (pt.darts[f.val]'f.isLt).pred.toFin? (h f.val f.isLt).pred_lt
-
-/-- Coherence: `predOf?` is the raw `pred` under `Fin.val`. -/
-theorem predOf?_val {pt : PseudoTriangulation} (h : pt.WF)
-    (f : Fin pt.darts.size) :
-    (pt.predOf? h f).map Fin.val = (pt.darts[f.val]'f.isLt).pred.get? := by
-  unfold predOf?
-  simp
 
 /-! ### Preservation -/
 
@@ -881,7 +784,7 @@ private theorem GlueCoherent.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
     let succ := glueSucc darts revQ eStar fStar
     let pred := gluePred succ.1 succ.2 eStar fStar
     GlueCoherent pt dartPairs pred.1 ufV' ufD' pred.2 := by
-  simp only []
+  dsimp only []
   have hef := hinv.queued _ (Queue.active_head hpop)
   have hre := hinv.root_lt hef.1
   have hrf := hinv.root_lt hef.2
@@ -1006,6 +909,13 @@ private theorem GlueCoherent.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
   · intro p hp
     exact afterAll (hcoh.seeds p hp)
 
+/-- The executable dart emitted for one surviving representative. -/
+private def renumberDart (vMap dMap : IndexMap) (d : Dart) : Dart :=
+  { head := (vMap[d.head]!).idx!
+  , rev := (dMap[d.rev]!).idx!
+  , succ := match d.succ with | .some s => dMap[s]! | .none => .none
+  , pred := match d.pred with | .some p => dMap[p]! | .none => .none }
+
 /-- One renumber step: on the loop's exit state, the dart pushed for a
 surviving representative is in bounds for the quotient -- `head` through the
 total vertex relabelling, `rev` through the total dart relabelling, and open
@@ -1016,15 +926,7 @@ private theorem renumber_push_inBounds {pt : PseudoTriangulation}
     let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
     let dMap := composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots
     let dd := darts[d]!
-    Dart.InBounds ufV.numRoots ufD.numRoots
-      { head := (vMap[dd.head]!).idx!
-      , rev := (dMap[dd.rev]!).idx!
-      , succ := match dd.succ with
-          | .some s => dMap[s]!
-          | .none => .none
-      , pred := match dd.pred with
-          | .some p => dMap[p]!
-          | .none => .none } := by
+    (renumberDart vMap dMap dd).InBounds ufV.numRoots ufD.numRoots := by
   intro vMap dMap dd
   have hdd := h.read_inBounds hd
   obtain ⟨hVwf, hVtot⟩ := Unionfind.relabel_wf _ h.ufV_wf
@@ -1040,13 +942,6 @@ private theorem renumber_push_inBounds {pt : PseudoTriangulation}
     IndexMap.idx!_lt_of_total hDwf hDtot
       (h.ufD_n.symm ▸ h.darts_size ▸ hdd.rev_lt),
     link_wf dd.succ, link_wf dd.pred⟩
-
-/-- The executable dart emitted for one surviving representative. -/
-private def renumberDart (vMap dMap : IndexMap) (d : Dart) : Dart :=
-  { head := (vMap[d.head]!).idx!
-  , rev := (dMap[d.rev]!).idx!
-  , succ := match d.succ with | .some s => dMap[s]! | .none => .none
-  , pred := match d.pred with | .some p => dMap[p]! | .none => .none }
 
 private theorem LinkKind.get_renumberDart {vMap dMap : IndexMap} {d : Dart}
     {k : LinkKind} {i : Nat} (h : (k.get d).get? = Option.some i) :
@@ -1503,19 +1398,6 @@ end PseudoTriangulation
 
 namespace PseudoConfiguration
 
-/-- Configuration well-formedness: the graph is `WF` and the degree array
-covers exactly the vertices. -/
-def WF (pc : PseudoConfiguration) : Prop :=
-  pc.toPseudoTriangulation.WF ∧ pc.degrees.size = pc.n
-
-/-- Executable configuration check. -/
-def wfCheck (pc : PseudoConfiguration) : Bool :=
-  pc.toPseudoTriangulation.wfCheck && pc.degrees.size == pc.n
-
-/-- The executable check decides `WF`. -/
-theorem wfCheck_iff {pc : PseudoConfiguration} : pc.wfCheck = true ↔ pc.WF := by
-  grind [wfCheck, WF, PseudoTriangulation.wfCheck_iff]
-
 /-- `disjointUnion` on configurations preserves well-formedness (the graph
 part by `PseudoTriangulation.disjointUnion_wf` -- the parent projection of
 the union *is* the union of the parent projections, by structure eta; the
@@ -1557,10 +1439,10 @@ theorem dartIdentification_wf {pc : PseudoConfiguration} (hpc : pc.WF)
   apply Id.of_wp_run_eq hrun fun
     | none => True
     | some x => x.1.WF
-  have hfh := PseudoTriangulation.freeHomomorphism_wf hpc.1 hpairs rfl
   have hgraph : (⟨(pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n,
       (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.darts⟩
-        : PseudoTriangulation).WF := hfh.1
+        : PseudoTriangulation).WF :=
+    (PseudoTriangulation.freeHomomorphism_wf hpc.1 hpairs rfl).1
   mvcgen
   case inv1 =>
     exact ⇓⟨_xs, st⟩ =>
@@ -1649,26 +1531,23 @@ theorem addBoundaryDarts_wf {pc : PseudoConfiguration} (hpc : pc.WF) {v : Nat}
     have heLR : eLR < a0.size := hlrev
     have hdUWlt : dUW < a6.size := by omega
     have hdWUlt : dWU < a6.size := by omega
-    have heFlt : eF < a6.size := by omega
-    have heLlt : eL < a6.size := by omega
-    have heFRlt : eFR < a6.size := by omega
-    have heLRlt : eLR < a6.size := by omega
+    have old_lt {i : Nat} (hi : i < a0.size) : i < a6.size := by omega
     have h0 : ∀ i (hi : i < a0.size), (a0[i]'hi).InBounds pc.n a6.size :=
       fun i hi => (hpc.1 i hi).mono (Nat.le_refl _) (by omega)
     have h1 : ∀ i (hi : i < a1.size), (a1[i]'hi).InBounds pc.n a6.size :=
       push_dart_wf h0 ⟨hu, hdWUlt, fun j hj => absurd hj (by simp),
-        fun j hj => Option.some.inj hj ▸ heFRlt⟩
+        fun j hj => Option.some.inj hj ▸ old_lt heFR⟩
     -- Keep each proved state opaque, so the next write unfolds only one step.
     clear_value a1
     have h2 : ∀ i (hi : i < a2.size), (a2[i]'hi).InBounds pc.n a6.size :=
-      push_dart_wf h1 ⟨hw, hdUWlt, fun j hj => Option.some.inj hj ▸ heLRlt,
+      push_dart_wf h1 ⟨hw, hdUWlt, fun j hj => Option.some.inj hj ▸ old_lt heLR,
         fun j hj => absurd hj (by simp)⟩
     clear_value a2
     have h3 : ∀ i (hi : i < a3.size), (a3[i]'hi).InBounds pc.n a6.size :=
-      set_link_wf .pred h2 (p := eF) (t := eL) heLlt
+      set_link_wf .pred h2 (p := eF) (t := eL) (old_lt hlast)
     clear_value a3
     have h4 : ∀ i (hi : i < a4.size), (a4[i]'hi).InBounds pc.n a6.size :=
-      set_link_wf .succ h3 (p := eL) (t := eF) heFlt
+      set_link_wf .succ h3 (p := eL) (t := eF) (old_lt hfirst)
     clear_value a4
     have h5 : ∀ i (hi : i < a5.size), (a5[i]'hi).InBounds pc.n a6.size :=
       set_link_wf .succ h4 (p := eFR) (t := dUW) hdUWlt
@@ -1694,7 +1573,7 @@ private theorem fixIssue_pair_bounds {pc : PseudoConfiguration} (hpc : pc.WF)
     let e := (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v).get!
     let f := (pc.sucKTimes e (pc.degrees[v]!).lower).get!
     e < pc.darts.size ∧ f < pc.darts.size := by
-  simp only []
+  dsimp only []
   have hne : pc.darts.size ≠ 0 := fun h0 => by
     have h := nIncidentDarts_getElem!_empty (pc := pc) h0 (v := v)
     omega

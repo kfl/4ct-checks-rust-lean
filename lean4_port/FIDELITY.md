@@ -321,5 +321,16 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   (`resolveDegreeIssues`) is the remaining lift: stating a loop rule for its
   `while` needs A.4.4's termination potential.
 
+- **The homomorphism theorems read well-formedness off a certified type**
+  (`PseudoConfiguration.lean`, `HomomorphismProofs.lean`): `WFConfig` bundles
+  a configuration with an erased proof of well-formedness plus the packed-pair
+  bound `darts.size <= pairBase` (the `queue_invariant`/`unionfind_invariant`
+  pattern at a boundary type, as sanctioned for `Mappings`). The BFS lemmas
+  take `src dst : WFConfig`, deleting the well-formedness/packability premise
+  row from all sixteen signatures; `WFConfig.attach?` certifies a loaded
+  object by the executable `wfCheck` (the predicates and checks now live
+  beside the definitions, decided by `wfCheck_iff`). Proof-side only: the
+  executable pipeline is unchanged, and no paper-cited code is affected.
+
 Everything else rests on the byte-exact oracles above -- faithful by test, not
 yet by mechanised proof.
