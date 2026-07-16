@@ -346,6 +346,33 @@ end
 
 end Construction
 
+/-! ### Dart pickers stay in range
+
+`firstDart`/`lastDart`/`anyDart` are `findIdx?` scans, so a `some` answer is
+an index; `sucKTimes` walks `succ` links, so on a `WF` graph every stop is a
+dart. These bound the pairs the degree-resolution steps (A.4) feed back into
+the gluing. -/
+
+private theorem findIdx?_lt {xs : Array α} {p : α → Bool} {i : Nat}
+    (h : xs.findIdx? p = some i) : i < xs.size := by
+  grind [Array.findIdx?_eq_some_iff_getElem]
+
+/-- A found first dart is an index. -/
+theorem firstDart_lt {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.firstDart v = some e) : e < pt.darts.size := by
+  exact findIdx?_lt (by simpa only [firstDart] using h)
+
+/-- A found last dart is an index. -/
+theorem lastDart_lt {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.lastDart v = some e) : e < pt.darts.size := by
+  exact findIdx?_lt (by simpa only [lastDart] using h)
+
+/-- A found dart is an index. -/
+theorem anyDart_lt {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.anyDart v = some e) : e < pt.darts.size := by
+  exact findIdx?_lt (by simpa only [anyDart] using h)
+
+
 /-! ### Gluing
 
 `freeHomomorphism` (A.3) drives a worklist of dart identifications. The maps
@@ -1449,6 +1476,29 @@ theorem freeHomomorphismPair_coherent {pt0 pt1 : PseudoTriangulation}
 
 end Gluing
 
+section SucKTimes
+open Std.Do
+set_option mvcgen.warning false
+set_option linter.tacticCheckInstances false
+
+/-- On a `WF` graph, a successful `succ` walk ends at a dart. -/
+theorem sucKTimes_lt {pt : PseudoTriangulation} (hpt : pt.WF) {e k : Nat}
+    (he : e < pt.darts.size) {c : Nat}
+    (h : pt.sucKTimes e k = some c) : c < pt.darts.size := by
+  apply Id.of_wp_run_eq h fun
+    | none => True
+    | some x => x < pt.darts.size
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨_xs, st⟩ =>
+      ⌜st.snd < pt.darts.size ∧ ∀ o, st.fst = some o → o = none⌝
+  all_goals mleave
+  all_goals try grind
+  all_goals exact ⟨LinkKind.succ.some_lt (hpt.read_inBounds (‹_ ∧ _›).1) ‹_›,
+    by grind⟩
+
+end SucKTimes
+
 end PseudoTriangulation
 
 namespace PseudoConfiguration
@@ -1475,6 +1525,226 @@ theorem disjointUnion_wf {l r : PseudoConfiguration}
   refine ⟨PseudoTriangulation.disjointUnion_wf hl.1 hr.1, ?_⟩
   show (l.degrees ++ r.degrees).size = l.n + r.n
   simp [hl.2, hr.2]
+
+/-! ### The degree-resolution steps preserve well-formedness (A.4)
+
+Each constructor of the `resolveDegreeIssues` BFS keeps `WF`: the graph part
+comes from the gluing theorem (`freeHomomorphism_wf`) or explicit link
+rewrites, the degree part from size-preserving array writes. -/
+
+section Steps
+open Std.Do
+set_option mvcgen.warning false
+
+/-- A picked optional dart index reads (`get!`) in range: `some` answers are
+bounded by hypothesis, `none`'s default `0` needs a nonempty range. -/
+private theorem get!_lt_of_some_lt {o : Option Nat} {D : Nat}
+    (hsome : ∀ e, o = some e → e < D) (hD : 0 < D) : o.get! < D := by
+  cases o with
+  | some e => exact hsome e rfl
+  | none => simpa using hD
+
+section
+set_option linter.tacticCheckInstances false
+/-- `dartIdentification` (A.4.3) preserves well-formedness: the glued graph by
+`freeHomomorphism_wf`, the rebuilt degrees by size-preserving writes. -/
+theorem dartIdentification_wf {pc : PseudoConfiguration} (hpc : pc.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pc.darts.size ∧ p.2 < pc.darts.size)
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
+    pc'.WF := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some x => x.1.WF
+  have hfh := PseudoTriangulation.freeHomomorphism_wf hpc.1 hpairs rfl
+  have hgraph : (⟨(pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n,
+      (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.darts⟩
+        : PseudoTriangulation).WF := hfh.1
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨_xs, st⟩ =>
+      ⌜st.snd.size = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n
+        ∧ ∀ o, st.fst = some o → o = none⌝
+  all_goals mleave
+  all_goals grind [PseudoConfiguration.WF, PseudoConfiguration.new]
+end
+
+section
+set_option linter.tacticCheckInstances false
+/-- `singleOutLowerDegree` (A.4.9) preserves well-formedness on both sides:
+the graph is untouched, the split degree writes preserve the size. -/
+theorem singleOutLowerDegree_wf {pc : PseudoConfiguration} (hpc : pc.WF)
+    {z1 z2 : PseudoConfiguration}
+    (hrun : pc.singleOutLowerDegree = some (z1, z2)) : z1.WF ∧ z2.WF := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some x => x.1.WF ∧ x.2.WF
+  have hgraph : (⟨pc.n, pc.darts⟩ : PseudoTriangulation).WF := hpc.1
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨_xs, st⟩ =>
+      ⌜∀ x, st.fst = some (some x) → x.1.WF ∧ x.2.WF⌝
+  all_goals mleave
+  all_goals grind [PseudoConfiguration.WF, PseudoConfiguration.new]
+end
+
+/-- Pushing an in-bounds dart preserves an array-wide bound. -/
+private theorem push_dart_wf {n D : Nat} {a : Array Dart}
+    (h : ∀ i (hi : i < a.size), (a[i]'hi).InBounds n D)
+    {d : Dart} (hd : d.InBounds n D) :
+    ∀ i (hi : i < (a.push d).size), ((a.push d)[i]'hi).InBounds n D := by
+  grind
+
+/-- Rewriting one dart's link to an in-range target preserves an array-wide
+bound: the written dart inherits its other fields from the overwritten one. -/
+private theorem set_link_wf (k : PseudoTriangulation.LinkKind) {n D : Nat}
+    {a : Array Dart}
+    (h : ∀ i (hi : i < a.size), (a[i]'hi).InBounds n D)
+    {p t : Nat} (ht : t < D) :
+    ∀ i (hi : i < (a.set! p (k.set (a[p]!) (OptIdx.some t))).size),
+      ((a.set! p (k.set (a[p]!) (OptIdx.some t)))[i]'hi).InBounds n D := by
+  cases k <;>
+    grind [PseudoTriangulation.LinkKind.set, Dart.InBounds,
+      OptIdx.get?_some, OptIdx.get?_none]
+
+section
+set_option linter.tacticCheckInstances false
+/-- `addBoundaryDarts` (A.4.6) preserves well-formedness: the two boundary
+darts point at existing vertices and each other, and the four link rewrites
+stay inside the grown array. -/
+theorem addBoundaryDarts_wf {pc : PseudoConfiguration} (hpc : pc.WF) {v : Nat}
+    {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
+    pc'.WF := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some x => x.WF
+  mvcgen
+  all_goals mleave
+  case vc2.isFalse =>
+    -- Here `u ≠ w`, so the graph is nonempty and every read lands.
+    have hsz : pc.darts.size ≠ 0 := by
+      intro hzero
+      have hdd : (default : Dart) = ⟨0, 0, OptIdx.none, OptIdx.none⟩ := rfl
+      grind
+    have hfirst : (pc.firstDart v).get! < pc.darts.size :=
+      get!_lt_of_some_lt (fun e he => PseudoTriangulation.firstDart_lt he)
+        (Nat.pos_of_ne_zero hsz)
+    have hlast : (pc.lastDart v).get! < pc.darts.size :=
+      get!_lt_of_some_lt (fun e he => PseudoTriangulation.lastDart_lt he)
+        (Nat.pos_of_ne_zero hsz)
+    have hfrev : pc.darts[(pc.firstDart v).get!]!.rev < pc.darts.size :=
+      (hpc.1.read_inBounds hfirst).rev_lt
+    have hlrev : pc.darts[(pc.lastDart v).get!]!.rev < pc.darts.size :=
+      (hpc.1.read_inBounds hlast).rev_lt
+    have hu : pc.darts[pc.darts[(pc.firstDart v).get!]!.rev]!.head < pc.n :=
+      (hpc.1.read_inBounds hfrev).head_lt
+    have hw : pc.darts[pc.darts[(pc.lastDart v).get!]!.rev]!.head < pc.n :=
+      (hpc.1.read_inBounds hlrev).head_lt
+    rename_i eF eL eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
+    have hD : a0.size + 2 = a6.size := by unfold a6 a5 a4 a3 a2 a1; simp
+    have hdUW : dUW = a0.size := rfl
+    have hdWU : dWU = a0.size + 1 := rfl
+    have heFR : eFR < a0.size := hfrev
+    have heLR : eLR < a0.size := hlrev
+    have hdUWlt : dUW < a6.size := by omega
+    have hdWUlt : dWU < a6.size := by omega
+    have heFlt : eF < a6.size := by omega
+    have heLlt : eL < a6.size := by omega
+    have heFRlt : eFR < a6.size := by omega
+    have heLRlt : eLR < a6.size := by omega
+    have h0 : ∀ i (hi : i < a0.size), (a0[i]'hi).InBounds pc.n a6.size :=
+      fun i hi => (hpc.1 i hi).mono (Nat.le_refl _) (by omega)
+    have h1 : ∀ i (hi : i < a1.size), (a1[i]'hi).InBounds pc.n a6.size :=
+      push_dart_wf h0 ⟨hu, hdWUlt, fun j hj => absurd hj (by simp),
+        fun j hj => Option.some.inj hj ▸ heFRlt⟩
+    -- Keep each proved state opaque, so the next write unfolds only one step.
+    clear_value a1
+    have h2 : ∀ i (hi : i < a2.size), (a2[i]'hi).InBounds pc.n a6.size :=
+      push_dart_wf h1 ⟨hw, hdUWlt, fun j hj => Option.some.inj hj ▸ heLRlt,
+        fun j hj => absurd hj (by simp)⟩
+    clear_value a2
+    have h3 : ∀ i (hi : i < a3.size), (a3[i]'hi).InBounds pc.n a6.size :=
+      set_link_wf .pred h2 (p := eF) (t := eL) heLlt
+    clear_value a3
+    have h4 : ∀ i (hi : i < a4.size), (a4[i]'hi).InBounds pc.n a6.size :=
+      set_link_wf .succ h3 (p := eL) (t := eF) heFlt
+    clear_value a4
+    have h5 : ∀ i (hi : i < a5.size), (a5[i]'hi).InBounds pc.n a6.size :=
+      set_link_wf .succ h4 (p := eFR) (t := dUW) hdUWlt
+    clear_value a5
+    have h6 : ∀ i (hi : i < a6.size), (a6[i]'hi).InBounds pc.n a6.size :=
+      set_link_wf .pred h5 (p := eLR) (t := dWU) hdWUlt
+    exact ⟨h6, hpc.2⟩
+end
+
+/-- An empty graph has no incident darts (so an over-incident vertex forces a
+nonempty graph). -/
+private theorem nIncidentDarts_getElem!_empty {pc : PseudoConfiguration}
+    (h : pc.darts.size = 0) {v : Nat} : pc.nIncidentDarts[v]! = 0 := by
+  have he : pc.darts = #[] := by grind
+  have hz : pc.nIncidentDarts = Array.replicate pc.n 0 := by
+    simp [PseudoTriangulation.nIncidentDarts, he]
+  rcases Nat.lt_or_ge v pc.n with hv | hv <;> simp [hz, hv]
+
+/-- In the over-incidence arm, the selected dart and its `lower`-th successor
+are both in range; over-incidence itself forces the graph to be nonempty. -/
+private theorem fixIssue_pair_bounds {pc : PseudoConfiguration} (hpc : pc.WF)
+    {v : Nat} (hinc : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!) :
+    let e := (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v).get!
+    let f := (pc.sucKTimes e (pc.degrees[v]!).lower).get!
+    e < pc.darts.size ∧ f < pc.darts.size := by
+  simp only []
+  have hne : pc.darts.size ≠ 0 := fun h0 => by
+    have h := nIncidentDarts_getElem!_empty (pc := pc) h0 (v := v)
+    omega
+  have he : (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v).get!
+      < pc.darts.size := by
+    split
+    · exact get!_lt_of_some_lt (fun e he => PseudoTriangulation.firstDart_lt he)
+        (Nat.pos_of_ne_zero hne)
+    · exact get!_lt_of_some_lt (fun e he => PseudoTriangulation.anyDart_lt he)
+        (Nat.pos_of_ne_zero hne)
+  have hf : (pc.sucKTimes ((if pc.isBoundary[v]! then pc.firstDart v
+      else pc.anyDart v).get!) (pc.degrees[v]!).lower).get! < pc.darts.size :=
+    get!_lt_of_some_lt (fun f hs => PseudoTriangulation.sucKTimes_lt hpc.1 he hs)
+      (Nat.pos_of_ne_zero hne)
+  exact ⟨he, hf⟩
+
+/-- `fixSingleDegreeIssue` (A.4.7) preserves well-formedness: the
+over-incidence arm glues an in-range pair, the boundary arm closes the
+boundary; the remaining arms cannot answer `some`. -/
+theorem fixSingleDegreeIssue_wf {pc : PseudoConfiguration} (hpc : pc.WF)
+    {v : Nat} {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) : pc'.WF := by
+  by_cases h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!
+  · obtain ⟨he, hf⟩ := fixIssue_pair_bounds hpc h1
+    have hrun' : pc.dartIdentification
+        #[((if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v).get!,
+          (pc.sucKTimes ((if pc.isBoundary[v]! then pc.firstDart v
+            else pc.anyDart v).get!) (pc.degrees[v]!).lower).get!)] =
+        some (pc', m) := by
+      simpa only [fixSingleDegreeIssue, if_pos h1] using hrun
+    exact dartIdentification_wf hpc (by grind) hrun'
+  · by_cases h2 : (pc.isBoundary[v]!
+        && pc.nIncidentDarts[v]! == (pc.degrees[v]!).lower) = true
+    · cases hA : pc.addBoundaryDarts v with
+      | none =>
+          exact nomatch (show (none : Option (PseudoConfiguration × Mappings)) =
+            some (pc', m) from by
+              simpa only [fixSingleDegreeIssue, if_neg h1, if_pos h2, hA] using hrun)
+      | some pcA =>
+          have hr : (pcA, Mappings.initialMappings pc.n pc.darts.size) = (pc', m) :=
+            Option.some.inj (by
+              simpa only [fixSingleDegreeIssue, if_neg h1, if_pos h2, hA] using hrun)
+          have hr' : pcA = pc' := congrArg Prod.fst hr
+          exact hr' ▸ addBoundaryDarts_wf hpc hA
+    · exact absurd hrun (by
+        simp only [fixSingleDegreeIssue, if_neg h1, if_neg h2]
+        exact fun hp => nomatch
+          (show (none : Option (PseudoConfiguration × Mappings)) = some (pc', m) from hp))
+
+end Steps
 
 end PseudoConfiguration
 

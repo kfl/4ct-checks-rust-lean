@@ -308,5 +308,18 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   `fromVRotations_wf`: A.5's loader produces a well-formed graph
   unconditionally.
 
+- **A.4's degree-resolution steps preserve well-formedness**
+  (`PseudoTriangulationProofs.lean`): each step the resolution BFS applies to
+  a well-formed configuration answers a well-formed one --
+  `dartIdentification_wf` (gluing in-range pairs, via `freeHomomorphism_wf`),
+  `addBoundaryDarts_wf` (the appended boundary fan and every rewritten link
+  stay in the grown dart range), `singleOutLowerDegree_wf` (degree splits
+  reuse the dart array unchanged) and `fixSingleDegreeIssue_wf` (the
+  dispatcher: over-incidence forces a nonempty graph, so the picked dart and
+  its `lower`-th successor are in range; the remaining arms delegate to the
+  boundary closure or cannot answer `some`). The BFS driver
+  (`resolveDegreeIssues`) is the remaining lift: stating a loop rule for its
+  `while` needs A.4.4's termination potential.
+
 Everything else rests on the byte-exact oracles above -- faithful by test, not
 yet by mechanised proof.
