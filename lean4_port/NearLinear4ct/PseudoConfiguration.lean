@@ -31,6 +31,53 @@ namespace PseudoConfiguration
 protected def new (n : Nat) (darts : Array Dart) (degrees : Array Degree) : PseudoConfiguration :=
   { toPseudoTriangulation := ⟨n, darts⟩, degrees := degrees }
 
+/-- Configuration well-formedness: the graph is `WF` and the degree array
+covers exactly the vertices. -/
+def WF (pc : PseudoConfiguration) : Prop :=
+  pc.toPseudoTriangulation.WF ∧ pc.degrees.size = pc.n
+
+/-- Executable configuration check. -/
+def wfCheck (pc : PseudoConfiguration) : Bool :=
+  pc.toPseudoTriangulation.wfCheck && pc.degrees.size == pc.n
+
+/-- The executable check decides `WF`. -/
+theorem wfCheck_iff {pc : PseudoConfiguration} : pc.wfCheck = true ↔ pc.WF := by
+  grind [wfCheck, WF, PseudoTriangulation.wfCheck_iff]
+
+/-- A configuration certified at the boundary: the graph and degree array
+are well-formed and the dart count fits the packed-pair encoding (erased at
+runtime). Certification happens once per object -- `attach?` runs the
+executable checks -- and the homomorphism lemmas read both facts off the
+type instead of threading well-formedness premises. Mid-pipeline states are
+never certified; the resolution constructions keep their proof-side
+preservation theorems. -/
+structure WFConfig extends PseudoConfiguration where
+  wfconfig_invariant :
+    toPseudoConfiguration.WF
+      ∧ toPseudoConfiguration.darts.size ≤ SmallNatPair.pairBase
+
+namespace WFConfig
+
+instance : Coe WFConfig PseudoConfiguration := ⟨toPseudoConfiguration⟩
+
+/-- The certified graph and degree-array well-formedness. -/
+theorem wf (c : WFConfig) : c.toPseudoConfiguration.WF :=
+  c.wfconfig_invariant.1
+
+/-- The certified packability bound (`fst_pack`/`snd_pack` decode below it). -/
+theorem packable (c : WFConfig) : c.darts.size ≤ SmallNatPair.pairBase :=
+  c.wfconfig_invariant.2
+
+/-- Check-and-attach: certify a configuration by running the executable
+checks; `none` on a malformed one. -/
+def attach? (pc : PseudoConfiguration) : Option WFConfig :=
+  if h : pc.wfCheck && decide (pc.darts.size ≤ SmallNatPair.pairBase) then
+    some ⟨pc, wfCheck_iff.mp (by grind), by grind⟩
+  else
+    none
+
+end WFConfig
+
 /-- Multi-line dump. -/
 def debug (pc : PseudoConfiguration) : String := Id.run do
   let mut res := pc.toPseudoTriangulation.debug

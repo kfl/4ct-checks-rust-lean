@@ -27,6 +27,28 @@ structure Dart where
   pred : OptIdx
 deriving DecidableEq, Repr, Inhabited, BEq
 
+namespace Dart
+
+/-- All four dart fields point into the graph: `head` at a vertex (`< n`),
+`rev` at a dart (`< D`), and `succ`/`pred` -- when present -- at darts. -/
+structure InBounds (n D : Nat) (d : Dart) : Prop where
+  head_lt : d.head < n
+  rev_lt : d.rev < D
+  succ_lt : ∀ j, d.succ.get? = Option.some j → j < D
+  pred_lt : ∀ j, d.pred.get? = Option.some j → j < D
+
+/-- Executable `InBounds` (the `succ`/`pred` clauses via `OptIdx.boundedBy`). -/
+def inBoundsCheck (n D : Nat) (d : Dart) : Bool :=
+  decide (d.head < n) && decide (d.rev < D)
+    && d.succ.boundedBy D && d.pred.boundedBy D
+
+/-- The executable check decides `InBounds`. -/
+theorem inBoundsCheck_iff {n D : Nat} {d : Dart} :
+    d.inBoundsCheck n D = true ↔ d.InBounds n D := by
+  grind [inBoundsCheck, InBounds, OptIdx.boundedBy_iff]
+
+end Dart
+
 /-- A rotation system on `n` vertices. -/
 structure PseudoTriangulation where
   n : Nat
@@ -49,6 +71,27 @@ private partial def rotationGo (darts : Array Dart) (eStart eCur : Nat)
   | .some nxt => if nxt == eStart then acc else rotationGo darts eStart nxt acc
 
 namespace PseudoTriangulation
+
+/-- Tier-1 graph well-formedness: every dart's indices are in bounds.
+Index bounds ONLY -- no rotation-system laws. -/
+def WF (pt : PseudoTriangulation) : Prop :=
+  ∀ i (h : i < pt.darts.size), (pt.darts[i]'h).InBounds pt.n pt.darts.size
+
+/-- Executable well-formedness check (`Test.lean` tripwires and
+`WFConfig.attach?` boundary certification). -/
+def wfCheck (pt : PseudoTriangulation) : Bool :=
+  pt.darts.all fun d => d.inBoundsCheck pt.n pt.darts.size
+
+/-- The executable check decides `WF`. -/
+theorem wfCheck_iff {pt : PseudoTriangulation} : pt.wfCheck = true ↔ pt.WF := by
+  grind [wfCheck, WF, Array.all_eq_true, Dart.inBoundsCheck_iff]
+
+/-- An in-range panicking read has the bounds supplied by graph
+well-formedness. -/
+theorem WF.read_inBounds {pt : PseudoTriangulation} (h : pt.WF)
+    {i : Nat} (hi : i < pt.darts.size) :
+    (pt.darts[i]!).InBounds pt.n pt.darts.size := by
+  simpa only [getElem!_pos pt.darts i hi] using h i hi
 
 /-- Multi-line dump of every dart. -/
 def debug (pt : PseudoTriangulation) : String := Id.run do
