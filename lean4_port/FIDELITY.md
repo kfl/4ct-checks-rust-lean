@@ -291,12 +291,20 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   would corrupt the forest (unreachable on in-range inputs -- behaviour is
   unchanged, as the byte-exact oracles confirm).
 
-- **The free homomorphism produces a well-formed quotient**
-  (`PseudoTriangulationProofs.lean`, `freeHomomorphism_wf`): on a well-formed
-  graph with in-range dart pairs, A.3's gluing loop terminates (measure:
-  `3 * numRoots + live`, each glue merges two dart classes), the quotient
-  graph is well-formed, and the returned vertex/dart maps are total,
-  well-formed relabellings onto its index ranges (`Mappings.WF`). Also
+- **The free homomorphism produces a well-formed, coherent quotient**
+  (`PseudoTriangulationProofs.lean`): on a well-formed graph with in-range
+  dart pairs, A.3's gluing loop terminates (measure: `3 * numRoots + live`,
+  each glue merges two dart classes), the quotient graph is well-formed, and
+  the returned vertex/dart maps are total, well-formed relabellings onto its
+  index ranges (`Mappings.WF`) -- `freeHomomorphism_wf`. The coherence tier
+  (`freeHomomorphism_coherent`) states the quotient-map property: the maps
+  commute with every dart field (`head` through the vertex map,
+  `rev`/`succ`/`pred` through the dart map) and every requested pair has one
+  quotient image. The proof runs Lemma 9.4's uniform `succ`/`pred` argument
+  once (`LinkKind`), with mid-loop obligations interpreted by the equivalence
+  closure of the merged classes and the still-pending queue (`PendingEq`).
+  `freeHomomorphismPair_wf`/`_coherent` restrict both results along
+  `disjointUnion` to the two-graph gluing the loaders call. Also
   `fromVRotations_wf`: A.5's loader produces a well-formed graph
   unconditionally.
 
