@@ -24,8 +24,12 @@ differential testing against C++ meaningful.
 - **`rust_port/`** -- the Rust port: a library crate (`combine`) plus a `main`
   CLI mirroring the C++ `main`.
 - **`lean4_port/`** -- the Lean 4 port: the `NearLinear4ct` library plus `main`
-  and `test` executables; the proof obligations are discharged as always-on
-  asserts.
+  and `test` executables; runtime proof obligations are always-on asserts, and
+  a machine-checked theorem layer covers the core algorithms (the homomorphism
+  BFS is proved sound, complete and total over certified configurations).
+  `lean4_port/FIDELITY.md` records the correspondence to the paper's
+  Appendix A pseudocode, the deliberate deviations, and the machine-checked
+  claims; `lean4_port/PERFORMANCE_NOTES.md` the measured characterisation.
 - **`modi/`** -- scripts to build and run the full 3-way differential (C++ /
   Rust / Lean) on the MODI Linux HPC cluster.
 - **`FORMAT.md`** -- shared on-disk format spec (copied from the C++ repo).
