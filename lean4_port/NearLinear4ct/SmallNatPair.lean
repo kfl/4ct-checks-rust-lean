@@ -22,8 +22,10 @@ namespace NearLinear4ct
 for the value to stay a tagged scalar also keep `fst < 2^31`. Construct
 with `SmallNatPair.pack`; read with `fst` / `snd`. -/
 structure SmallNatPair where
-  /-- Raw encoding: `f * 2^32 + s`. Prefer `pack`/`fst`/`snd`. -/
-  raw : Nat
+  private mk ::
+  /-- Raw encoding: `f * 2^32 + s`. Private: construct with `pack` and read
+  through `fst`/`snd` -- no raw reasoning outside this file. -/
+  private raw : Nat
 deriving DecidableEq, Repr, Inhabited, BEq, Hashable
 
 namespace SmallNatPair
