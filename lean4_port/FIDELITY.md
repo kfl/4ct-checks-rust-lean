@@ -127,6 +127,23 @@ page. Only the deviations below depart from a literal transcription.
   guard convention. The field is erased and the checks are outside the
   loops; measurements in `PERFORMANCE_NOTES.md`.
 
+- **The BFS indexes with proofs.** `homStep`'s eight array reads and writes
+  (A.2) carry their bounds: the step takes one erased indexing invariant
+  (`HomIndexSafe` -- worklist decode bounds plus the two scratch-map sizes),
+  the `WFConfig` facts supply the dart bounds, and the one implementation
+  contract `homStep_next_safe`, proved beside the definition, re-establishes
+  the invariant for the continuing state so the driver reads its recursive
+  proof off it. `HomNext` stays a plain data type and the compiled loop has
+  no bounds checks or panic branches (IR-verified; measurements in
+  `PERFORMANCE_NOTES.md`). `homCore` gains a root-dart guard: the seed
+  invariant needs both root darts in range, which nothing typed guarantees
+  yet, so an out-of-range root answers `none` where the reference computes
+  on it -- unreachable on the corpus (the I/O gates assert it), and it
+  retires the malformed-input mode where the loop could spin on `set!`
+  no-ops. `homCore_sound` reads the bounds off the guard, so the soundness
+  theorems carry no root premises; completeness keeps them (it must show
+  the guard passes).
+
 - **Pseudocode `assert` lines become `proofAssert`** -- an always-on `IO`
   obligation that *throws* (`throw (IO.userError …)`) on failure, halting the run
   and keeping each spec assertion a literal line.

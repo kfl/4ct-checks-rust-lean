@@ -158,6 +158,71 @@ borrowed parameters. -/
   | .some s, .some sStar => q.push (SmallNatPair.pack s sStar)
   | _, _ => q
 
+/-- Every worklist slot decodes to an in-range dart pair. Quantified over
+*all* slots, not just live ones: the storage is append-only (`pop?` only
+advances `head`, never overwriting), so a dead slot is a formerly-live one
+and the stronger form costs nothing -- while making pop-preservation
+definitional (`items` is untouched) with no `head` side conditions in the
+lemmas. The popped element's liveness witness is `pop?`'s own bound
+`head < items.size`, consumed in `HomBounded.pop`. Erased at runtime; it
+supplies the index proofs for `homStep`'s reads and writes. -/
+def HomBounded (sD dD : Nat) (q : Queue SmallNatPair) : Prop :=
+  ∀ i (h : i < q.items.size),
+    (q.items[i]'h).fst < sD ∧ (q.items[i]'h).snd < dD
+
+namespace HomBounded
+
+/-- A fresh queue has no slots. -/
+theorem empty {sD dD cap : Nat} :
+    HomBounded sD dD (Queue.emptyWithCapacity cap) := by
+  intro i h
+  exact absurd h (by simp [Queue.emptyWithCapacity])
+
+/-- The popped pair is in range and the rest stays bounded. -/
+theorem pop {sD dD : Nat} {q q' : Queue SmallNatPair} {x : SmallNatPair}
+    (hb : HomBounded sD dD q) (hp : q.pop? = some (x, q')) :
+    (x.fst < sD ∧ x.snd < dD) ∧ HomBounded sD dD q' := by
+  grind [HomBounded, Queue.pop?]
+
+/-- Pushing an element whose decode is in range keeps every slot bounded. -/
+theorem push {sD dD : Nat} {q : Queue SmallNatPair} {x : SmallNatPair}
+    (hb : HomBounded sD dD q) (hx : x.fst < sD ∧ x.snd < dD) :
+    HomBounded sD dD (q.push x) := by
+  grind [HomBounded, Queue.push]
+
+/-- Pushing a packed in-range pair keeps every slot bounded (the new slot by
+`fst_pack`/`snd_pack`, which need the `dD ≤ pairBase` decode bound). -/
+theorem push_pack {sD dD : Nat} (hdD : dD ≤ SmallNatPair.pairBase)
+    {q : Queue SmallNatPair} {a b : Nat}
+    (hb : HomBounded sD dD q) (ha : a < sD) (hbb : b < dD) :
+    HomBounded sD dD (q.push (SmallNatPair.pack a b)) := by
+  grind [HomBounded, Queue.push]
+
+/-- `pushLink` keeps every slot bounded: the both-`some` arm is a `push` of
+in-range links, every other arm is the identity. -/
+theorem pushLink {sD dD : Nat} (hdD : dD ≤ SmallNatPair.pairBase)
+    {q : Queue SmallNatPair} {os od : OptIdx}
+    (hb : HomBounded sD dD q)
+    (hs : ∀ j, os.get? = Option.some j → j < sD)
+    (hd : ∀ j, od.get? = Option.some j → j < dD) :
+    HomBounded sD dD (PseudoConfiguration.pushLink q os od) := by
+  cases os <;> cases od
+  all_goals try exact hb
+  exact hb.push_pack hdD (hs _ rfl) (hd _ rfl)
+
+end HomBounded
+
+/-- The indexing invariant of a BFS state: worklist decode bounds plus the
+two scratch-map sizes. `homStep` takes it (erased) to justify its unchecked
+reads and writes; `homStep_next_safe` -- the one implementation contract --
+re-establishes it for the continuing state, so the driver threads a single
+proof and `HomNext` stays a plain data type. -/
+structure HomIndexSafe (src dst : WFConfig)
+    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Prop where
+  queue     : HomBounded src.darts.size dst.darts.size q
+  vmap_size : vmap.size = src.n
+  dmap_size : dmap.size = src.darts.size
+
 /-- One-step verdict of the homomorphism BFS: the next state, or the final
 answer. It exists so the *proofs* can speak about a single, recursion-free
 step.
@@ -178,28 +243,38 @@ the encodings).
 so `homCoreGo`'s loop is exactly the unfactored code. -/
 @[inline] def homStep (src dst : WFConfig)
     (degreeTest : Degree → Degree → Bool)
-    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : HomNext :=
-  match q.pop? with
+    (q : Queue SmallNatPair) (vmap dmap : IndexMap)
+    (hs : HomIndexSafe src dst q vmap dmap) : HomNext :=
+  match hpq : q.pop? with
   | none => .done (some (vmap, dmap))
   | some (packed, q) =>
     let f := packed.fst
     let fStar := packed.snd
-    match dmap[f]! with
+    -- Erased bounds for the proof-carrying reads and writes below.
+    have hf : f < src.darts.size := (hs.queue.pop hpq).1.1
+    have hfs : fStar < dst.darts.size := (hs.queue.pop hpq).1.2
+    have hfd : f < dmap.size := hs.dmap_size.symm ▸ hf
+    match dmap[f]'hfd with
     | .some d =>
       if d != fStar then .done none                  -- already mapped, inconsistently
       else .next q vmap dmap
     | .none =>
-      let dmap := dmap.set! f (OptIdx.some fStar)
-      -- bind each dart once (read 4×: head/rev/succ/pred)
-      let srcD := src.darts[f]!
-      let dstD := dst.darts[fStar]!
+      let dmap := dmap.set f (OptIdx.some fStar) hfd
+      -- bind each dart once (read 4×: head/rev/succ/pred); the reads carry
+      -- their bounds, so no `!` panic branches survive in the loop
+      let srcD := src.darts[f]'hf
+      let dstD := dst.darts[fStar]'hfs
+      have hsrcD := src.wf.1 f hf
+      have hdstD := dst.wf.1 fStar hfs
       let h := srcD.head
       let hStar := dstD.head
-      let vv := vmap[h]!
+      have hvh : h < vmap.size := hs.vmap_size.symm ▸ hsrcD.head_lt
+      let vv := vmap[h]'hvh
       if vv.isSome && vv != OptIdx.some hStar then .done none
       else
-        let vmap := vmap.set! h (OptIdx.some hStar)
-        if !degreeTest (src.degrees[h]!) (dst.degrees[hStar]!) then .done none
+        let vmap := vmap.set h (OptIdx.some hStar) hvh
+        if !degreeTest (src.degrees[h]'(src.wf.2.symm ▸ hsrcD.head_lt))
+            (dst.degrees[hStar]'(dst.wf.2.symm ▸ hdstD.head_lt)) then .done none
         -- `src` side open where `dst` is closed ⇒ no homomorphism (the queue would
         -- be discarded on `.done none`, so failing before the pushes is equivalent).
         else if srcD.succ.isSome && dstD.succ.isNone then .done none
@@ -210,23 +285,52 @@ so `homCoreGo`'s loop is exactly the unfactored code. -/
           let q := pushLink q srcD.pred dstD.pred
           .next q vmap dmap
 
+/-- **The one implementation contract**: a continuing step's state is again
+index-safe. All of the step's index bookkeeping is discharged here, once,
+beside the definition -- the semantic proofs never unfold `homStep` for
+index reasons, and `homCoreGo` reads its recursive proof off this lemma. -/
+theorem homStep_next_safe {src dst : WFConfig}
+    {degreeTest : Degree → Degree → Bool}
+    {q q' : Queue SmallNatPair} {vmap dmap vmap' dmap' : IndexMap}
+    {hs : HomIndexSafe src dst q vmap dmap}
+    (hst : homStep src dst degreeTest q vmap dmap hs = .next q' vmap' dmap') :
+    HomIndexSafe src dst q' vmap' dmap' := by
+  unfold homStep at hst
+  split at hst
+  · exact nomatch hst
+  · rename_i packed q1 hpq
+    have hpop := hs.queue.pop hpq
+    have hsrcD := src.wf.1 packed.fst hpop.1.1
+    have hdstD := dst.wf.1 packed.snd hpop.1.2
+    have hpack := dst.packable
+    have hqueue :=
+      ((hpop.2.push_pack hpack hsrcD.rev_lt hdstD.rev_lt).pushLink hpack
+          hsrcD.succ_lt hdstD.succ_lt).pushLink hpack hsrcD.pred_lt hdstD.pred_lt
+    -- `splits` bounds proof-search case analysis, not state updates. Five
+    -- covers the `dmap` match and the four rejection guards on the fresh path;
+    -- the already-mapped path is shallower.
+    grind (splits := 5) only [HomIndexSafe, = Array.size_set]
+
 /-- The worklist loop of the homomorphism BFS: drive `homStep` until it
 answers -- the hottest loop in the program, kept as a bare tail call with the
 state in explicit arguments rather than an `Id.run do`/`while` lowering.
 
 `partial_fixpoint`: the worklist grows (each step pushes ≤ 3 darts), so the
 recursion is not structural; the fixpoint exposes the `.partial_correctness`
-principle the proofs ride on. *Not* total on malformed input -- an
-out-of-bounds dart index makes `set!` a no-op and can loop; totality is
-conditional on `WF`.
+principle the proofs ride on. The threaded invariants keep every index in
+range (the old malformed-input mode -- a `set!` no-op looping forever -- is
+unreachable); a general totality proof remains open, and the completeness
+theorem supplies termination whenever a homomorphism exists.
 
 `@[specialize]` monomorphises `degreeTest` per call site. -/
 @[specialize] def homCoreGo (src dst : WFConfig)
     (degreeTest : Degree → Degree → Bool)
-    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Option (IndexMap × IndexMap) :=
-  match homStep src dst degreeTest q vmap dmap with
+    (q : Queue SmallNatPair) (vmap dmap : IndexMap)
+    (hs : HomIndexSafe src dst q vmap dmap) :
+    Option (IndexMap × IndexMap) :=
+  match hstep : homStep src dst degreeTest q vmap dmap hs with
   | .done r => r
-  | .next q vmap dmap => homCoreGo src dst degreeTest q vmap dmap
+  | .next q vmap dmap => homCoreGo src dst degreeTest q vmap dmap (homStep_next_safe hstep)
 partial_fixpoint
 
 /-- Shared BFS core for `homomorphism` / `homomorphismExists` (A.2). Seeds the
@@ -237,10 +341,17 @@ they are non-`private` only so `HomomorphismProofs.lean` can reason about them. 
 @[specialize] def homCore (src : WFConfig) (dartFrom : Nat)
     (dst : WFConfig) (dartTo : Nat)
     (degreeTest : Degree → Degree → Bool) : Option (IndexMap × IndexMap) :=
-  homCoreGo src dst degreeTest
-    ((Queue.emptyWithCapacity (src.darts.size * 3 + 1)).push (SmallNatPair.pack dartFrom dartTo))
-    (Array.replicate src.n OptIdx.none)
-    (Array.replicate src.darts.size OptIdx.none)
+  -- Root-dart guard: the seed invariant needs both darts in range. Malformed
+  -- roots answer `none` (the reference computes on them; the I/O gates make
+  -- the branch unreachable on the corpus).
+  if h : dartFrom < src.darts.size ∧ dartTo < dst.darts.size then
+    homCoreGo src dst degreeTest
+      ((Queue.emptyWithCapacity (src.darts.size * 3 + 1)).push (SmallNatPair.pack dartFrom dartTo))
+      (Array.replicate src.n OptIdx.none)
+      (Array.replicate src.darts.size OptIdx.none)
+      ⟨HomBounded.push_pack dst.packable HomBounded.empty h.1 h.2,
+        Array.size_replicate .., Array.size_replicate ..⟩
+  else none
 
 /-- Whether a homomorphism exists, accepting a vertex degree compatibility test.
 The `.isSome`-only hot path
