@@ -84,31 +84,11 @@ end IndexMap
 
 namespace PseudoConfiguration.HomState
 
-/-- Active (not-yet-popped) queue entries: an index `≥ head` holding `p`. -/
-def Active (q : Queue SmallNatPair) (p : SmallNatPair) : Prop :=
-  ∃ i, q.head ≤ i ∧ q.items[i]? = some p
-
-/-- `pop?` only shrinks the active set (`head` advances; `items` is untouched). -/
-theorem active_pop {q q' : Queue SmallNatPair} {x p : SmallNatPair}
-    (hp : q.pop? = some (x, q')) (h : Active q' p) : Active q p := by
-  obtain ⟨-, hi, hh⟩ := Queue.pop?_some hp
-  grind [Active]
-
-/-- `push` adds exactly the new element to the active set. -/
-theorem active_push {q : Queue SmallNatPair} {x p : SmallNatPair}
-    (h : Active (q.push x) p) : Active q p ∨ p = x := by
-  grind [Active, Queue.push]
-
-/-- The just-popped element was active. -/
-theorem active_head {q q' : Queue SmallNatPair} {x : SmallNatPair}
-    (hp : q.pop? = some (x, q')) : Active q x :=
-  ⟨q.head, Nat.le_refl _, (Queue.pop?_some hp).1⟩
-
 /-- **Structural invariant** (`Bounded` half of `HomState.WF`): sizes + all
 indices in bounds. Enough for output-WF; no dart-local (semantic) content. -/
 structure Bounded (src dst : PseudoConfiguration)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Prop where
-  queued_bd  : ∀ p, Active q p → p.fst < src.darts.size ∧ p.snd < dst.darts.size
+  queued_bd  : ∀ p, q.Active p → p.fst < src.darts.size ∧ p.snd < dst.darts.size
   vmap_wf    : IndexMap.WF vmap src.n dst.n
   dmap_wf    : IndexMap.WF dmap src.darts.size dst.darts.size
 
@@ -130,7 +110,7 @@ theorem bounded_push {src dst : PseudoConfiguration}
     (hb : Bounded src dst q vmap dmap)
     (hx : x.fst < src.darts.size ∧ x.snd < dst.darts.size) :
     Bounded src dst (q.push x) vmap dmap := by
-  grind [Bounded, active_push]
+  grind [Bounded, Queue.active_push]
 
 /-! `pushLink` is the expand step's conditional push, so the invariant
 lemmas speak about it as one operation. Each lemma case-splits the two links;
@@ -157,7 +137,7 @@ theorem bounded_pop {src dst : PseudoConfiguration}
     {q q' : Queue SmallNatPair} {x : SmallNatPair} {vmap dmap : IndexMap}
     (hp : q.pop? = some (x, q')) (hb : Bounded src dst q vmap dmap) :
     Bounded src dst q' vmap dmap := by
-  grind [Bounded, active_pop]
+  grind [Bounded, Queue.active_pop]
 
 /-- The dart at an in-range index is `InBounds` (unfolding the `!`-read). The
 shared `hsrcD`/`hdstD` step in every loop-body proof. -/
@@ -181,7 +161,7 @@ theorem homStep_bounded
   · -- base case: `pop?` exhausted, the maps are the answer
     grind [OutputWF, Bounded]
   · -- q not empty: pop, then re-pop / expand
-    have hfb := hb.queued_bd packed (active_head heq)
+    have hfb := hb.queued_bd packed (Queue.active_head heq)
     have hsrcD := dart_inBounds hsrc hfb.1
     have hdstD := dart_inBounds hdst hfb.2
     have hbase : Bounded src dst q1
@@ -225,55 +205,32 @@ once the queue drains. -/
 
 /-- A pending queue obligation: `(f, fStar)` is (still) somewhere in the queue. -/
 def Queued (q : Queue SmallNatPair) (f fStar : Nat) : Prop :=
-  ∃ p, Active q p ∧ p.fst = f ∧ p.snd = fStar
+  ∃ p, q.Active p ∧ p.fst = f ∧ p.snd = fStar
 
 /-- Either already mapped consistently, or pending in the queue. -/
 def DoneOrQueued (q : Queue SmallNatPair) (dmap : IndexMap) (f fStar : Nat) : Prop :=
   dmap.idx? f = Option.some fStar ∨ Queued q f fStar
 
-/-- On an empty queue nothing is active. -/
-theorem not_active_of_isEmpty {q : Queue SmallNatPair} (h : q.isEmpty = true)
-    (p : SmallNatPair) : ¬ Active q p := by
-  grind [Active, Queue.isEmpty]
-
 /-- On an empty queue, `DoneOrQueued` collapses to `Done`. -/
 theorem done_of_isEmpty {q : Queue SmallNatPair} {dmap : IndexMap} {f fStar : Nat}
     (h : q.isEmpty = true) (hd : DoneOrQueued q dmap f fStar) :
     dmap.idx? f = Option.some fStar := by
-  grind [DoneOrQueued, Queued, not_active_of_isEmpty]
-
-/-- `push` only adds to the active set. -/
-theorem active_push_mono {q : Queue SmallNatPair} {x p : SmallNatPair}
-    (h : Active q p) : Active (q.push x) p := by
-  obtain ⟨i, hi, hp⟩ := h
-  exact ⟨i, hi, by grind [Queue.push, Array.getElem?_push_lt, Array.getElem?_eq_none]⟩
-
-/-- The just-pushed element is active. -/
-theorem active_push_self {q : Queue SmallNatPair} {x : SmallNatPair} :
-    Active (q.push x) x :=
-  ⟨q.items.size, q.queue_invariant, by simp [Queue.push]⟩
+  grind [DoneOrQueued, Queued, Queue.not_active_of_isEmpty]
 
 theorem active_pushLink_mono {q : Queue SmallNatPair} {os od : OptIdx} {p : SmallNatPair}
-    (h : Active q p) : Active (pushLink q os od) p := by
-  grind [pushLink.eq_def, active_push_mono]
+    (h : q.Active p) : (pushLink q os od).Active p := by
+  grind [pushLink.eq_def, Queue.active_push_mono]
 
 /-- The pair `pushLink` queues on interior links is active. -/
 theorem active_pushLink_self {q : Queue SmallNatPair} {s t : Nat} :
-    Active (pushLink q (OptIdx.some s) (OptIdx.some t)) (pack s t) :=
-  active_push_self
-
-/-- Popping either keeps `p` active or reveals it as the just-popped element. -/
-theorem active_pop_cases {q q' : Queue SmallNatPair} {x p : SmallNatPair}
-    (hp : q.pop? = some (x, q')) (h : Active q p) :
-    Active q' p ∨ p = x := by
-  obtain ⟨hx, hi, hh⟩ := Queue.pop?_some hp
-  grind [Active]
+    (pushLink q (OptIdx.some s) (OptIdx.some t)).Active (pack s t) :=
+  Queue.active_push_self
 
 /-- `DoneOrQueued` is monotone under `push` (the queue only grows). -/
 theorem doneOrQueued_push {q : Queue SmallNatPair} {dmap : IndexMap} {g gStar : Nat}
     {x : SmallNatPair} (hd : DoneOrQueued q dmap g gStar) :
     DoneOrQueued (q.push x) dmap g gStar := by
-  grind [DoneOrQueued, Queued, active_push_mono]
+  grind [DoneOrQueued, Queued, Queue.active_push_mono]
 
 theorem doneOrQueued_pushLink {q : Queue SmallNatPair} {dmap : IndexMap} {g gStar : Nat}
     {os od : OptIdx} (hd : DoneOrQueued q dmap g gStar) :
@@ -287,7 +244,7 @@ theorem doneOrQueued_pop {q q' : Queue SmallNatPair} {x : SmallNatPair}
     (hp : q.pop? = some (x, q'))
     (hdone : dmap.idx? x.fst = Option.some x.snd)
     (hd : DoneOrQueued q dmap g gStar) : DoneOrQueued q' dmap g gStar := by
-  grind [DoneOrQueued, active_pop_cases, Queued]
+  grind [DoneOrQueued, Queue.active_pop_cases, Queued]
 
 /-- **Expand transport**: popping the fresh `(f, fStar)` and mapping it keeps
 `DoneOrQueued`. A done witness `g ≠ f` survives the `set!`; the popped witness
@@ -298,7 +255,8 @@ theorem doneOrQueued_expand_pop {q q' : Queue SmallNatPair} {x : SmallNatPair}
     (hfresh : dmap.idx? x.fst = Option.none)
     (hd : DoneOrQueued q dmap g gStar) :
     DoneOrQueued q' (dmap.set! x.fst (OptIdx.some x.snd)) g gStar := by
-  grind [DoneOrQueued, Queued, active_pop_cases, IndexMap.idx?_set!_ne, IndexMap.idx?_set!_self]
+  grind [DoneOrQueued, Queued, Queue.active_pop_cases, IndexMap.idx?_set!_ne,
+    IndexMap.idx?_set!_self]
 
 /-- A pending optional link (`succ`/`pred`): the source resolving forces a `DoneOrQueued` target. -/
 def LinkPending (q : Queue SmallNatPair) (dmap : IndexMap) (srcLink dstLink : OptIdx) : Prop :=
@@ -317,7 +275,7 @@ mapped and its `succ`/`pred` obligation pushed, that link is `LinkPending`. -/
 theorem freshLink_pending {q' : Queue SmallNatPair} {dmap' : IndexMap} {os od : OptIdx}
     {D : Nat} (hpack : D ≤ pairBase) (hdb : ∀ j, od.get? = Option.some j → j < D)
     (hg : ¬(os.isSome && od.isNone) = true)
-    (hactive : ∀ s t, os = OptIdx.some s → od = OptIdx.some t → Active q' (pack s t)) :
+    (hactive : ∀ s t, os = OptIdx.some s → od = OptIdx.some t → q'.Active (pack s t)) :
     LinkPending q' dmap' os od := by
   intro s hs
   cases os with
@@ -426,7 +384,7 @@ theorem homStep_next_sound
   split at hst
   · grind
   · rename_i packed q1 heq
-    have hfb := hs.queued_bd packed (active_head heq)
+    have hfb := hs.queued_bd packed (Queue.active_head heq)
     have hfsz : packed.fst < dmap.size := by
       simpa only [hs.dmap_wf.size_eq] using hfb.1
     split at hst
@@ -487,7 +445,7 @@ theorem homStep_next_sound
             dst.darts[packed.snd]!.rev, ?_,
             fst_pack _ _ (Nat.lt_of_lt_of_le hdstD.rev_lt hpack),
             snd_pack _ _ (Nat.lt_of_lt_of_le hdstD.rev_lt hpack)⟩
-          grind [active_push_self, active_pushLink_mono]
+          grind [Queue.active_push_self, active_pushLink_mono]
         · grind [doneOrQueued_push, doneOrQueued_pushLink,
             hexp (hs.rev_pending g gStar (IndexMap.idx?_set!_ne (Ne.symm hgf) ▸ hg))]
       · -- succ_pending
@@ -538,28 +496,23 @@ theorem homCoreGo_sound
     IsRootedHom src dst degreeTest dartFrom dartTo r.1 r.2 := by
   revert hs
   refine homCoreGo.partial_correctness src dst degreeTest
-    (motive := fun q vmap dmap r =>
+    (motive := fun q vmap dmap (vmapOut, dmapOut) =>
       Sound src dst degreeTest dartFrom dartTo q vmap dmap →
-      IsRootedHom src dst degreeTest dartFrom dartTo r.1 r.2)
+      IsRootedHom src dst degreeTest dartFrom dartTo vmapOut dmapOut)
     ?step q vmap dmap r hrun
   intro rec ih q vmap dmap r hstep hs
   grind [homStep_done_sound, homStep_next_sound]
-
-/-- An `emptyWithCapacity` queue has nothing active. -/
-theorem not_active_emptyWithCapacity {cap : Nat} (p : SmallNatPair) :
-    ¬ Active (Queue.emptyWithCapacity cap) p := by
-  simp [Active, Queue.emptyWithCapacity]
 
 /-- The seeded queue's only obligation is the root pair, and it unpacks to
 `(dartFrom, dartTo)`. The shared setup of `homCore_sound`/`homCore_complete`. -/
 theorem seed_root {dst : PseudoConfiguration} {dartTo : Nat} (dartFrom cap : Nat)
     (hpack : dst.darts.size ≤ pairBase) (hdt : dartTo < dst.darts.size) :
     (pack dartFrom dartTo).fst = dartFrom ∧ (pack dartFrom dartTo).snd = dartTo ∧
-    ∀ p, Active ((Queue.emptyWithCapacity cap).push (pack dartFrom dartTo)) p →
+    ∀ p, ((Queue.emptyWithCapacity cap).push (pack dartFrom dartTo)).Active p →
       p = pack dartFrom dartTo := by
   have hxb : dartTo < pairBase := Nat.lt_of_lt_of_le hdt hpack
   exact ⟨fst_pack dartFrom dartTo hxb, snd_pack dartFrom dartTo hxb,
-    fun p hp => (active_push hp).resolve_left (not_active_emptyWithCapacity p)⟩
+    fun p hp => (Queue.active_push hp).resolve_left (Queue.not_active_emptyWithCapacity p)⟩
 
 /-- **Soundness of `homCore`** (the seeded BFS, A.2): if it returns
 `some (vmap, dmap)`, that is a genuine rooted homomorphism `src → dst`. The seed
@@ -574,7 +527,7 @@ theorem homCore_sound {src dst : PseudoConfiguration} {degreeTest : Degree → D
   obtain ⟨hxfst, hxsnd, hactive⟩ := seed_root dartFrom (src.darts.size * 3 + 1) hpack hdt
   refine homCoreGo_sound hsrc hdst hpack (r := r) ?_ hrun
   refine ⟨⟨?_, IndexMap.wf_replicate_none, IndexMap.wf_replicate_none⟩,
-    Or.inr ⟨pack dartFrom dartTo, active_push_self, hxfst, hxsnd⟩,
+    Or.inr ⟨pack dartFrom dartTo, Queue.active_push_self, hxfst, hxsnd⟩,
     ?_, ?_, ?_, ?_, ?_⟩
   all_goals grind [IndexMap.idx?_replicate_none]
 
@@ -586,8 +539,8 @@ theorem homomorphismExists_sound {src dst : PseudoConfiguration}
     (hdf : dartFrom < src.darts.size) (hdt : dartTo < dst.darts.size)
     (h : homomorphismExists src dartFrom dst dartTo degreeTest = true) :
     ∃ vmap dmap, IsRootedHom src dst degreeTest dartFrom dartTo vmap dmap := by
-  obtain ⟨r, hr⟩ := Option.isSome_iff_exists.mp h
-  exact ⟨r.1, r.2, homCore_sound hsrc hdst hpack hdf hdt hr⟩
+  obtain ⟨⟨vmap, dmap⟩, hr⟩ := Option.isSome_iff_exists.mp h
+  exact ⟨vmap, dmap, homCore_sound hsrc hdst hpack hdf hdt hr⟩
 
 /-! ### Completeness scaffolding: a fuel-based total twin of `homCoreGo`
 
@@ -622,7 +575,7 @@ structure Agrees (src dst : PseudoConfiguration) (vm dm : IndexMap)
   toBounded : Bounded src dst q vmap dmap
   dmap_le : ∀ f fStar, dmap.idx? f = Option.some fStar → dm.idx? f = Option.some fStar
   vmap_le : ∀ v vStar, vmap.idx? v = Option.some vStar → vm.idx? v = Option.some vStar
-  queue_ok : ∀ p, Active q p → dm.idx? p.fst = Option.some p.snd
+  queue_ok : ∀ p, q.Active p → dm.idx? p.fst = Option.some p.snd
 
 /-- Number of still-unmapped dart cells `< dmap.size` -- the primary termination
 measure (strictly drops on every expand; re-pops shrink the queue instead). -/
@@ -691,7 +644,7 @@ theorem agrees_pop {src dst : PseudoConfiguration} {vm dm : IndexMap}
     {q q' : Queue SmallNatPair} {x : SmallNatPair} {vmap dmap : IndexMap}
     (ha : Agrees src dst vm dm q vmap dmap) (hp : q.pop? = some (x, q')) :
     Agrees src dst vm dm q' vmap dmap := by
-  grind [Agrees, bounded_pop, active_pop]
+  grind [Agrees, bounded_pop, Queue.active_pop]
 
 /-- Pushing an in-bounds, *correct* obligation keeps `Agrees`. -/
 theorem agrees_push {src dst : PseudoConfiguration} {vm dm : IndexMap}
@@ -700,7 +653,7 @@ theorem agrees_push {src dst : PseudoConfiguration} {vm dm : IndexMap}
     (hxb : x.fst < src.darts.size ∧ x.snd < dst.darts.size)
     (hxc : dm.idx? x.fst = Option.some x.snd) :
     Agrees src dst vm dm (q.push x) vmap dmap := by
-  grind [Agrees, bounded_push, active_push]
+  grind [Agrees, bounded_push, Queue.active_push]
 
 /-- Pushing a `pack a b` of a correct in-bounds obligation keeps `Agrees`. -/
 theorem agrees_push_pack {src dst : PseudoConfiguration} {vm dm : IndexMap}
@@ -780,7 +733,7 @@ theorem homStep_agrees {src dst : PseudoConfiguration}
   unfold homStep
   rcases hpq : q.pop? with _ | ⟨packed, q1⟩ <;> simp only []
   · rfl
-  · have hpk : Active q packed := active_head hpq
+  · have hpk : q.Active packed := Queue.active_head hpq
     have hbd := ha.toBounded.queued_bd packed hpk
     have hcorrect : dm.idx? packed.fst = Option.some packed.snd := ha.queue_ok packed hpk
     have hf : packed.fst < src.darts.size := hbd.1
