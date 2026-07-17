@@ -105,6 +105,20 @@ samples only):
 
 ## Codegen lessons (measured; they generalise)
 
+- **An erased-invariant wrapper type compiles away (measured 2026-07-17).**
+  Moving the homomorphism pipeline onto `WFConfig` (a `PseudoConfiguration`
+  plus an erased well-formedness/packability proof) leaves the compiled loop
+  unchanged: the trivial-structure optimisation represents the wrapper as its
+  single relevant field, so the specialised `homCoreGo` IR shows the same
+  borrowed parameters and projection chains as before (checked with
+  `trace.compiler.ir.result`). The runtime additions are the `wfCheck`
+  certifications at object boundaries (`Configuration`/`Rule`/`CartWheel`
+  construction, one per combination in `combineEachCartwheel`).
+  Single-thread user-CPU A/B against the pre-change binary: combine_rules
+  (84 rules, 8200 confs) medians 3.50 vs 3.52 s, enum_wheels d7 medians 77.1
+  vs 77.4 s, ranges overlapping; outputs byte-identical (671 combine files,
+  5439 enum files).
+
 - **Only self tail-calls seem to compile to loops.** A mutually tail-recursive
   split of a loop is real C calls (no TCO) -- measured 15-25% regression when a
   sweep and its kernel were split into mutually recursive functions.

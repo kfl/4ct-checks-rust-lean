@@ -110,6 +110,23 @@ page. Only the deviations below depart from a literal transcription.
   `root_deg_invariant` pins both fields to their derivation (erased at
   runtime), so every construction proves consistency.
 
+- **The homomorphism pipeline runs on certified configurations.** The BFS
+  (`homStep`/`homomorphismExists`, A.2) and the containment/charge drivers
+  take `WFConfig` -- a `PseudoConfiguration` carrying an erased proof of
+  well-formedness and `darts.size <= pairBase`. Certification is
+  `WFConfig.attach!`, a `wfCheck` run at the object boundaries: inside
+  `Configuration.new`/`Rule.new`/`CartWheel.new` (so loading, mirroring,
+  wheel generation and rule combination certify each object once) and once
+  per surviving combination in `combineEachCartwheel`. Degrees-only
+  refinements transport the certificate (`withDegrees`), and
+  `representativeDegree` re-certifies by an O(1) size test. On well-formed
+  input every check passes and `attach!` is the identity, so behaviour is
+  unchanged (byte-exact against both oracles); on malformed input the
+  reference computes on the malformed values, where the port prints a
+  `panic!` message and continues with the default -- the `Unionfind.unite`
+  guard convention. The field is erased and the checks are outside the
+  loops; measurements in `PERFORMANCE_NOTES.md`.
+
 - **Pseudocode `assert` lines become `proofAssert`** -- an always-on `IO`
   obligation that *throws* (`throw (IO.userError …)`) on failure, halting the run
   and keeping each spec assertion a literal line.
@@ -325,12 +342,15 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   (`PseudoConfiguration.lean`, `HomomorphismProofs.lean`): `WFConfig` bundles
   a configuration with an erased proof of well-formedness plus the packed-pair
   bound `darts.size <= pairBase` (the `queue_invariant`/`unionfind_invariant`
-  pattern at a boundary type, as sanctioned for `Mappings`). The BFS lemmas
-  take `src dst : WFConfig`, deleting the well-formedness/packability premise
-  row from all sixteen signatures; `WFConfig.attach?` certifies a loaded
-  object by the executable `wfCheck` (the predicates and checks now live
-  beside the definitions, decided by `wfCheck_iff`). Proof-side only: the
-  executable pipeline is unchanged, and no paper-cited code is affected.
+  pattern at a boundary type, as sanctioned for `Mappings`). The BFS and its
+  lemmas take `src dst : WFConfig`, deleting the well-formedness/packability
+  premise row from all sixteen signatures; `WFConfig.attach!` certifies each
+  loaded, generated or combined object once by the executable `wfCheck` (the
+  predicates and checks live beside the definitions, decided by
+  `wfCheck_iff`), so the facts are in scope inside `homStep`.
+  `Configuration.mirror` constructs its certificate from a structural
+  preservation lemma (swapping `succ`/`pred` keeps the graph well-formed,
+  `mirror_graph_wf`) rather than a re-check.
 
 Everything else rests on the byte-exact oracles above -- faithful by test, not
 yet by mechanised proof.

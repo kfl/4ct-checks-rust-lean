@@ -28,46 +28,49 @@ namespace PseudoConfiguration
 
 /-- Whether `rule` always applies at `dartId` -- its degrees include this
 configuration's (A.9.1). -/
-def alwaysApply (pc : PseudoConfiguration) (dartId : Nat) (rule : Rule) : Bool :=
-  homomorphismExists rule.toPseudoConfiguration rule.stId pc dartId Degree.includes
+def alwaysApply (pc : WFConfig) (dartId : Nat) (rule : Rule) : Bool :=
+  homomorphismExists rule.toWFConfig rule.stId pc dartId Degree.includes
 
 /-- Whether `rule` can never apply at `dartId` -- no degree-overlapping
 homomorphism exists (A.9.2). -/
-def neverApply (pc : PseudoConfiguration) (dartId : Nat) (rule : Rule) : Bool :=
-  !homomorphismExists rule.toPseudoConfiguration rule.stId pc dartId Degree.hasIntersection
+def neverApply (pc : WFConfig) (dartId : Nat) (rule : Rule) : Bool :=
+  !homomorphismExists rule.toWFConfig rule.stId pc dartId Degree.hasIntersection
 
 /-- Total charge guaranteed to be sent along `dartId` (A.9.3). -/
-def amountOfChargeSend (pc : PseudoConfiguration) (dartId : Nat) (rules : Array Rule) : Int :=
+def amountOfChargeSend (pc : WFConfig) (dartId : Nat) (rules : Array Rule) : Int :=
   Id.run do
   let mut amount : Int := 0
   for rule in rules do
-    if pc.alwaysApply dartId rule then amount := amount + rule.amount
+    if alwaysApply pc dartId rule then amount := amount + rule.amount
   return amount
 
 /-- Maximum charge that could possibly be sent along `dartId` over the applicable
 combined rules (A.9.4). -/
-def amountOfPossibleChargeSend (pc : PseudoConfiguration) (dartId : Nat)
+def amountOfPossibleChargeSend (pc : WFConfig) (dartId : Nat)
     (combinedRules : Array CombinedRule) : Int := Id.run do
   let mut amount : Int := 0
   for cr in combinedRules do
-    if pc.neverApply dartId cr.toRule then continue
+    if neverApply pc dartId cr.toRule then continue
     amount := max amount cr.amount
   return amount
 
 /-- Whether `rule` dominantly applies at `dartId` (A.9.15). -/
-def dominantlyApply (pc : PseudoConfiguration) (dartId : Nat) (rule : Rule) : Bool :=
+def dominantlyApply (pc : WFConfig) (dartId : Nat) (rule : Rule) : Bool :=
   let gDominant := fun (degR degC : Degree) =>
     Degree.hasIntersection degR degC && (degR.upper == INFTY || decide (degC.upper < CARTWHEEL_DEG_MAX))
-  homomorphismExists rule.toPseudoConfiguration rule.stId pc dartId gDominant
+  homomorphismExists rule.toWFConfig rule.stId pc dartId gDominant
 
 end PseudoConfiguration
 
 /-- A cartwheel: a pseudo-configuration with a distinguished centre vertex and its
 darts in rotation order. -/
-structure CartWheel extends PseudoConfiguration where
+structure CartWheel extends WFConfig where
   center : Nat
   centerDarts : Array Nat
-deriving DecidableEq, Repr, Inhabited, BEq
+deriving DecidableEq, Repr
+
+instance : Inhabited CartWheel :=
+  ⟨{ toWFConfig := default, center := 0, centerDarts := #[] }⟩
 
 namespace CartWheel
 
@@ -79,7 +82,7 @@ private def centerDartsOf (pc : PseudoConfiguration) (center : Nat) : Array Nat 
 /-- Construct from `(center, center_darts, N, darts, degrees)`. -/
 protected def new (center : Nat) (centerDarts : Array Nat) (n : Nat) (darts : Array Dart)
     (degrees : Array Degree) : CartWheel :=
-  { toPseudoConfiguration := PseudoConfiguration.new n darts degrees
+  { toWFConfig := WFConfig.attach! (PseudoConfiguration.new n darts degrees)
     center := center, centerDarts := centerDarts }
 
 /-- Serialise to the `.cartwheel` text format. The layout follows `FORMAT.md`,
@@ -124,7 +127,7 @@ def generateCartwheel (d : Nat) (degrees : Array Int) : CartWheel := Id.run do
   for i in [1:d+1] do
     allDegrees := allDegrees.set! i (Degree.exact degrees[i-1]!.toNat)
   let pc := PseudoConfiguration.fromVRotations k rotations allDegrees
-  return { toPseudoConfiguration := pc, center := 0, centerDarts := centerDartsOf pc 0 }
+  return { toWFConfig := WFConfig.attach! pc, center := 0, centerDarts := centerDartsOf pc 0 }
 
 /-- Parse one cartwheel from text. Tolerates the leading blank
 line that `write` emits. -/
@@ -144,7 +147,7 @@ def ofString (content : String) : CartWheel := Id.run do
     degrees := degrees.set! u deg
     rotationVertices := rotationVertices.set! u rotU
   let pc := PseudoConfiguration.fromVRotations n rotationVertices degrees
-  return { toPseudoConfiguration := pc, center := center, centerDarts := centerDartsOf pc center }
+  return { toWFConfig := WFConfig.attach! pc, center := center, centerDarts := centerDartsOf pc center }
 
 /-- Validate at the I/O boundary that the centre structure is coherent: `center`
 indexes `degrees` (and `n`), every centre dart indexes `darts`, and the centre's
@@ -210,22 +213,24 @@ def concreteDegreeExceptTail (cw : CartWheel) : Array CartWheel := Id.run do
       if Degree.includes (cw.degrees[v]!) (Degree.exact dval) then
         for cartwheel in cartwheels do
           newCartwheels := newCartwheels.push
-            { cartwheel with degrees := cartwheel.degrees.set! v (Degree.exact dval) }
+            { cartwheel with toWFConfig := (cartwheel.toWFConfig.withDegrees
+                (cartwheel.degrees.set! v (Degree.exact dval)) (by simp)) }
     cartwheels := newCartwheels
   return cartwheels
 
 /-- Intersect degrees with a rule applied at `dartId`, then concretise
 (A.9.9). -/
 def updateDegreeByRule (cw : CartWheel) (dartId : Nat) (rule : Rule) : Array CartWheel :=
-  match PseudoConfiguration.homomorphism rule.toPseudoConfiguration rule.stId
-      cw.toPseudoConfiguration dartId Degree.hasIntersection with
+  match PseudoConfiguration.homomorphism rule.toWFConfig rule.stId
+      cw.toWFConfig dartId Degree.hasIntersection with
   | none => #[]
   | some rule2cw => Id.run do
     let mut updated := cw
     for vRule in [0:rule.n] do
       let vCw := (rule2cw.vmap[vRule]!).idx!
       let newDeg := Degree.intersection (updated.degrees[vCw]!) (rule.degrees[vRule]!)
-      updated := { updated with degrees := updated.degrees.set! vCw newDeg }
+      updated := { updated with toWFConfig := (updated.toWFConfig.withDegrees
+        (updated.degrees.set! vCw newDeg) (by simp)) }
     return updated.concreteDegreeExceptTail
 
 /-- Prune if a fixed spoke rule applies that the combination doesn't record
@@ -236,7 +241,7 @@ def pruneByNonAssociatedRule (cw : CartWheel) (combinedRuleWithSpokes : Array Co
     (rules : Array Rule) : Bool := Id.run do
   for j in [0:combinedRuleWithSpokes.size] do
     for k in [0:rules.size] do
-      let applies := cw.toPseudoConfiguration.alwaysApply (cw.centerDarts[j]!) rules[k]!
+      let applies := PseudoConfiguration.alwaysApply cw.toWFConfig (cw.centerDarts[j]!) rules[k]!
       if (combinedRuleWithSpokes[j]!).combinedFlag[k]! && !applies then
         panic! "prune_by_non_associated_rule invariant violated"
       if !(combinedRuleWithSpokes[j]!).combinedFlag[k]! && applies then
@@ -252,11 +257,11 @@ def upperBoundOfCharge (cw : CartWheel) (combinedRuleWithSpokes : Array Combined
     inChargeSum := inChargeSum + cr.amount
   for j in [combinedRuleWithSpokes.size:degreeCenter] do
     inChargeSum := inChargeSum +
-      cw.toPseudoConfiguration.amountOfPossibleChargeSend (cw.centerDarts[j]!) combinedRules
+      PseudoConfiguration.amountOfPossibleChargeSend cw.toWFConfig (cw.centerDarts[j]!) combinedRules
   let mut outChargeSum : Int := 0
   for i in [0:degreeCenter] do
     let fromCenter := (cw.darts[cw.centerDarts[i]!]!).rev
-    outChargeSum := outChargeSum + cw.toPseudoConfiguration.amountOfChargeSend fromCenter rules
+    outChargeSum := outChargeSum + PseudoConfiguration.amountOfChargeSend cw.toWFConfig fromCenter rules
   let initialCharge : Int := 10 * (6 - (degreeCenter : Int))
   return initialCharge - outChargeSum + inChargeSum
 
@@ -265,7 +270,7 @@ def prune (cw : CartWheel) (combinedRuleWithSpokes : Array CombinedRule) (rules 
     (combinedRules : Array CombinedRule) (confs : Array Configuration) : Bool :=
   cw.pruneByNonAssociatedRule combinedRuleWithSpokes rules
   || decide (cw.upperBoundOfCharge combinedRuleWithSpokes rules combinedRules < 0)
-  || cw.toPseudoConfiguration.blockedByReducibleConfiguration cw.center confs
+  || PseudoConfiguration.blockedByReducibleConfiguration cw.toWFConfig cw.center confs
 
 /-- Enumerate wheels of the given centre degree that survive the initial pruning
 (A.9.7).
@@ -301,8 +306,8 @@ def fixInRules (cw : CartWheel) (rules : Array Rule) (combinedRules : Array Comb
 /-- Whether spoke `i` should be refined for `rule` (A.9.16). -/
 def shouldRefine (cw : CartWheel) (i : Nat) (rule : Rule) : Bool :=
   let fromCenter := (cw.darts[cw.centerDarts[i]!]!).rev
-  !cw.toPseudoConfiguration.alwaysApply fromCenter rule
-    && cw.toPseudoConfiguration.dominantlyApply fromCenter rule
+  !PseudoConfiguration.alwaysApply cw.toWFConfig fromCenter rule
+    && PseudoConfiguration.dominantlyApply cw.toWFConfig fromCenter rule
 
 /-- The refinement where every `U_R` vertex takes the rule's lower bound
 (A.9.18). -/
@@ -312,7 +317,8 @@ def refineAlways (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : 
   for vRule in uR do
     let vCw := (rule2cw.vmap[vRule]!).idx!
     let newDeg : Degree := ⟨(rule.degrees[vRule]!).lower, (cAlways.degrees[vCw]!).upper⟩
-    cAlways := { cAlways with degrees := cAlways.degrees.set! vCw newDeg }
+    cAlways := { cAlways with toWFConfig := (cAlways.toWFConfig.withDegrees
+      (cAlways.degrees.set! vCw newDeg) (by simp)) }
   return cAlways
 
 /-- The refinements where each `U_R` vertex in turn stays below the rule's lower
@@ -323,7 +329,8 @@ def refineNever (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : R
   for vRule in uR do
     let vCw := (rule2cw.vmap[vRule]!).idx!
     let newDeg : Degree := ⟨(cw.degrees[vCw]!).lower, (rule.degrees[vRule]!).lower - 1⟩
-    let base : CartWheel := { cw with degrees := cw.degrees.set! vCw newDeg }
+    let base : CartWheel := { cw with toWFConfig := (cw.toWFConfig.withDegrees
+      (cw.degrees.set! vCw newDeg) (by simp)) }
     cNever := cNever ++ base.concreteDegreeExceptTail
   return cNever
 
@@ -332,8 +339,8 @@ for `rule` (A.9.17). The `U_R`-nonempty `assert` is a structural
 invariant guaranteed by `should_refine` → `panic!`. -/
 def refinement (cw : CartWheel) (i : Nat) (rule : Rule) : Array CartWheel := Id.run do
   let fromCenter := (cw.darts[cw.centerDarts[i]!]!).rev
-  let rule2cw := (PseudoConfiguration.homomorphism rule.toPseudoConfiguration rule.stId
-    cw.toPseudoConfiguration fromCenter Degree.hasIntersection).get!
+  let rule2cw := (PseudoConfiguration.homomorphism rule.toWFConfig rule.stId
+    cw.toWFConfig fromCenter Degree.hasIntersection).get!
   let mut uR : Array Nat := #[]
   for vRule in [0:rule.n] do
     let vCw := (rule2cw.vmap[vRule]!).idx!
@@ -430,25 +437,29 @@ so the survivor list is identical to the sequential sweep's at any thread
 count. This inner level is what lets the check drivers absorb per-cartwheel
 cost skew: even a single expensive cartwheel's check is thousands of tasks
 wide. -/
-def combineEachCartwheel (pc : PseudoConfiguration) (dart : Nat) (cartwheels : Array CartWheel)
-    (confs : Array Configuration) : Array (PseudoConfiguration × Mappings) :=
+def combineEachCartwheel (pc : WFConfig) (dart : Nat) (cartwheels : Array CartWheel)
+    (confs : Array Configuration) : Array (WFConfig × Mappings) :=
   parFlatMap cartwheels fun cartwheel => Id.run do
-    let mut zs : Array (PseudoConfiguration × Mappings) := #[]
+    let mut zs : Array (WFConfig × Mappings) := #[]
     for centerDart in cartwheel.centerDarts do
-      let fhs := freeHomomorphismPair pc cartwheel.toPseudoConfiguration dart centerDart
-      for (zStar, mappingsPc, _) in fhs do
-        if zStar.blockedByReducibleConfiguration 0 confs then continue
+      let fhs := freeHomomorphismPair pc.toPseudoConfiguration cartwheel.toPseudoConfiguration
+        dart centerDart
+      for (zStarRaw, mappingsPc, _) in fhs do
+        -- certify each surviving combination once (O(darts), amortised over
+        -- every containment trial run against it)
+        let zStar := WFConfig.attach! zStarRaw
+        if blockedByReducibleConfiguration zStar 0 confs then continue
         zs := zs.push (zStar, mappingsPc)
     return zs
 
 /-- Glue cartwheels onto two darts in sequence (A.10.3). -/
-def combineEachCartwheelTwice (pc : PseudoConfiguration) (dart1 dart2 : Nat)
+def combineEachCartwheelTwice (pc : WFConfig) (dart1 dart2 : Nat)
     (cartwheels : Array CartWheel) (confs : Array Configuration) :
-    Array (PseudoConfiguration × Mappings) := Id.run do
-  let mut zStarStars : Array (PseudoConfiguration × Mappings) := #[]
-  for (zStar, cw2zStar) in pc.combineEachCartwheel dart1 cartwheels confs do
+    Array (WFConfig × Mappings) := Id.run do
+  let mut zStarStars : Array (WFConfig × Mappings) := #[]
+  for (zStar, cw2zStar) in combineEachCartwheel pc dart1 cartwheels confs do
     let mappedDart2 := (cw2zStar.dmap[dart2]!).idx!
-    for (z, zStar2z) in zStar.combineEachCartwheel mappedDart2 cartwheels confs do
+    for (z, zStar2z) in combineEachCartwheel zStar mappedDart2 cartwheels confs do
       zStarStars := zStarStars.push (z, cw2zStar.compose zStar2z)
   return zStarStars
 

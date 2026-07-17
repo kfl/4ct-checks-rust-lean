@@ -42,17 +42,17 @@ def deleteDegreeFromKTo9 (cartwheels : Array CartWheel) (k : Nat) : Array CartWh
     else
       let degrees := cw.degrees.map fun d =>
         if d.lower == k - 1 && d.upper == CARTWHEEL_DEG_MAX then ⟨d.lower, k - 1⟩ else d
-      some { cw with degrees := degrees }
+      some { cw with toWFConfig := cw.toWFConfig.withDegrees degrees (by simp [degrees]) }
 
 /-- Drop cartwheels that contain a 7-triangle. -/
 def delete7triangle (cartwheels : Array CartWheel) : Array CartWheel :=
   let confs := #[get7triangle]
   cartwheels.filter fun cw =>
-    !cw.toPseudoConfiguration.blockedByReducibleConfiguration 0 confs
+    !PseudoConfiguration.blockedByReducibleConfiguration cw.toWFConfig 0 confs
 
 /-- The fixed obstruction configuration `X` (A.10.8). -/
-def getX : PseudoConfiguration :=
-  PseudoConfiguration.fromVRotations 17
+def getX : WFConfig :=
+  WFConfig.attach! <| PseudoConfiguration.fromVRotations 17
     #[#[1, 2, 3, 4, 5, 6, 7, 8], #[0, 8, 11, 12, 2], #[0, 1, 12, -1, 3], #[0, 2, -1, 13, 4],
       #[0, 3, 13, 14, 5], #[0, 4, 14, 15, 16, -1, 6], #[0, 5, -1, 7], #[0, 6, -1, 8],
       #[0, 7, -1, 9, 10, 11, 1], #[8, -1, 10], #[8, 9, -1, 11], #[1, 8, 10, -1, 12],
@@ -64,7 +64,7 @@ def getX : PseudoConfiguration :=
 
 /-- Whether `X` embeds into `z` rooted at vertex `v`, over the 8 rotations of the
 root dart. -/
-def containX (z : PseudoConfiguration) (v : Nat) : Bool := Id.run do
+def containX (z : WFConfig) (v : Nat) : Bool := Id.run do
   let x := getX
   let dartZ := (z.anyDart v).get!
   let mut dartX := (x.anyDart 0).get!
@@ -81,14 +81,14 @@ def check88 (cartwheel : CartWheel) (darts8 : Array Nat) (cartwheels : Array Car
     (confs : Array Configuration) : IO Unit := do
   for dart in darts8 do
     let rev := (cartwheel.darts[dart]!).rev
-    let combined := cartwheel.toPseudoConfiguration.combineEachCartwheel rev cartwheels confs
+    let combined := PseudoConfiguration.combineEachCartwheel cartwheel.toWFConfig rev cartwheels confs
     proofAssert combined.isEmpty "check88: a combination survived"
 
 /-- Degree-8 centre with a single degree-7 spoke: no combination may survive. -/
 def check87 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : IO Unit := do
   let rev := (cartwheel.darts[darts7[0]!]!).rev
-  let combined := cartwheel.toPseudoConfiguration.combineEachCartwheel rev cartwheels confs
+  let combined := PseudoConfiguration.combineEachCartwheel cartwheel.toWFConfig rev cartwheels confs
   proofAssert combined.isEmpty "check87: a combination survived"
 
 /-- Degree-8 centre with multiple degree-7 spokes: every combination must contain `X`. -/
@@ -112,7 +112,7 @@ def check787 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array Ca
     let rev1 := (cartwheel.darts[dart1]!).rev
     let rev2 := (cartwheel.darts[dart2]!).rev
     let combinedSet :=
-      cartwheel.toPseudoConfiguration.combineEachCartwheelTwice rev1 rev2 cartwheels confs
+      PseudoConfiguration.combineEachCartwheelTwice cartwheel.toWFConfig rev1 rev2 cartwheels confs
     for (combined, mappingsCw) in combinedSet do
       let center := (mappingsCw.vmap[cartwheel.center]!).idx!
       proofAssert (containX combined center) "check787: combination must contain X"
@@ -169,7 +169,7 @@ def check7triangle (allCartwheels : Array CartWheel) (confs : Array Configuratio
       proofAssert (cartwheel.degrees[vF]!).fixed "check_7triangle: v_f degree not fixed"
       if (cartwheel.degrees[vE]!).lower == 7 && (cartwheel.degrees[vF]!).lower == 7 then
         let combined :=
-          cartwheel.toPseudoConfiguration.combineEachCartwheelTwice revE revF cartwheels confs
+          PseudoConfiguration.combineEachCartwheelTwice cartwheel.toWFConfig revE revF cartwheels confs
         proofAssert combined.isEmpty "check_7triangle: a combination survived"
   IO.println "Finished checking 7-triangles."
 
@@ -185,7 +185,7 @@ def runCheck7triangle (cartwheeldir confdir : System.FilePath)
 def check77 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : IO Unit := do
   let rev := (cartwheel.darts[darts7[0]!]!).rev
-  let combined := cartwheel.toPseudoConfiguration.combineEachCartwheel rev cartwheels confs
+  let combined := PseudoConfiguration.combineEachCartwheel cartwheel.toWFConfig rev cartwheels confs
   proofAssert combined.isEmpty "check77: a combination survived"
 
 /-- Degree-7 centre with multiple degree-7 spokes: no combination may survive. -/
@@ -196,7 +196,7 @@ def check777 (cartwheel : CartWheel) (darts7 : Array Nat) (cartwheels : Array Ca
     for j in [0:i] do
       let rev2 := (cartwheel.darts[darts7[j]!]!).rev
       let combined :=
-        cartwheel.toPseudoConfiguration.combineEachCartwheelTwice rev1 rev2 cartwheels confs
+        PseudoConfiguration.combineEachCartwheelTwice cartwheel.toWFConfig rev1 rev2 cartwheels confs
       proofAssert combined.isEmpty "check777: a combination survived"
 
 /-- Lemma A.6 check: a vertex of degree 7. -/
