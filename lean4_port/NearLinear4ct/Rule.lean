@@ -19,21 +19,26 @@ namespace NearLinear4ct
 
 /-- A discharging rule. `stId` is the dart from `t` to `s` (charge
 sender→receiver); `amount` is the charge. -/
-structure Rule extends PseudoConfiguration where
+structure Rule extends WFConfig where
   stId : Nat
   amount : Int
-deriving DecidableEq, Repr, Inhabited, BEq
+deriving DecidableEq, Repr
+
+instance : Inhabited Rule := ⟨{ toWFConfig := default, stId := 0, amount := 0 }⟩
 
 /-- A combination of rules with its inclusion bitvector. -/
 structure CombinedRule extends Rule where
   combinedFlag : Array Bool
-deriving DecidableEq, Repr, Inhabited, BEq
+deriving DecidableEq, Repr
+
+instance : Inhabited CombinedRule := ⟨{ toRule := default, combinedFlag := #[] }⟩
 
 namespace Rule
 
 /-- Construct from `(st_id, amount, N, darts, degrees)`. -/
 protected def new (stId : Nat) (amount : Int) (n : Nat) (darts : Array Dart) (degrees : Array Degree) : Rule :=
-  { toPseudoConfiguration := PseudoConfiguration.new n darts degrees, stId := stId, amount := amount }
+  { toWFConfig := WFConfig.attach! (PseudoConfiguration.new n darts degrees),
+    stId := stId, amount := amount }
 
 /-- Parse one rule from `lines` starting at `cursor` (after the leading blank
 line), returning the rule and the advanced cursor. -/
@@ -54,7 +59,7 @@ def parse (lines : Array String) (cursor : Nat) : Rule × Nat := Id.run do
     rotationVertices := rotationVertices.set! u rotU
   let pc := PseudoConfiguration.fromVRotations n rotationVertices degrees
   let st := pc.getDarts t.toNat s.toNat
-  return ({ toPseudoConfiguration := pc, stId := st[0]!, amount := amount }, cur)
+  return ({ toWFConfig := WFConfig.attach! pc, stId := st[0]!, amount := amount }, cur)
 
 /-- Serialise to the `.rule` text format. The output is the proof
 artefact; its byte layout follows `FORMAT.md`, plus the trailing space after each
@@ -123,7 +128,7 @@ def addRuleToCombination (cr : CombinedRule) (rules : Array Rule) (i : Nat)
   if confs.isEmpty then return rTildes
   return rTildes.filter fun rTilde =>
     let center := (rTilde.darts[rTilde.stId]!).head
-    !rTilde.toPseudoConfiguration.blockedByReducibleConfiguration center confs
+    !PseudoConfiguration.blockedByReducibleConfiguration rTilde.toWFConfig center confs
 
 end CombinedRule
 

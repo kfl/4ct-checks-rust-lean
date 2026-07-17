@@ -302,9 +302,9 @@ def pcTests (c : Counter) : IO Unit := do
       #[5, 0, 3, -1], #[6, 0, 4, -1], #[1, 0, 5, -1]]
     #[dgx 6, dg 5 INFTY, dgx 6, dgx 6, dgx 5, dgx 6, dgx 6]
   expect c "pc findHom (0,1)->(0,1)"
-    (PseudoConfiguration.homomorphism fh0 0 fh1 0 Degree.hasIntersection).isSome
+    (PseudoConfiguration.homomorphism (WFConfig.attach! fh0) 0 (WFConfig.attach! fh1) 0 Degree.hasIntersection).isSome
   expect c "pc findHom (0,1)->(6,1) none"
-    (PseudoConfiguration.homomorphism fh0 0 fh1 8 Degree.hasIntersection).isNone
+    (PseudoConfiguration.homomorphism (WFConfig.attach! fh0) 0 (WFConfig.attach! fh1) 8 Degree.hasIntersection).isNone
 
 /-- Write `content` to a freshly-created temp file (secure, race-free, unique
 name in the system temp dir, via `IO.FS.createTempFile`) and return its path. The
@@ -335,7 +335,7 @@ def exA (xs : List Nat) : Array Degree := (xs.map dgx).toArray
 def setDeg (cw : CartWheel) (mods : List (Nat × Nat)) : CartWheel := Id.run do
   let mut c := cw
   for (v, d) in mods do
-    c := { c with degrees := c.degrees.set! v (dgx d) }
+    c := { c with toWFConfig := (c.toWFConfig.withDegrees (c.degrees.set! v (dgx d)) (by simp)) }
   return c
 
 /-- Cartwheel FromFile / enumWheels / charge / pruning / refinement /
@@ -367,28 +367,28 @@ def cartwheelTests (c : Counter) : IO Unit := do
     let mut outCharge : Int := 0
     let mut inCharge : Int := 0
     for dartId in wheel.centerDarts do
-      inCharge := inCharge + wheel.toPseudoConfiguration.amountOfChargeSend dartId rules3
+      inCharge := inCharge + PseudoConfiguration.amountOfChargeSend wheel.toWFConfig dartId rules3
       let rev := (wheel.darts[dartId]!).rev
-      outCharge := outCharge + wheel.toPseudoConfiguration.amountOfChargeSend rev rules3
+      outCharge := outCharge + PseudoConfiguration.amountOfChargeSend wheel.toWFConfig rev rules3
     expect c s!"charge out={expOut}" (outCharge == expOut)
     expect c s!"charge in={expIn}" (inCharge == expIn)
 
   -- AmountChargeSend (specific dart ids)
   let acsCw := setDeg (CartWheel.generateCartwheel 7 #[5, 5, 5, 5, 7, 5, 7]) [(8, 6), (18, 5)]
-  let acsP := acsCw.toPseudoConfiguration
-  expect c "amountChargeSend 28" (acsP.amountOfChargeSend 28 rules3 == 1)
-  expect c "amountChargeSend 41" (acsP.amountOfChargeSend 41 rules3 == 0)
-  expect c "amountChargeSend 23" (acsP.amountOfChargeSend 23 rules3 == 0)
-  expect c "amountChargeSend 6" (acsP.amountOfChargeSend 6 rules3 == 1)
-  expect c "amountChargeSend 0" (acsP.amountOfChargeSend 0 rules3 == 2)
+  let acsP := acsCw.toWFConfig
+  expect c "amountChargeSend 28" (PseudoConfiguration.amountOfChargeSend acsP 28 rules3 == 1)
+  expect c "amountChargeSend 41" (PseudoConfiguration.amountOfChargeSend acsP 41 rules3 == 0)
+  expect c "amountChargeSend 23" (PseudoConfiguration.amountOfChargeSend acsP 23 rules3 == 0)
+  expect c "amountChargeSend 6" (PseudoConfiguration.amountOfChargeSend acsP 6 rules3 == 1)
+  expect c "amountChargeSend 0" (PseudoConfiguration.amountOfChargeSend acsP 0 rules3 == 2)
 
   -- AmountPossibleChargeSend
   let combined3 := combineRules rules3 #[]
   let apcsCw := setDeg (CartWheel.generateCartwheel 8 #[5, 7, 5, 7, 5, 9, 9, 9]) [(13, 6), (14, 7)]
-  let apcsP := apcsCw.toPseudoConfiguration
-  expect c "amountPossibleChargeSend 1" (apcsP.amountOfPossibleChargeSend 1 combined3 == 1)
-  expect c "amountPossibleChargeSend 2" (apcsP.amountOfPossibleChargeSend 2 combined3 == 2)
-  expect c "amountPossibleChargeSend 3" (apcsP.amountOfPossibleChargeSend 3 combined3 == 2)
+  let apcsP := apcsCw.toWFConfig
+  expect c "amountPossibleChargeSend 1" (PseudoConfiguration.amountOfPossibleChargeSend apcsP 1 combined3 == 1)
+  expect c "amountPossibleChargeSend 2" (PseudoConfiguration.amountOfPossibleChargeSend apcsP 2 combined3 == 2)
+  expect c "amountPossibleChargeSend 3" (PseudoConfiguration.amountOfPossibleChargeSend apcsP 3 combined3 == 2)
 
   -- PruneByCharge
   let pcWheel0 := CartWheel.generateCartwheel 7 #[7, 5, 7, 5, 7, 5, 5]
@@ -409,7 +409,7 @@ def cartwheelTests (c : Counter) : IO Unit := do
   let withMods (mods : List (Nat × Degree)) : CartWheel := Id.run do
     let mut x := refCw
     for (v, deg) in mods do
-      x := { x with degrees := x.degrees.set! v deg }
+      x := { x with toWFConfig := (x.toWFConfig.withDegrees (x.degrees.set! v deg) (by simp)) }
     return x
   let refExp := #[
     withMods [(11, dgx 5)], withMods [(15, dgx 5)], withMods [(15, dgx 6)],
@@ -445,16 +445,16 @@ def cartwheelTests (c : Counter) : IO Unit := do
   let confs1 ← Configuration.fromFile cf1
   IO.FS.removeFile cf1
   let ctnCw := setDeg (CartWheel.generateCartwheel 7 #[6, 6, 6, 6, 6, 6, 6]) [(9, 5), (10, 5), (12, 5), (13, 5)]
-  expect c "Contain1" (ctnCw.toPseudoConfiguration.blockedByReducibleConfiguration ctnCw.center confs1)
+  expect c "Contain1" (PseudoConfiguration.blockedByReducibleConfiguration ctnCw.toWFConfig ctnCw.center confs1)
   let cf2 ← tempFile conf2
   let confs2 ← Configuration.fromFile cf2
   IO.FS.removeFile cf2
   let ctn2Cw := setDeg (CartWheel.generateCartwheel 7 #[5, 6, 6, 6, 6, 6, 5]) [(8, 6)]
   expect c "Contain2 not blocked"
-    (!ctn2Cw.toPseudoConfiguration.blockedByReducibleConfiguration ctn2Cw.center confs2)
+    (!PseudoConfiguration.blockedByReducibleConfiguration ctn2Cw.toWFConfig ctn2Cw.center confs2)
   let ctn2Cw' := setDeg ctn2Cw [(9, 5)]
   expect c "Contain2 blocked"
-    (ctn2Cw'.toPseudoConfiguration.blockedByReducibleConfiguration ctn2Cw'.center confs2)
+    (PseudoConfiguration.blockedByReducibleConfiguration ctn2Cw'.toWFConfig ctn2Cw'.center confs2)
 
 /-- fromFile parses a .conf into configurations (cut-vertices expanded, each
 paired with its mirror). -/

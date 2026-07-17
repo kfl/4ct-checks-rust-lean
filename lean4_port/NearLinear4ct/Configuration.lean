@@ -24,7 +24,7 @@ dart. `rootHeadDeg`/`rootTailDeg` cache the root dart's endpoint lower degrees
 
 `BEq` comes through `DecidableEq` (the derived `BEq` cannot transport the
 invariant field); `Inhabited` is the hand instance below `new`. -/
-structure Configuration extends PseudoConfiguration where
+structure Configuration extends WFConfig where
   dartId : Nat
   rootHeadDeg : Nat
   rootTailDeg : Nat
@@ -38,24 +38,44 @@ deriving DecidableEq, Repr
 
 namespace Configuration
 
-/-- Construct from `(dart_id, N, darts, degrees)`. -/
+/-- Construct from `(dart_id, N, darts, degrees)`. The certification runs
+here (`attach!`), so the cached root degrees are read off the attached
+value -- identical to the arguments on well-formed input. -/
 protected def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree) : Configuration :=
-  let f := darts[dartId]!
-  { toPseudoConfiguration := PseudoConfiguration.new n darts degrees, dartId := dartId
-    rootHeadDeg := (degrees[f.head]!).lower
-    rootTailDeg := (degrees[(darts[f.rev]!).head]!).lower
+  let c := WFConfig.attach! (PseudoConfiguration.new n darts degrees)
+  let f := c.darts[dartId]!
+  { toWFConfig := c, dartId := dartId
+    rootHeadDeg := (c.degrees[f.head]!).lower
+    rootTailDeg := (c.degrees[(c.darts[f.rev]!).head]!).lower
     root_deg_invariant := ⟨rfl, rfl⟩ }
 
 /-- Literal fields: no panicking empty-array reads in the initialiser. -/
 instance : Inhabited Configuration :=
-  ⟨{ toPseudoConfiguration := ⟨⟨0, #[]⟩, #[]⟩, dartId := 0,
+  ⟨{ toWFConfig := default, dartId := 0,
      rootHeadDeg := 0, rootTailDeg := 0,
      root_deg_invariant := ⟨rfl, rfl⟩ }⟩
 
-/-- Reflect the configuration by swapping each dart's `succ`/`pred`. -/
+/-- Swapping every dart's `succ`/`pred` preserves graph well-formedness:
+`head`/`rev` are untouched and the two link clauses swap. -/
+private theorem mirror_graph_wf {pt : PseudoTriangulation} (h : pt.WF) :
+    (⟨pt.n, pt.darts.map fun d => { d with succ := d.pred, pred := d.succ }⟩
+      : PseudoTriangulation).WF := by
+  grind [PseudoTriangulation.WF, Dart.InBounds]
+
+/-- Reflect the configuration by swapping each dart's `succ`/`pred`. The
+mirrored certificate is constructed from `mirror_graph_wf` -- the mirror
+preserves well-formedness structurally, so no re-check runs. -/
 def mirror (conf : Configuration) : Configuration :=
   let darts := conf.darts.map fun d => { d with succ := d.pred, pred := d.succ }
-  Configuration.new conf.dartId conf.n darts conf.degrees
+  let f := darts[conf.dartId]!
+  { toWFConfig :=
+      ⟨⟨⟨conf.n, darts⟩, conf.degrees⟩,
+        by exact ⟨mirror_graph_wf conf.wf.1, conf.wf.2⟩,
+        by simpa [darts] using conf.packable⟩
+    dartId := conf.dartId
+    rootHeadDeg := (conf.degrees[f.head]!).lower
+    rootTailDeg := (conf.degrees[(darts[f.rev]!).head]!).lower
+    root_deg_invariant := ⟨rfl, rfl⟩ }
 
 end Configuration
 
@@ -285,8 +305,8 @@ def dartsByDegree (pc : PseudoConfiguration) : Array (Array (Array Nat)) := Id.r
 
 /-- Whether `conf` embeds into `pc` rooted at `dartId`, with the configuration's
 degrees included in `pc`'s (A.6.8). -/
-def rootedContainConf (pc : PseudoConfiguration) (dartId : Nat) (conf : Configuration) : Bool :=
-  PseudoConfiguration.homomorphismExists conf.toPseudoConfiguration conf.dartId pc dartId
+def rootedContainConf (pc : WFConfig) (dartId : Nat) (conf : Configuration) : Bool :=
+  PseudoConfiguration.homomorphismExists conf.toWFConfig conf.dartId pc dartId
     Degree.includes
 
 /-- Whether this configuration contains any reducible configuration in `confs`
@@ -295,17 +315,17 @@ outer wheel/combination level. The sweep is short-circuiting `Array.any`, so
 the spec's first-match exit is preserved. A candidate dart is skipped when
 the spec's `dY > 8` guard fires (a high-degree root maps only the dart whose
 head is the wheel `center`). -/
-def containConf (pc : PseudoConfiguration) (center : Nat) (confs : Array Configuration) : Bool :=
+def containConf (pc : WFConfig) (center : Nat) (confs : Array Configuration) : Bool :=
   let dbd := pc.dartsByDegree
   confs.any fun conf =>
     let dY := conf.rootHeadDeg
     ((dbd[dY]!)[conf.rootTailDeg]!).any fun fStar =>
-      (dY ≤ 8 || (pc.darts[fStar]!).head == center) && pc.rootedContainConf fStar conf
+      (dY ≤ 8 || (pc.darts[fStar]!).head == center) && rootedContainConf pc fStar conf
 
 /-- Enumerate the fixed-degree representatives (A.7.2). High degrees collapse to a
 single `exact upper` instead of expanding. -/
-def representativeDegree (pc : PseudoConfiguration) (center : Nat) :
-    Array PseudoConfiguration := Id.run do
+def representativeDegree (pc : WFConfig) (center : Nat) :
+    Array WFConfig := Id.run do
   let n := pc.n
   let mut t : Array (Array Degree) := #[Array.replicate n ⟨1, INFTY⟩]
   for v in [0:n] do
@@ -323,13 +343,18 @@ def representativeDegree (pc : PseudoConfiguration) (center : Nat) :
       for d in choices do
         newT := newT.push (degs.set! v d)
     t := newT
-  return t.map (fun deg => PseudoConfiguration.new n pc.darts deg)
+  -- certification transports per representative: the graph is `pc`'s and the
+  -- degree table keeps its size, so the guard is an O(1) size test (never
+  -- fires: the tables descend from `replicate n` by `set!`)
+  return t.map fun deg =>
+    if h : deg.size = pc.degrees.size then pc.withDegrees deg h
+    else panic! "representativeDegree: degree table size changed"
 
 /-- Whether every fixed-degree representative contains a reducible configuration
 (A.7.1). -/
-def blockedByReducibleConfiguration (pc : PseudoConfiguration) (center : Nat)
+def blockedByReducibleConfiguration (pc : WFConfig) (center : Nat)
     (confs : Array Configuration) : Bool :=
-  (pc.representativeDegree center).all (fun z => z.containConf center confs)
+  (representativeDegree pc center).all (fun z => containConf z center confs)
 
 end PseudoConfiguration
 end NearLinear4ct

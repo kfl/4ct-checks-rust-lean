@@ -23,8 +23,10 @@ on a `WF` graph every worklist push (`rev`/`succ`/`pred`, Algorithm A.2)
 stays in `[0, darts.size)`, so `dmap.set!` always marks.
 
 Contents: preservation -- `fromVRotations` (unconditional), `disjointUnion`,
-the free homomorphism (quotient well-formedness and coherence), the A.4
-degree-resolution steps, and the configuration `mirror`.
+the free homomorphism (quotient well-formedness and coherence), and the A.4
+degree-resolution steps. The configuration `mirror`'s preservation lemma
+lives beside its definition (`Configuration.lean`), where it constructs the
+mirrored certificate.
 -/
 
 namespace NearLinear4ct
@@ -800,12 +802,6 @@ private theorem GlueCoherent.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
     (q'.push ((darts[ufD.root e]!).rev, (darts[ufD.root f]!).rev))
     (ufD.root e) (ufD.root f)
   let predState := gluePred succState.1 succState.2 (ufD.root e) (ufD.root f)
-  have hsucc : GlueInv pt succState.1 ufV'
-      (ufD.unite (ufD.root e) (ufD.root f)) succState.2 :=
-    (glueSucc_spec hcore hre hrf).1
-  have hpred : GlueInv pt predState.1 ufV'
-      (ufD.unite (ufD.root e) (ufD.root f)) predState.2 :=
-    (gluePred_spec hsucc hre hrf).1
   have afterCore {a b : Nat} (hab : PendingEq ufD q a b) :
       PendingEq (ufD.unite (ufD.root e) (ufD.root f))
         (q'.push ((darts[ufD.root e]!).rev, (darts[ufD.root f]!).rev)) a b := by
@@ -1298,9 +1294,6 @@ private theorem freeHomomorphismPair_seed_bounds {pt0 pt1 : PseudoTriangulation}
     ∀ p ∈ #[(dartId0, dartId1 + pt0.darts.size)],
       p.1 < (pt0.disjointUnion pt1).darts.size ∧
       p.2 < (pt0.disjointUnion pt1).darts.size := by
-  intro p hp
-  have hpEq : p = (dartId0, dartId1 + pt0.darts.size) := by simpa using hp
-  subst p
   grind [disjointUnion_darts]
 
 /-- Gluing two well-formed triangulations at in-range darts produces a
@@ -1626,32 +1619,5 @@ theorem fixSingleDegreeIssue_wf {pc : PseudoConfiguration} (hpc : pc.WF)
 end Steps
 
 end PseudoConfiguration
-
-namespace Configuration
-
-/-- `mirror`'s dart array, definitionally (so `simp` can rewrite under
-`getElem`). -/
-private theorem mirror_darts (conf : Configuration) :
-    conf.mirror.darts
-      = conf.darts.map fun d => { d with succ := d.pred, pred := d.succ } := rfl
-
-/-- `mirror` keeps the vertex count, definitionally. -/
-private theorem mirror_n (conf : Configuration) :
-    conf.mirror.n = conf.n := rfl
-
-/-- `mirror` keeps the degrees, definitionally. -/
-private theorem mirror_degrees (conf : Configuration) :
-    conf.mirror.degrees = conf.degrees := rfl
-
-/-- `mirror` (reflecting the configuration by swapping each dart's
-`succ`/`pred`) preserves well-formedness: `head`/`rev` are untouched and the
-two rotation clauses swap. -/
-theorem mirror_wf {conf : Configuration}
-    (h : conf.toPseudoConfiguration.WF) :
-    conf.mirror.toPseudoConfiguration.WF := by
-  grind [PseudoConfiguration.WF, PseudoTriangulation.WF, mirror_darts,
-    mirror_n, mirror_degrees, Dart.InBounds]
-
-end Configuration
 
 end NearLinear4ct

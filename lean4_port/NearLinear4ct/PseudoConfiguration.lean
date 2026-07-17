@@ -44,17 +44,20 @@ def wfCheck (pc : PseudoConfiguration) : Bool :=
 theorem wfCheck_iff {pc : PseudoConfiguration} : pc.wfCheck = true ↔ pc.WF := by
   grind [wfCheck, WF, PseudoTriangulation.wfCheck_iff]
 
+end PseudoConfiguration
+
 /-- A configuration certified at the boundary: the graph and degree array
 are well-formed and the dart count fits the packed-pair encoding (erased at
-runtime). Certification happens once per object -- `attach?` runs the
-executable checks -- and the homomorphism lemmas read both facts off the
-type instead of threading well-formedness premises. Mid-pipeline states are
-never certified; the resolution constructions keep their proof-side
-preservation theorems. -/
+runtime). Certification happens once per object -- `attach!` runs the
+executable checks where loaded and combined objects are built -- and the
+homomorphism BFS and its lemmas read both facts off the type instead of
+threading well-formedness premises. The resolution pipeline's intermediate
+states stay raw and keep their proof-side preservation theorems. -/
 structure WFConfig extends PseudoConfiguration where
   wfconfig_invariant :
     toPseudoConfiguration.WF
       ∧ toPseudoConfiguration.darts.size ≤ SmallNatPair.pairBase
+deriving DecidableEq, Repr
 
 namespace WFConfig
 
@@ -68,15 +71,31 @@ theorem wf (c : WFConfig) : c.toPseudoConfiguration.WF :=
 theorem packable (c : WFConfig) : c.darts.size ≤ SmallNatPair.pairBase :=
   c.wfconfig_invariant.2
 
-/-- Check-and-attach: certify a configuration by running the executable
-checks; `none` on a malformed one. -/
-def attach? (pc : PseudoConfiguration) : Option WFConfig :=
+/-- Literal fields: no panicking reads in the initialiser. -/
+instance : Inhabited WFConfig :=
+  ⟨⟨⟨0, #[]⟩, #[]⟩, ⟨⟨fun i h => absurd h (by simp), rfl⟩, Nat.zero_le _⟩⟩
+
+/-- Check-and-attach at a construction boundary: certify by the executable
+checks, or print a `panic!` message and answer the default. The panic branch
+is malformed input only -- every corpus object passes, and the I/O gates
+additionally assert the stronger `darts.size ≤ 2^31`. -/
+def attach! (pc : PseudoConfiguration) : WFConfig :=
   if h : pc.wfCheck && decide (pc.darts.size ≤ SmallNatPair.pairBase) then
-    some ⟨pc, wfCheck_iff.mp (by grind), by grind⟩
+    ⟨pc, PseudoConfiguration.wfCheck_iff.mp (by grind), by grind⟩
   else
-    none
+    panic! "WFConfig.attach!: malformed configuration"
+
+/-- Rebuild with a same-size degree array: the graph is untouched, so
+certification transports (the size clause rewrites along `h`). The
+degrees-only refinements use this instead of a re-check. -/
+def withDegrees (c : WFConfig) (degrees : Array Degree)
+    (h : degrees.size = c.degrees.size) : WFConfig :=
+  ⟨{ c.toPseudoConfiguration with degrees := degrees },
+   ⟨⟨c.wf.1, h.trans c.wf.2⟩, c.packable⟩⟩
 
 end WFConfig
+
+namespace PseudoConfiguration
 
 /-- Multi-line dump. -/
 def debug (pc : PseudoConfiguration) : String := Id.run do
@@ -157,7 +176,7 @@ the encodings).
 
 `@[inline]`: the step exists once in the source but compiles into its driver,
 so `homCoreGo`'s loop is exactly the unfactored code. -/
-@[inline] def homStep (src dst : PseudoConfiguration)
+@[inline] def homStep (src dst : WFConfig)
     (degreeTest : Degree → Degree → Bool)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : HomNext :=
   match q.pop? with
@@ -202,7 +221,7 @@ out-of-bounds dart index makes `set!` a no-op and can loop; totality is
 conditional on `WF`.
 
 `@[specialize]` monomorphises `degreeTest` per call site. -/
-@[specialize] def homCoreGo (src dst : PseudoConfiguration)
+@[specialize] def homCoreGo (src dst : WFConfig)
     (degreeTest : Degree → Degree → Bool)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Option (IndexMap × IndexMap) :=
   match homStep src dst degreeTest q vmap dmap with
@@ -215,8 +234,8 @@ worklist + the vertex (`[0,n)`) and dart
 (`[0,darts.size)`) scratch maps and runs `homCoreGo`.
 `homCoreGo`/`homCore` are internal to the BFS (not part of the public surface);
 they are non-`private` only so `HomomorphismProofs.lean` can reason about them. -/
-@[specialize] def homCore (src : PseudoConfiguration) (dartFrom : Nat)
-    (dst : PseudoConfiguration) (dartTo : Nat)
+@[specialize] def homCore (src : WFConfig) (dartFrom : Nat)
+    (dst : WFConfig) (dartTo : Nat)
     (degreeTest : Degree → Degree → Bool) : Option (IndexMap × IndexMap) :=
   homCoreGo src dst degreeTest
     ((Queue.emptyWithCapacity (src.darts.size * 3 + 1)).push (SmallNatPair.pack dartFrom dartTo))
@@ -227,15 +246,15 @@ they are non-`private` only so `HomomorphismProofs.lean` can reason about them. 
 The `.isSome`-only hot path
 (`rootedContainConf`, `never/always/dominantlyApply`, `containX`) -- skips building
 the result `Mappings` entirely. -/
-@[inline] def homomorphismExists (src : PseudoConfiguration) (dartFrom : Nat)
-    (dst : PseudoConfiguration) (dartTo : Nat)
+@[inline] def homomorphismExists (src : WFConfig) (dartFrom : Nat)
+    (dst : WFConfig) (dartTo : Nat)
     (degreeTest : Degree → Degree → Bool) : Bool :=
   (homCore src dartFrom dst dartTo degreeTest).isSome
 
 /-- BFS graph homomorphism rooted at a dart pair (A.2). Returns the (possibly
 partial) index maps if a homomorphism exists. -/
-def homomorphism (src : PseudoConfiguration) (dartFrom : Nat)
-    (dst : PseudoConfiguration) (dartTo : Nat)
+def homomorphism (src : WFConfig) (dartFrom : Nat)
+    (dst : WFConfig) (dartTo : Nat)
     (degreeTest : Degree → Degree → Bool) : Option Mappings :=
   (homCore src dartFrom dst dartTo degreeTest).map fun (v, d) => ⟨v, d⟩
 

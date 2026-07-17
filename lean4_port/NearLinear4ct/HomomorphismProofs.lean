@@ -469,7 +469,7 @@ theorem homStep_next_sound
 answers `some` at an exhausted queue, where `Sound` collapses to
 `IsRootedHom`. -/
 theorem homStep_done_sound
-    {src dst : PseudoConfiguration} {degreeTest : Degree → Degree → Bool}
+    {src dst : WFConfig} {degreeTest : Degree → Degree → Bool}
     {dartFrom dartTo : Nat} {q : Queue SmallNatPair} {vmap dmap : IndexMap}
     {p : IndexMap × IndexMap}
     (hs : Sound src dst degreeTest dartFrom dartTo q vmap dmap)
@@ -542,7 +542,7 @@ twin drives the same `homStep`, so the bridge is a one-split transport;
 completeness is then ordinary induction on fuel, stepped by `homStep_agrees`. -/
 
 /-- Fuel-bounded driver of `homStep` (`0` fuel = give up with `none`). -/
-def homCoreGoImp (src dst : PseudoConfiguration) (degreeTest : Degree → Degree → Bool) :
+def homCoreGoImp (src dst : WFConfig) (degreeTest : Degree → Degree → Bool) :
     Nat → Queue SmallNatPair → IndexMap → IndexMap → Option (IndexMap × IndexMap)
   | 0, _, _, _ => none
   | fuel + 1, q, vmap, dmap =>
@@ -552,7 +552,7 @@ def homCoreGoImp (src dst : PseudoConfiguration) (degreeTest : Degree → Degree
 
 /-- **The termination bridge**: whenever the fuel driver returns `some r`, so
 does the `partial_fixpoint` driver (they run the same `homStep`). -/
-theorem homCoreGoImp_le {src dst : PseudoConfiguration} {degreeTest : Degree → Degree → Bool} :
+theorem homCoreGoImp_le {src dst : WFConfig} {degreeTest : Degree → Degree → Bool} :
     ∀ fuel q vmap dmap r, homCoreGoImp src dst degreeTest fuel q vmap dmap = some r →
       homCoreGo src dst degreeTest q vmap dmap = some r := by
   intro fuel
