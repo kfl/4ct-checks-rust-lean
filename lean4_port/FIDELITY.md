@@ -49,6 +49,16 @@ page. Only the deviations below depart from a literal transcription.
   ("remove iff a fixed-`k` vertex exists, else collapse `[k-1, 9]`") rather than
   a scan-with-`break`. Same behaviour, named intent.
 
+- **A.3 adjacency steps as named helpers.** The gluing loop's two three-way
+  `succ`/`pred` matches are lifted verbatim into `glueSucc`/`gluePred`
+  (`PseudoTriangulation.lean`), each returning the darts/queue it may touch;
+  the union-find logic stays inline, so the loop keeps the pseudocode's shape.
+  Behaviour is unchanged (byte-exact oracles) and the compiled code is
+  IR-verified identical modulo shared join points -- the `@[inline]` helpers
+  leave no calls or extra allocations. The factoring exists for the proofs:
+  each helper carries a three-case specification lemma, replacing the nine-way
+  cross-product a monolithic loop body forces on the verifier.
+
 - **Panics vs. proof obligations.** The spec's `assert` lines split by kind:
   genuine invariants (`assert C = 0`, `d ∈ {7, 8}`) become `proofAssert`;
   input-wellformedness failures (malformed parse, unreachable `assert false`
@@ -280,6 +290,15 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   `unite` adds a range guard whose skipped write is precisely the one that
   would corrupt the forest (unreachable on in-range inputs -- behaviour is
   unchanged, as the byte-exact oracles confirm).
+
+- **The free homomorphism produces a well-formed quotient**
+  (`PseudoTriangulationProofs.lean`, `freeHomomorphism_wf`): on a well-formed
+  graph with in-range dart pairs, A.3's gluing loop terminates (measure:
+  `3 * numRoots + live`, each glue merges two dart classes), the quotient
+  graph is well-formed, and the returned vertex/dart maps are total,
+  well-formed relabellings onto its index ranges (`Mappings.WF`). Also
+  `fromVRotations_wf`: A.5's loader produces a well-formed graph
+  unconditionally.
 
 Everything else rests on the byte-exact oracles above -- faithful by test, not
 yet by mechanised proof.

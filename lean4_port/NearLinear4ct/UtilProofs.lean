@@ -55,6 +55,63 @@ theorem live_pop {α} {q q' : Queue α} {x : α} (h : q.pop? = some (x, q')) :
 theorem pop?_none {α} {q : Queue α} (h : q.pop? = none) : q.isEmpty = true := by
   grind [Queue.pop?, Queue.isEmpty, Array.getElem?_eq_none]
 
+/-! The active-set vocabulary: which entries are still pending in a worklist
+queue. The BFS invariants (`HomomorphismProofs.lean`, the gluing loop in
+`PseudoTriangulationProofs.lean`) quantify over these. -/
+
+/-- Active (not-yet-popped) queue entries: an index `≥ head` holding `p`. -/
+def Active {α} (q : Queue α) (p : α) : Prop :=
+  ∃ i, q.head ≤ i ∧ q.items[i]? = some p
+
+/-- `pop?` only shrinks the active set (`head` advances; `items` is untouched). -/
+theorem active_pop {α} {q q' : Queue α} {x p : α}
+    (hp : q.pop? = some (x, q')) (h : Active q' p) : Active q p := by
+  obtain ⟨-, hi, hh⟩ := Queue.pop?_some hp
+  grind [Active]
+
+/-- `push` adds exactly the new element to the active set. -/
+theorem active_push {α} {q : Queue α} {x p : α}
+    (h : Active (q.push x) p) : Active q p ∨ p = x := by
+  grind [Active, Queue.push]
+
+/-- The just-popped element was active. -/
+theorem active_head {α} {q q' : Queue α} {x : α}
+    (hp : q.pop? = some (x, q')) : Active q x :=
+  ⟨q.head, Nat.le_refl _, (Queue.pop?_some hp).1⟩
+
+/-- On an empty queue nothing is active. -/
+theorem not_active_of_isEmpty {α} {q : Queue α} (h : q.isEmpty = true)
+    (p : α) : ¬ Active q p := by
+  grind [Active, Queue.isEmpty]
+
+/-- `push` only adds to the active set. -/
+theorem active_push_mono {α} {q : Queue α} {x p : α}
+    (h : Active q p) : Active (q.push x) p := by
+  obtain ⟨i, hi, hp⟩ := h
+  exact ⟨i, hi, by grind [Queue.push, Array.getElem?_push_lt, Array.getElem?_eq_none]⟩
+
+/-- The just-pushed element is active. -/
+theorem active_push_self {α} {q : Queue α} {x : α} :
+    Active (q.push x) x :=
+  ⟨q.items.size, q.queue_invariant, by simp [Queue.push]⟩
+
+/-- Popping either keeps `p` active or reveals it as the just-popped element. -/
+theorem active_pop_cases {α} {q q' : Queue α} {x p : α}
+    (hp : q.pop? = some (x, q')) (h : Active q p) :
+    Active q' p ∨ p = x := by
+  obtain ⟨hx, hi, hh⟩ := Queue.pop?_some hp
+  grind [Active]
+
+/-- An `emptyWithCapacity` queue has nothing active. -/
+theorem not_active_emptyWithCapacity {α} {cap : Nat} (p : α) :
+    ¬ Active (Queue.emptyWithCapacity cap) p := by
+  simp [Active, Queue.emptyWithCapacity]
+
+/-- A seeded queue's active entries are the seed array's members. -/
+theorem active_ofArray {α} {xs : Array α} {p : α}
+    (h : (Queue.ofArray xs).Active p) : p ∈ xs := by
+  grind [Active, Queue.ofArray, Array.getElem?_eq_some_iff, Array.mem_iff_getElem]
+
 end Queue
 
 /-! ### Generic loop reduction -/
@@ -434,10 +491,20 @@ theorem WF.root_spec {uf : Unionfind} (h : uf.WF) {x : Nat} (hx : x < uf.n) :
     rw [root, ← hsum, rootAux_stable (hl.rootAux_length ▸ hl.isNone), hl.rootAux_length]
   exact ⟨hroot ▸ hl.isNone, hroot ▸ hl.lt uf.unionfind_invariant.2 hx⟩
 
+/-- Representatives stay in range (the bound half of `root_spec`). -/
+theorem WF.root_lt {uf : Unionfind} (h : uf.WF) {x : Nat} (hx : x < uf.n) :
+    uf.root x < uf.n :=
+  (h.root_spec hx).2
+
 theorem WF.rootsWF {uf : Unionfind} (h : uf.WF) : uf.RootsWF := by
   intro i hi
   obtain ⟨h1, h2⟩ := h.root_spec hi
   exact ⟨h2, by simp [h1]⟩
+
+/-- `allRoots` entries are in range (they are filtered from `range n`). -/
+theorem mem_allRoots_lt {uf : Unionfind} {i : Nat} (h : i ∈ uf.allRoots) :
+    i < uf.n := by
+  grind [allRoots]
 
 /-- `new n` is well-formed: every node is its own root. -/
 theorem wf_new (n : Nat) : (Unionfind.new n).WF where
@@ -498,6 +565,70 @@ theorem relabel_wf (uf : Unionfind) (hwf : uf.WF) :
   have hroot := h i hin
   rw [getElem_composeMap (by simpa using hin)]
   simp [getElem!_indexRoots uf hroot.1, hroot.2]
+
+/-! ### `unite` bookkeeping for the gluing loop's termination measure
+
+The gluing BFS (`freeHomomorphism`, `PseudoTriangulationProofs.lean`)
+terminates because each glue merges two classes: `numRoots` strictly drops.
+These lemmas provide that decrease, plus the size preservation the loop
+invariant threads. -/
+
+/-- `unite` keeps the node count (both branches leave `n` untouched). -/
+@[simp] theorem n_unite (uf : Unionfind) (x y : Nat) : (uf.unite x y).n = uf.n := by
+  grind [unite]
+
+/-- Roots are fixpoints of `root`: at a parentless entry the walk stutters. -/
+theorem root_eq_self {uf : Unionfind} {x : Nat} (h : uf.parents[x]! = .none) :
+    uf.root x = x := rootAux_none h uf.n
+
+/-- On distinct in-range representatives the guard passes and `unite` performs
+its write. -/
+private theorem parents_unite {uf : Unionfind} {x y : Nat}
+    (hry : uf.root y < uf.n) (hne : uf.root x ≠ uf.root y) :
+    (uf.unite x y).parents = uf.parents.set! (uf.root x) (.some (uf.root y)) := by
+  grind [unite]
+
+/-- Flipping one counted entry to uncounted drops `countP` over the range by
+exactly one. -/
+private theorem countP_flip {p p' : Nat → Bool} {j : Nat} (hpj : p j = true)
+    (hpj' : p' j = false) (hagree : ∀ i, i ≠ j → p i = p' i) :
+    ∀ n, j < n → (List.range n).countP p' + 1 = (List.range n).countP p := by
+  intro n hj
+  induction n <;> grind [List.range_succ, List.countP_congr]
+
+/-- **The measure decrease**: uniting two distinct in-range classes strictly
+drops the root count -- the write turns exactly one root (`root x`) into an
+interior node. -/
+theorem numRoots_unite_lt {uf : Unionfind} (hwf : uf.WF) {x y : Nat}
+    (hx : x < uf.n) (hy : y < uf.n) (hne : uf.root x ≠ uf.root y) :
+    (uf.unite x y).numRoots < uf.numRoots := by
+  obtain ⟨hrxn, hrxlt⟩ := hwf.root_spec hx
+  obtain ⟨hryn, hrylt⟩ := hwf.root_spec hy
+  have hkey := countP_flip (p := fun j => uf.parents[j]!.isNone)
+    (p' := fun j => (uf.parents.set! (uf.root x) (.some (uf.root y)))[j]!.isNone)
+    (j := uf.root x) (by simp [hrxn])
+    (by rw [set!_self (uf.unionfind_invariant.1 ▸ hrxlt)]; simp)
+    (fun i hi => by rw [set!_ne hi]) uf.n hrxlt
+  have hlhs : (uf.unite x y).numRoots
+      = (List.range uf.n).countP
+          (fun j => (uf.parents.set! (uf.root x) (.some (uf.root y)))[j]!.isNone) := by
+    simp only [numRoots_eq_rootRank, rootRank, n_unite, parents_unite hrylt hne]
+  grind [numRoots_eq_rootRank, rootRank]
+
+/-- The loop's `same`-test, decoded: distinct classes have distinct roots. -/
+theorem root_ne_of_not_same {uf : Unionfind} {x y : Nat}
+    (h : ¬ uf.same x y = true) : uf.root x ≠ uf.root y := by
+  grind [same]
+
+/-- The loop-shaped variant: uniting the *representatives* of two classes the
+loop just found distinct (`same x y = false`). -/
+theorem numRoots_unite_root_lt {uf : Unionfind} (hwf : uf.WF) {x y : Nat}
+    (hx : x < uf.n) (hy : y < uf.n) (hsame : uf.same x y = false) :
+    (uf.unite (uf.root x) (uf.root y)).numRoots < uf.numRoots :=
+  numRoots_unite_lt hwf (hwf.root_lt hx) (hwf.root_lt hy)
+    (by have h1 := hwf.root_spec hx
+        have h2 := hwf.root_spec hy
+        grind [same, root_eq_self])
 
 end Unionfind
 end NearLinear4ct

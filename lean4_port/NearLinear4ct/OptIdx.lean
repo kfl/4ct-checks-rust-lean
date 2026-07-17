@@ -115,6 +115,12 @@ eliminator would expose `⟨raw⟩`). Tactic-level only; `grind` gets its
 @[simp] theorem get?_some (i : Nat) : (OptIdx.«some» i).get? = Option.some i := by
   simp [OptIdx.«some», get?]
 
+/-- A `some` decodes to its own `idx!` (the bridge from an `isSome` test to
+the `Bounded` reads). -/
+theorem get?_eq_some_idx! {o : OptIdx} (h : o.isSome) :
+    o.get? = Option.some o.idx! := by
+  grind [isSome, get?, idx!]
+
 @[simp] theorem idx!_some (i : Nat) : (OptIdx.«some» i).idx! = i := by
   simp [OptIdx.«some», idx!]
 

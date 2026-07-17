@@ -130,6 +130,22 @@ private theorem option_fin_val_inj {k : Nat} {a b : Option (Fin k)}
     (h : a.map Fin.val = b.map Fin.val) : a = b := by
   cases a <;> cases b <;> simp_all [Fin.ext_iff]
 
+/-! ### `!`-read decodes (for consumers indexing through a proved map) -/
+
+/-- A total, well-formed map's `!`-read decodes below the codomain. -/
+theorem idx!_lt_of_total {m : IndexMap} {dom codom : Nat} (hwf : m.WF dom codom)
+    (htot : m.Total) {i : Nat} (hi : i < dom) : (m[i]!).idx! < codom := by
+  have hsz : i < m.size := hwf.size_eq.symm ▸ hi
+  exact (getElem!_pos m i hsz).symm ▸
+    hwf.bounded i hsz _ (OptIdx.get?_eq_some_idx! (htot i hsz))
+
+/-- Any mapped `!`-read of a well-formed map lands below the codomain (an
+out-of-range read is the unmapped default, so no domain bound is needed). -/
+theorem get?_getElem!_lt {m : IndexMap} {dom codom : Nat} (hwf : m.WF dom codom)
+    {i j : Nat} (h : (m[i]!).get? = Option.some j) : j < codom := by
+  have hb := hwf.bounded
+  grind [IndexMap.Bounded, OptIdx.get?_none]
+
 end IndexMap
 
 /-! ### `Mappings` well-formedness (four `Nat`s: must not mention graphs) -/

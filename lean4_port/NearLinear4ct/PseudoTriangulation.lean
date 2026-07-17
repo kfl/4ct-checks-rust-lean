@@ -176,6 +176,27 @@ def getDarts (pt : PseudoTriangulation) (head tail : Nat) : Array Nat := Id.run 
       result := result.push i
   return result
 
+/-- Glue the `succ` links at the two representatives: both sides closed queues
+a new gluing obligation; only the representative's side open copies the link
+from the other dart; otherwise nothing changes.
+
+`@[inline]` so the result pair vanishes at the call site and the array/queue
+updates stay in place. -/
+@[inline] def glueSucc (darts : Array Dart) (q : Queue (Nat × Nat))
+    (eStar fStar : Nat) : Array Dart × Queue (Nat × Nat) :=
+  match (darts[eStar]!).succ, (darts[fStar]!).succ with
+  | .some e', .some f' => (darts, q.push (e', f'))
+  | .some e', .none => (darts.set! fStar { darts[fStar]! with succ := .some e' }, q)
+  | _, _ => (darts, q)
+
+/-- As `glueSucc`, for the `pred` links. -/
+@[inline] def gluePred (darts : Array Dart) (q : Queue (Nat × Nat))
+    (eStar fStar : Nat) : Array Dart × Queue (Nat × Nat) :=
+  match (darts[eStar]!).pred, (darts[fStar]!).pred with
+  | .some e', .some f' => (darts, q.push (e', f'))
+  | .some e', .none => (darts.set! fStar { darts[fStar]! with pred := .some e' }, q)
+  | _, _ => (darts, q)
+
 /-- Free homomorphism gluing the given dart pairs, returning the quotient and the
 index `Mappings` onto it (A.3).
 
@@ -200,16 +221,8 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
     let eRev := (darts[eStar]!).rev
     let fRev := (darts[fStar]!).rev
     q := q.push (eRev, fRev)
-    -- both sides closed: a new gluing obligation; only the representative's
-    -- side open: fill it in from the other dart
-    match (darts[eStar]!).succ, (darts[fStar]!).succ with
-    | .some e', .some f' => q := q.push (e', f')
-    | .some e', .none => darts := darts.set! fStar { darts[fStar]! with succ := .some e' }
-    | _, _ => pure ()
-    match (darts[eStar]!).pred, (darts[fStar]!).pred with
-    | .some e', .some f' => q := q.push (e', f')
-    | .some e', .none => darts := darts.set! fStar { darts[fStar]! with pred := .some e' }
-    | _, _ => pure ()
+    (darts, q) := glueSucc darts q eStar fStar
+    (darts, q) := gluePred darts q eStar fStar
 
   -- renumber survivors: each_root (total, lifted to `some`) ∘ index_roots (compacted)
   let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots

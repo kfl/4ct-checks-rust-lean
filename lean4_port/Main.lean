@@ -158,7 +158,7 @@ def modes : List (String × (String → Options → Except String Job)) :=
 anything runs. -/
 def buildJobs (opts : Options) : Except String (List Job) :=
   if opts.has "help" then .ok [.help]
-  else match modes.filter (fun m => opts.has m.1) with
+  else match modes.filter (fun (name, _) => opts.has name) with
   | [] => .error "no mode selected (see --help)"
   | selected => selected.mapM fun (name, build) => build name opts
 
