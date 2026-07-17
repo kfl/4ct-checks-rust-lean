@@ -22,8 +22,11 @@ namespace NearLinear4ct
 Construct with `OptIdx.none` / `OptIdx.some` / `OptIdx.ofOption`; read with the
 `Bool` predicates (hot path, no allocation) or `get?` (boundary, `Option Nat`). -/
 structure OptIdx where
-  /-- Raw encoding: `0 = none`, `i+1 = some i`. Prefer the smart constructors. -/
-  raw : Nat
+  private mk ::
+  /-- Raw encoding: `0 = none`, `i+1 = some i`. Private: construct with the
+  smart constructors and read through the API -- no raw reasoning outside
+  this file. -/
+  private raw : Nat
 deriving DecidableEq, Repr, Inhabited, BEq, ReflBEq, LawfulBEq, Hashable
 
 namespace OptIdx

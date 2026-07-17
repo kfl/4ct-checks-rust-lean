@@ -684,8 +684,8 @@ private theorem LinkKind.glue_left {pt : PseudoTriangulation} {darts : Array Dar
   rcases heq : k.get (darts[eStar]!) with _ | e'
   · exact False.elim (OptIdx.none_ne_some u (heq.symm.trans hsu'))
   · have heu : e' = u := by
-      have heq' := congrArg OptIdx.raw (heq.symm.trans hsu')
-      grind [OptIdx.some]
+      have heq' := heq.symm.trans hsu'
+      grind
     rcases hfeq : k.get (darts[fStar]!) with _ | f'
     · have hfd : fStar < darts.size := by grind [GlueInv]
       simp only [LinkKind.glue, heq, hfeq]
