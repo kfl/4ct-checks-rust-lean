@@ -176,15 +176,17 @@ page. Only the deviations below depart from a literal transcription.
        the driver in a few lines each.
 
   The `homomorphism`'s worklist and early exits still read as the pseudocode's;
-  only the loop's host construct differs. That said, the accumulated distance
-  from A.2's text -- the step/driver factoring, the merged `pop?`, the encoded
-  `OptIdx`/`SmallNatPair` reads -- is by now large enough that auditing the
-  correspondence by eye is no longer trivial. The soundness/completeness
-  theorems pin the code to Sec. 9's homomorphism *predicate* (what the BFS
-  decides), not to A.2's *algorithm* (how); a machine-checked equivalence
-  against a direct transcription of A.2's loop would close that remaining gap,
-  and the recursion-free `homStep` is the natural site for it -- transcribe
-  A.2's body once and prove it computes the same step.
+  only the loop's host construct differs. The accumulated distance from A.2's
+  text -- the step/driver factoring, the merged `pop?`, the encoded
+  `OptIdx`/`SmallNatPair` reads -- is closed by machine-checked equivalence at
+  the step level: `homStepA2` (`HomomorphismProofs.lean`) transcribes A.2.1's
+  loop body line by line, in the paper's statement order and with the paper's
+  unguarded reads, and `homStep_eq_a2` proves the executable step computes the
+  same function. The one genuine control-flow difference it bridges: the paper
+  pushes `rev` before the `succ`/`pred` boundary guards, the port guards first
+  -- equal because a `null` return discards the queue. What remains textual is
+  the loop's host construct (the paper's `while` against the tail-recursive
+  driver); a full-algorithm transcription is scoped in `TODO.md`.
 
   A second, smaller exception: the wheel-degree-tuple enumeration (A.9.5's
   `enumDegree` recursion) is a total functional formulation -- shared list

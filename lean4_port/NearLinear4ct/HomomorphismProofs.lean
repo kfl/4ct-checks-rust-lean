@@ -981,6 +981,85 @@ theorem homomorphismExists_complete {src dst : WFConfig}
     homomorphismExists src dartFrom dst dartTo degreeTest = true := by
   grind [homomorphismExists, homCore_complete]
 
+/-! ### Algorithm A.2.1, transcribed
+
+The soundness/completeness theorems pin `homStep` to Sec. 9's homomorphism
+predicate -- what the BFS decides, not how. `homStepA2` transcribes the
+paper's loop body line by line (the comments carry A.2.1's line numbers), in
+the paper's statement order and with the paper's unguarded reads, and
+`homStep_eq_a2` proves the executable step computes the same function. The
+one genuine control-flow difference bridged here: the paper pushes `rev`
+(line 22) before the `succ`/`pred` boundary guards (lines 23-31); `homStep`
+guards first and pushes after, which agrees because a `null` return discards
+the queue. -/
+
+/-- `pushLink` is A.2.1's conditional push, spelled as the paper's test
+(lines 25-27/30-32): push the decoded pair when both links are interior. -/
+theorem pushLink_eq_ite {q : Queue SmallNatPair} {os od : OptIdx} :
+    pushLink q os od
+      = if os.isSome && od.isSome then q.push (pack os.idx! od.idx!) else q := by
+  cases os <;> cases od <;>
+    grind [pushLink.eq_def, OptIdx.isSome, OptIdx.isNone, OptIdx.idx!,
+      OptIdx.some, OptIdx.none]
+
+/-- A.2.1's loop body, lines 4-32 (line 34's `return ϕ*` is the empty-queue
+answer). Proof-side only. -/
+def homStepA2 (src dst : WFConfig) (degreeTest : Degree → Degree → Bool)
+    (q : Queue SmallNatPair) (vmap dmap : IndexMap) : HomNext :=
+  match q.pop? with                                                -- 4-5
+  | none => .done (some (vmap, dmap))                              -- 34
+  | some (packed, q) =>
+    let f := packed.fst
+    let fStar := packed.snd
+    if dmap[f]!.isSome then                                        -- 6
+      if dmap[f]! != OptIdx.some fStar then .done none             -- 7-8
+      else .next q vmap dmap                                       -- 10
+    else
+      let dmap := dmap.set! f (OptIdx.some fStar)                  -- 12
+      let h := src.darts[f]!.head                                  -- 13
+      let hStar := dst.darts[fStar]!.head                          -- 14
+      if vmap[h]!.isSome && vmap[h]! != OptIdx.some hStar then     -- 15-17
+        .done none
+      else
+        let vmap := vmap.set! h (OptIdx.some hStar)                -- 18
+        if !degreeTest src.degrees[h]! dst.degrees[hStar]! then    -- 19-21
+          .done none
+        else
+          let q := q.push (pack src.darts[f]!.rev dst.darts[fStar]!.rev)  -- 22
+          if src.darts[f]!.succ.isSome && dst.darts[fStar]!.succ.isNone then  -- 23-24
+            .done none
+          else
+            let q :=                                               -- 25-27
+              if src.darts[f]!.succ.isSome && dst.darts[fStar]!.succ.isSome then
+                q.push (pack src.darts[f]!.succ.idx! dst.darts[fStar]!.succ.idx!)
+              else q
+            if src.darts[f]!.pred.isSome && dst.darts[fStar]!.pred.isNone then  -- 28-29
+              .done none
+            else
+              let q :=                                             -- 30-32
+                if src.darts[f]!.pred.isSome && dst.darts[fStar]!.pred.isSome then
+                  q.push (pack src.darts[f]!.pred.idx! dst.darts[fStar]!.pred.idx!)
+                else q
+              .next q vmap dmap
+
+/-- **The executable step is A.2.1's loop body**: `homStep` computes
+`homStepA2` on every index-safe state. -/
+theorem homStep_eq_a2 {src dst : WFConfig} {degreeTest : Degree → Degree → Bool}
+    {q : Queue SmallNatPair} {vmap dmap : IndexMap}
+    (hs : HomIndexSafe src dst q vmap dmap) :
+    homStep src dst degreeTest q vmap dmap hs
+      = homStepA2 src dst degreeTest q vmap dmap := by
+  unfold homStep homStepA2
+  split
+  · rename_i hpq
+    simp only [hpq]
+  · rename_i packed q1 hpq
+    simp only [hpq, ← getElem!_pos, IndexMap.set_eq_set!]
+    -- the two bodies' read-match and guards; `pushLink_eq_ite` aligns the
+    -- conditional pushes with the paper's spelling
+    grind (splits := 24) [= pushLink_eq_ite, OptIdx.some, OptIdx.none,
+      OptIdx.isSome, OptIdx.isNone, OptIdx.idx!, OptIdx.get?]
+
 end PseudoConfiguration.HomState
 
 end NearLinear4ct
