@@ -319,8 +319,10 @@ state in explicit arguments rather than an `Id.run do`/`while` lowering.
 recursion is not structural; the fixpoint exposes the `.partial_correctness`
 principle the proofs ride on. The threaded invariants keep every index in
 range (the old malformed-input mode -- a `set!` no-op looping forever -- is
-unreachable); a general totality proof remains open, and the completeness
-theorem supplies termination whenever a homomorphism exists.
+unreachable), and the loop is total: every continuing step strictly drops
+the proof-side `measure`, so `homCoreGo` agrees everywhere with the
+fuel-bounded twin at computable fuel (`homCoreGo_eq_imp`,
+`HomomorphismProofs.lean`).
 
 `@[specialize]` monomorphises `degreeTest` per call site. -/
 @[specialize] def homCoreGo (src dst : WFConfig)

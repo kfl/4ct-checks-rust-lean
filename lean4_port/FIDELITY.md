@@ -240,8 +240,13 @@ happens on the functional side. Two mechanisms:
   - `Unionfind.rootAux` totalises `root` (fuel = `n`); its equational lemmas are
     what make `RootsWF` provable at all.
   - `homCoreGoImp` is a fuel-bounded driver of the *same* `homStep` as
-    `homCoreGo`: completeness is ordinary induction on fuel (`homStep_agrees`
-    strictly drops the measure) bridged back by a one-split transport, while
+    `homCoreGo`: the driver is total -- every continuing step strictly drops
+    a proof-side measure (`homStep_next_measure`, unconditional thanks to the
+    proof-carrying reads), so `homCoreGo` agrees everywhere with the
+    fuel-bounded twin at computable fuel (`homCoreGo_eq_imp`) -- and
+    completeness is ordinary induction on fuel (`homStep_agrees`
+    preserves semantic agreement; `homStep_next_measure` supplies the
+    decrease) transported back through that equality, while
     soundness rides directly on `homCoreGo.partial_correctness` -- there is no
     twin body to keep in sync.
 
