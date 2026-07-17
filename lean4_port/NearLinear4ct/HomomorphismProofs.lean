@@ -1,6 +1,7 @@
 import NearLinear4ct.PseudoConfiguration
 import NearLinear4ct.MappingProofs
 import NearLinear4ct.UtilProofs
+import Std.Tactic.Do
 
 /-!
 Machine-checked correctness of the homomorphism BFS
@@ -991,56 +992,62 @@ the paper's statement order and with the paper's unguarded reads, and
 one genuine control-flow difference bridged here: the paper pushes `rev`
 (line 22) before the `succ`/`pred` boundary guards (lines 23-31); `homStep`
 guards first and pushes after, which agrees because a `null` return discards
-the queue. -/
+the queue.
+
+Two representation bundlings, and only these, separate the transcription
+from the paper's notation: the single map `ϕ*` over `V(Z) ∪ D(Z)` (line 1)
+is the `vmap`/`dmap` pair over the two disjoint index sets, and `g`'s four
+degree-range arguments (line 19) are the two `Degree` values, each bundling
+a lower and an upper bound. -/
 
 /-- `pushLink` is A.2.1's conditional push, spelled as the paper's test
 (lines 25-27/30-32): push the decoded pair when both links are interior. -/
 theorem pushLink_eq_ite {q : Queue SmallNatPair} {os od : OptIdx} :
     pushLink q os od
       = if os.isSome && od.isSome then q.push (pack os.idx! od.idx!) else q := by
-  cases os <;> cases od <;>
-    grind [pushLink.eq_def, OptIdx.isSome, OptIdx.isNone, OptIdx.idx!,
-      OptIdx.some, OptIdx.none]
+  cases os <;> cases od <;> rfl
 
 /-- A.2.1's loop body, lines 4-32 (line 34's `return ϕ*` is the empty-queue
-answer). Proof-side only. -/
+answer), as a recursion-free step -- the port's factoring applied to the
+paper's text. Proof-side only; `homCore_eq_a2` steps through this form to
+reach the factoring-free `homomorphismA2`. -/
 def homStepA2 (src dst : WFConfig) (degreeTest : Degree → Degree → Bool)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : HomNext :=
-  match q.pop? with                                                -- 4-5
-  | none => .done (some (vmap, dmap))                              -- 34
+  match q.pop? with                                                             -- 4-5
   | some (packed, q) =>
     let f := packed.fst
     let fStar := packed.snd
-    if dmap[f]!.isSome then                                        -- 6
-      if dmap[f]! != OptIdx.some fStar then .done none             -- 7-8
-      else .next q vmap dmap                                       -- 10
+    if dmap[f]!.isSome then                                                     -- 6
+      if dmap[f]! != OptIdx.some fStar then .done none                          -- 7-8
+      else .next q vmap dmap                                                    -- 10
     else
-      let dmap := dmap.set! f (OptIdx.some fStar)                  -- 12
-      let h := src.darts[f]!.head                                  -- 13
-      let hStar := dst.darts[fStar]!.head                          -- 14
-      if vmap[h]!.isSome && vmap[h]! != OptIdx.some hStar then     -- 15-17
-        .done none
+      let dmap := dmap.set! f (OptIdx.some fStar)                               -- 12
+      let h := src.darts[f]!.head                                               -- 13
+      let hStar := dst.darts[fStar]!.head                                       -- 14
+      if vmap[h]!.isSome && vmap[h]! != OptIdx.some hStar then                  -- 15
+        .done none                                                              -- 16
       else
-        let vmap := vmap.set! h (OptIdx.some hStar)                -- 18
-        if !degreeTest src.degrees[h]! dst.degrees[hStar]! then    -- 19-21
-          .done none
+        let vmap := vmap.set! h (OptIdx.some hStar)                             -- 18
+        if !degreeTest src.degrees[h]! dst.degrees[hStar]! then                 -- 19
+          .done none                                                            -- 20
         else
-          let q := q.push (pack src.darts[f]!.rev dst.darts[fStar]!.rev)  -- 22
-          if src.darts[f]!.succ.isSome && dst.darts[fStar]!.succ.isNone then  -- 23-24
-            .done none
+          let q := q.push (pack src.darts[f]!.rev dst.darts[fStar]!.rev)        -- 22
+          if src.darts[f]!.succ.isSome && dst.darts[fStar]!.succ.isNone then    -- 23
+            .done none                                                          -- 24
           else
-            let q :=                                               -- 25-27
+            let q :=                                                            -- 25-26
               if src.darts[f]!.succ.isSome && dst.darts[fStar]!.succ.isSome then
                 q.push (pack src.darts[f]!.succ.idx! dst.darts[fStar]!.succ.idx!)
               else q
-            if src.darts[f]!.pred.isSome && dst.darts[fStar]!.pred.isNone then  -- 28-29
-              .done none
+            if src.darts[f]!.pred.isSome && dst.darts[fStar]!.pred.isNone then  -- 28
+              .done none                                                        -- 29
             else
-              let q :=                                             -- 30-32
+              let q :=                                                          -- 30-31
                 if src.darts[f]!.pred.isSome && dst.darts[fStar]!.pred.isSome then
                   q.push (pack src.darts[f]!.pred.idx! dst.darts[fStar]!.pred.idx!)
                 else q
               .next q vmap dmap
+  | none => .done (some (vmap, dmap))                                           -- 34
 
 /-- **The executable step is A.2.1's loop body**: `homStep` computes
 `homStepA2` on every index-safe state. -/
@@ -1055,10 +1062,128 @@ theorem homStep_eq_a2 {src dst : WFConfig} {degreeTest : Degree → Degree → B
     simp only [hpq]
   · rename_i packed q1 hpq
     simp only [hpq, ← getElem!_pos, IndexMap.set_eq_set!]
-    -- the two bodies' read-match and guards; `pushLink_eq_ite` aligns the
-    -- conditional pushes with the paper's spelling
-    grind (splits := 24) [= pushLink_eq_ite, OptIdx.some, OptIdx.none,
+    -- The two bodies' read-match and guards; `pushLink_eq_ite` aligns the
+    -- conditional pushes with the paper's spelling. The deepest path currently
+    -- needs eleven `grind` case splits; twelve leaves a little search headroom.
+    grind (splits := 12) [= pushLink_eq_ite, OptIdx.some, OptIdx.none,
       OptIdx.isSome, OptIdx.isNone, OptIdx.idx!, OptIdx.get?]
+
+/-- Algorithm A.2.1 in full, as the paper writes it: initialise the maps and
+the queue (lines 1-3), run the while loop with the body inline (lines 4-33
+-- the paper has no step function, so a literal transcription cannot reuse
+`homStepA2`), and return the maps at the empty queue (line 34). Proof-side
+only; `homCore_eq_a2` proves the executable seeded BFS computes it. -/
+def homomorphismA2 (src dst : WFConfig) (dartFrom dartTo : Nat)
+    (degreeTest : Degree → Degree → Bool) : Option (IndexMap × IndexMap) := Id.run do
+  let mut vmap : IndexMap := Array.replicate src.n OptIdx.none                  -- 1
+  let mut dmap : IndexMap := Array.replicate src.darts.size OptIdx.none         -- 1
+  let mut q : Queue SmallNatPair := Queue.emptyWithCapacity 0                   -- 2
+  q := q.push (pack dartFrom dartTo)                                            -- 3
+  while let some (packed, q') := q.pop? do                                      -- 4-5
+    q := q'
+    let f := packed.fst
+    let fStar := packed.snd
+    if dmap[f]!.isSome then                                                     -- 6
+      if dmap[f]! != OptIdx.some fStar then                                     -- 7
+        return none                                                             -- 8
+      -- 10: fall through to the next iteration
+    else
+      dmap := dmap.set! f (OptIdx.some fStar)                                   -- 12
+      let h := src.darts[f]!.head                                               -- 13
+      let hStar := dst.darts[fStar]!.head                                       -- 14
+      if vmap[h]!.isSome && vmap[h]! != OptIdx.some hStar then                  -- 15
+        return none                                                             -- 16
+      vmap := vmap.set! h (OptIdx.some hStar)                                   -- 18
+      if !degreeTest src.degrees[h]! dst.degrees[hStar]! then                   -- 19
+        return none                                                             -- 20
+      q := q.push (pack src.darts[f]!.rev dst.darts[fStar]!.rev)                -- 22
+      if src.darts[f]!.succ.isSome && dst.darts[fStar]!.succ.isNone then        -- 23
+        return none                                                             -- 24
+      else if src.darts[f]!.succ.isSome && dst.darts[fStar]!.succ.isSome then   -- 25
+        q := q.push (pack src.darts[f]!.succ.idx! dst.darts[fStar]!.succ.idx!)  -- 26
+      if src.darts[f]!.pred.isSome && dst.darts[fStar]!.pred.isNone then        -- 28
+        return none                                                             -- 29
+      else if src.darts[f]!.pred.isSome && dst.darts[fStar]!.pred.isSome then   -- 30
+        q := q.push (pack src.darts[f]!.pred.idx! dst.darts[fStar]!.pred.idx!)  -- 31
+  return some (vmap, dmap)                                                      -- 34
+
+/-- The A.2.1 loop's state, as `mvcgen` packs it: the early-return slot and
+the three mutable variables. -/
+private abbrev A2State :=
+  MProd (Option (Option (IndexMap × IndexMap)))
+    (MProd IndexMap (MProd (Queue SmallNatPair) IndexMap))
+
+/-- Coupling invariant for `homCore_eq_a2`: mid-loop (`.inl`) the state is
+index-safe and driving `homCoreGo` from it computes `homCore`'s answer; after
+the loop (`.inr`) the early return or normally returned maps are that answer. -/
+private def A2Coupling (src dst : WFConfig) (degreeTest : Degree → Degree → Bool)
+    (dartFrom dartTo : Nat) : A2State ⊕ A2State → Prop
+  | .inl ⟨ret, dmap, q, vmap⟩ =>
+      ret = none ∧ HomIndexSafe src dst q vmap dmap ∧
+      ∀ h, homCoreGo src dst degreeTest q vmap dmap h
+        = homCore src dartFrom dst dartTo degreeTest
+  | .inr ⟨some r0, _, _, _⟩ =>
+      homCore src dartFrom dst dartTo degreeTest = r0
+  | .inr ⟨none, dmap, _, vmap⟩ =>
+      homCore src dartFrom dst dartTo degreeTest = some (vmap, dmap)
+
+section
+open Std.Do
+set_option mvcgen.warning false
+-- The transparency linter flags `mvcgen`'s own `Invariant` encoding (the
+-- `⇓` assertions), not this proof's content.
+set_option linter.tacticCheckInstances false
+
+/-- **The seeded BFS is Algorithm A.2.1**: on in-range root darts, `homCore`
+computes the paper's algorithm. -/
+theorem homCore_eq_a2 {src dst : WFConfig} {degreeTest : Degree → Degree → Bool}
+    {dartFrom dartTo : Nat}
+    (hdf : dartFrom < src.darts.size) (hdt : dartTo < dst.darts.size) :
+    homCore src dartFrom dst dartTo degreeTest
+      = homomorphismA2 src dst dartFrom dartTo degreeTest := by
+  generalize hr : homomorphismA2 src dst dartFrom dartTo degreeTest = r
+  have hseed : HomIndexSafe src dst
+      ((Queue.emptyWithCapacity 0).push (pack dartFrom dartTo))
+      (Array.replicate src.n OptIdx.none)
+      (Array.replicate src.darts.size OptIdx.none) :=
+    ⟨HomBounded.push_pack dst.packable HomBounded.empty hdf hdt,
+      Array.size_replicate .., Array.size_replicate ..⟩
+  have hseedGo : ∀ h, homCoreGo src dst degreeTest
+      ((Queue.emptyWithCapacity 0).push (pack dartFrom dartTo))
+      (Array.replicate src.n OptIdx.none)
+      (Array.replicate src.darts.size OptIdx.none) h
+        = homCore src dartFrom dst dartTo degreeTest := fun h => by
+    unfold homCore
+    rw [dif_pos ⟨hdf, hdt⟩]
+    rfl
+  apply Id.of_wp_run_eq hr fun r => homCore src dartFrom dst dartTo degreeTest = r
+  mvcgen
+  case inv1 => exact fun ⟨_, dmap, q, _⟩ => ⟨measure q dmap⟩
+  case inv2 => exact ⇓s => ⌜A2Coupling src dst degreeTest dartFrom dartTo s⌝
+  all_goals mleave
+  -- Thirteen verification conditions, one per path through the inlined body.
+  -- `homStep_eq_a2` translates the paper body to a `homStep` result and
+  -- `homCoreGo.eq_def` steps the fixpoint along the coupling. The deepest
+  -- remaining goal currently needs six `grind` case splits; eight leaves a
+  -- little search headroom and is not the number of source-level guards.
+  all_goals grind (splits := 8) [A2Coupling, homStepA2, homStep_eq_a2,
+    homCoreGo.eq_def, → homStep_next_safe, → homStep_next_measure,
+    measure, OptIdx.some, OptIdx.none, OptIdx.isSome, OptIdx.isNone,
+    OptIdx.idx!, HomIndexSafe, homCore]
+
+/-- **`homomorphism` is Algorithm A.2.1** at the public surface: the paper's
+namesake function computes the transcription's answer, packaged into
+`Mappings`. -/
+theorem homomorphism_eq_a2 {src dst : WFConfig}
+    {degreeTest : Degree → Degree → Bool} {dartFrom dartTo : Nat}
+    (hdf : dartFrom < src.darts.size) (hdt : dartTo < dst.darts.size) :
+    homomorphism src dartFrom dst dartTo degreeTest
+      = (homomorphismA2 src dst dartFrom dartTo degreeTest).map
+          fun (vmap, dmap) => ⟨vmap, dmap⟩ := by
+  unfold homomorphism
+  rw [homCore_eq_a2 hdf hdt]
+
+end
 
 end PseudoConfiguration.HomState
 

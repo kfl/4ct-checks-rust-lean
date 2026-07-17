@@ -184,9 +184,13 @@ page. Only the deviations below depart from a literal transcription.
   unguarded reads, and `homStep_eq_a2` proves the executable step computes the
   same function. The one genuine control-flow difference it bridges: the paper
   pushes `rev` before the `succ`/`pred` boundary guards, the port guards first
-  -- equal because a `null` return discards the queue. What remains textual is
-  the loop's host construct (the paper's `while` against the tail-recursive
-  driver); a full-algorithm transcription is scoped in `TODO.md`.
+  -- equal because a `null` return discards the queue. The loop's host
+  construct is closed the same way: `homomorphismA2` transcribes the full
+  algorithm (initialisation, `while` loop, return) as a literal
+  `Id.run do`/`while`, and `homCore_eq_a2` proves the executable seeded BFS
+  computes it on in-range root darts -- the coupling invariant drives
+  `homCoreGo` from each loop state and the `measure` decrease supplies the
+  loop's termination witness.
 
   A second, smaller exception: the wheel-degree-tuple enumeration (A.9.5's
   `enumDegree` recursion) is a total functional formulation -- shared list
