@@ -105,6 +105,19 @@ samples only):
 
 ## Codegen lessons (measured; they generalise)
 
+- **Proof-carrying hot indexing (measured 2026-07-17).** Swapping
+  `homStep`'s eight `!`-indexed reads and writes for proof-carrying ones
+  (bounds from the erased `HomIndexSafe` invariant plus the `WFConfig`
+  facts) removes every bounds check and panic branch from the BFS loop: the
+  specialised `homCoreGo` IR has 7 unchecked `getInternalBorrowed` reads and
+  2 unchecked `set` writes, no `get!`/panic paths. Single-thread user-CPU
+  A/B against the pre-change binary: enum_wheels d7 faster on every rep,
+  medians pre-change 77.98 s vs post-change 75.64 s (~1.03x); combine_rules
+  medians pre-change 3.62 s vs post-change 3.59 s;
+  outputs byte-identical on both workloads (671 + 5439 files). The
+  2026-07-10 `sorry`-backed probe forecast ~1.05x against its older
+  baseline; the honest version confirms the direction on the current one.
+
 - **An erased-invariant wrapper type compiles away (measured 2026-07-17).**
   Moving the homomorphism pipeline onto `WFConfig` (a `PseudoConfiguration`
   plus an erased well-formedness/packability proof) leaves the compiled loop
@@ -233,9 +246,8 @@ samples only):
 
 - **Fast-fail degree pre-check** -- formulated, measured, no win; rejected.
 
-- **Proof-carrying hot indexing** -- bounds checks measured ~1.8% of
-  combine_rules; open TODO candidate: the WF invariants now exist, so the proof
-  side is free.
+- **Proof-carrying hot indexing** -- LANDED (2026-07-17); see the codegen
+  lesson above for the mechanism and the measured numbers.
 
 ## Reproduce
 

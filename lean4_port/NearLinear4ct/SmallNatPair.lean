@@ -67,19 +67,21 @@ theorem fst_eq_shift (p : SmallNatPair) : p.fst = p.raw >>> 32 := rfl
 theorem snd_eq_land (p : SmallNatPair) : p.snd = p.raw &&& 4294967295 := rfl
 theorem unpackPair_eq (p : SmallNatPair) : p.unpackPair = (p.fst, p.snd) := rfl
 
-theorem fst_pack (f s : Nat) (h : s < 4294967296) : (pack f s).fst = f := by
+@[grind =] theorem fst_pack (f s : Nat) (h : s < pairBase) : (pack f s).fst = f := by
   rw [fst_eq_shift, raw_pack, pairBase, Nat.shiftRight_eq_div_pow,
       (by simp : (2 : Nat) ^ 32 = 4294967296)]
+  have h' : s < 4294967296 := h
   omega
 
-theorem snd_pack (f s : Nat) (h : s < 4294967296) : (pack f s).snd = s := by
+@[grind =] theorem snd_pack (f s : Nat) (h : s < pairBase) : (pack f s).snd = s := by
   rw [snd_eq_land, raw_pack, pairBase,
       (by simp : (4294967295 : Nat) = 2 ^ 32 - 1),
       Nat.and_two_pow_sub_one_eq_mod,
       (by simp : (2 : Nat) ^ 32 = 4294967296)]
+  have h' : s < 4294967296 := h
   omega
 
-theorem unpackPair_pack (f s : Nat) (h : s < 4294967296) :
+theorem unpackPair_pack (f s : Nat) (h : s < pairBase) :
     (pack f s).unpackPair = (f, s) := by
   rw [unpackPair_eq, fst_pack f s h, snd_pack f s h]
 
