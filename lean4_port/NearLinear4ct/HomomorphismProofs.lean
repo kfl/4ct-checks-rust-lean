@@ -13,16 +13,18 @@ step** and lifted through the driver loop:
 * `Sound`: dart-local consistency (the paper's Sec. 9 homomorphism definition;
   `homStep_next_sound`/`homStep_done_sound`), yielding soundness of
   `homCore`/`homomorphismExists`.
-* `Agrees`: agreement with a reference homomorphism (`homStep_agrees`, which
-  also strictly drops the `measure`), yielding completeness (no false
-  negatives).
+* `Agrees`: agreement with a reference homomorphism (`homStep_agrees`),
+  yielding completeness (no false negatives); the structural step theorem
+  supplies the strict `measure` decrease independently.
 
 The driver `homCoreGo` is a `partial_fixpoint`, so it exposes
 `homCoreGo.partial_correctness` -- a partial-correctness (Scott) induction
 principle needing no termination proof; `Bounded` and `Sound` lift through it
 in a few lines each. Completeness needs the BFS to actually return, so
 `Agrees` folds over `homCoreGoImp`, a fuel-bounded driver of the *same*
-`homStep`, and `homCoreGoImp_le` bridges back to `homCoreGo`.
+`homStep`; `homCoreGo_eq_imp` -- the unconditional totality theorem, riding
+the strict `measure` decrease of every continuing step -- equates the two
+drivers above the measure, `some` and `none` answers alike.
 
 Both sides enter as `WFConfig` (`PseudoConfiguration.lean`): a configuration
 bundled with its erased well-formedness and packability facts, so no lemma
@@ -143,6 +145,11 @@ theorem idx?_set_le {m mref : IndexMap} {k v : Nat} (hk : k < m.size)
 theorem idx?_eq_of_getElem {m : IndexMap} {i v : Nat} {h : i < m.size}
     (he : m[i]'h = OptIdx.some v) : idx? m i = Option.some v :=
   idx?_eq_of_getElem! h ((getElem!_pos m i h).trans he)
+
+/-- Read an empty `idx?` slot off a proof-carrying read. -/
+theorem idx?_eq_none_of_getElem {m : IndexMap} {i : Nat} {h : i < m.size}
+    (he : m[i]'h = OptIdx.none) : idx? m i = Option.none :=
+  idx?_eq_none_of_not_isSome h (by simp [(getElem!_pos m i h).trans he])
 
 /-- The all-`none` replicate is a well-formed (empty) map. -/
 theorem wf_replicate_none {n codom : Nat} :
@@ -628,8 +635,8 @@ theorem homomorphismExists_sound {src dst : WFConfig}
 
 `homCoreGo` is a `partial_fixpoint`, so proving it *returns* `some` (needed for
 completeness -- no false negatives) requires a termination argument. The fuel
-twin drives the same `homStep`, so the bridge is a one-split transport;
-completeness is then ordinary induction on fuel, stepped by
+twin drives the same `homStep`; `homCoreGo_eq_imp` equates the two drivers
+above the measure, and completeness is ordinary induction on fuel, stepped by
 `homStep_agrees`. -/
 
 /-- Fuel-bounded driver of `homStep` (`0` fuel = give up with `none`). -/
@@ -643,14 +650,6 @@ def homCoreGoImp (src dst : WFConfig) (degreeTest : Degree → Degree → Bool) 
     | .next q vmap dmap =>
       homCoreGoImp src dst degreeTest fuel q vmap dmap (homStep_next_safe hstep)
 
-/-- **The termination bridge**: whenever the fuel driver returns `some r`, so
-does the `partial_fixpoint` driver (they run the same `homStep`). -/
-theorem homCoreGoImp_le {src dst : WFConfig} {degreeTest : Degree → Degree → Bool} :
-    ∀ fuel q vmap dmap hs r,
-      homCoreGoImp src dst degreeTest fuel q vmap dmap hs = some r →
-      homCoreGo src dst degreeTest q vmap dmap hs = some r := by
-  intro fuel
-  induction fuel <;> grind [homCoreGoImp, homCoreGo.eq_def]
 
 /-- The **completeness invariant**: the BFS state agrees with a fixed reference
 homomorphism `(vm, dm)`. The built maps are restrictions of the reference, and
@@ -719,6 +718,47 @@ theorem unmapped_set_lt {dmap : IndexMap} {f v : Nat} (hf : f < dmap.size)
 theorem measure_pop_lt {q q' : Queue SmallNatPair} {x : SmallNatPair} {dmap : IndexMap}
     (hp : q.pop? = some (x, q')) : measure q' dmap < measure q dmap := by
   grind [Queue.live_pop, measure]
+
+/-- **Every continuing step strictly drops `measure`**, unconditionally: a
+re-pop shrinks the live queue with the maps untouched, and the expand arm's
+proof-carrying read guarantees a fresh in-range write, so `unmapped` drops
+(weighted ×4) against a net live growth of at most two. This is the
+termination content of the BFS -- no reference homomorphism needed. -/
+theorem homStep_next_measure {src dst : WFConfig}
+    {degreeTest : Degree → Degree → Bool}
+    {q q' : Queue SmallNatPair} {vmap dmap vmap' dmap' : IndexMap}
+    {hs : HomIndexSafe src dst q vmap dmap}
+    (hst : homStep src dst degreeTest q vmap dmap hs = .next q' vmap' dmap') :
+    measure q' dmap' < measure q dmap := by
+  unfold homStep at hst
+  split at hst
+  · exact nomatch hst
+  · rename_i packed q1 hpq
+    have hfsz : packed.fst < dmap.size :=
+      hs.dmap_size.symm ▸ (hs.queue.pop hpq).1.1
+    have hmeas1 := measure_pop_lt (dmap := dmap) hpq
+    have hunm := fun (h : packed.fst < dmap.size)
+        (hdd : dmap[packed.fst]'h = OptIdx.none) =>
+      unmapped_set_lt (v := packed.snd) h (IndexMap.idx?_eq_none_of_getElem hdd)
+    -- `splits` covers the `dmap` match and the four rejection guards;
+    -- `OptIdx.none` unfolds so the match's raw-form arm feeds the read bridge
+    grind (splits := 5) only [measure, OptIdx.none, !Queue.live_pop,
+      !Queue.live_push, !live_pushLink_le]
+
+/-- **`homCoreGo` is total**: above the measure, it agrees with the
+fuel-bounded twin everywhere -- `some` and `none` answers alike -- so its
+value is that of a structurally total function at computable fuel
+(`measure q dmap + 1`). `homStep_next_measure` keeps the fuel ahead of the
+recursion; fuel-irrelevance above the measure is immediate. This closes the
+divergence question unconditionally: the indexing invariant is on the type,
+so no well-formedness precondition remains. -/
+theorem homCoreGo_eq_imp {src dst : WFConfig} {degreeTest : Degree → Degree → Bool} :
+    ∀ fuel q vmap dmap hs, measure q dmap < fuel →
+      homCoreGo src dst degreeTest q vmap dmap hs
+        = homCoreGoImp src dst degreeTest fuel q vmap dmap hs := by
+  intro fuel
+  induction fuel <;> grind only [homCoreGo.eq_def, homCoreGoImp,
+    → homStep_next_measure, → homStep_next_safe]
 
 /-- A read that `isSome` corresponds to a `some` in `idx?`. -/
 theorem idx?_of_isSome {m : IndexMap} {i : Nat} (hi : i < m.size) (h : m[i]!.isSome = true) :
@@ -809,27 +849,26 @@ theorem link_obligation {dm : IndexMap} {os od : OptIdx} {sSize dSize : Nat}
   obtain rfl : t = t' := by simpa using ht'
   grind [OptIdx.get?_some]
 
-/-- What completeness needs from a step result: a final answer is present, or
-the continuing state still agrees with the reference and has smaller measure.
-Keeping this match behind a named predicate lets `homStep_agrees` reason
-directly about the computed result, without a dependent result equation. -/
-def AgreesResult (src dst : PseudoConfiguration) (vm dm : IndexMap)
-    (q : Queue SmallNatPair) (dmap : IndexMap) : HomNext → Prop
+/-- The semantic content completeness needs from a step result: a final answer
+is present, or the continuing state still agrees with the reference. Keeping
+this match behind a named predicate lets `homStep_agrees` reason directly about
+the computed result, without a dependent result equation; the independent
+`homStep_next_measure` supplies termination. -/
+def AgreesResult (src dst : PseudoConfiguration) (vm dm : IndexMap) : HomNext → Prop
   | .done r => r.isSome
-  | .next q' vmap' dmap' =>
-      Agrees src dst vm dm q' vmap' dmap' ∧ measure q' dmap' < measure q dmap
+  | .next q' vmap' dmap' => Agrees src dst vm dm q' vmap' dmap'
 
 /-- **One step under a reference homomorphism**: from an `Agrees` state the
 step never answers `none` (each early `done none` exit is refuted in place
-by the reference's witness), and a continuing step keeps `Agrees` and
-strictly drops `measure`. Recursion-free; completeness folds this lemma over
-the fuel. -/
+by the reference's witness), and a continuing step keeps `Agrees`.
+Recursion-free; completeness combines this semantic lemma with
+`homStep_next_measure` while folding over the fuel. -/
 theorem homStep_agrees {src dst : WFConfig}
     {degreeTest : Degree → Degree → Bool} {dartFrom dartTo : Nat} {vm dm : IndexMap}
     (hom : IsRootedHom src dst degreeTest dartFrom dartTo vm dm)
     {q : Queue SmallNatPair} {vmap dmap : IndexMap}
     (ha : Agrees src dst vm dm q vmap dmap) :
-    AgreesResult src dst vm dm q dmap
+    AgreesResult src dst vm dm
       (homStep src dst degreeTest q vmap dmap ha.toBounded.toIndexSafe) := by
   unfold homStep
   split
@@ -844,7 +883,6 @@ theorem homStep_agrees {src dst : WFConfig}
     have hfsz : packed.fst < dmap.size := by
       simpa only [ha.toBounded.dmap_wf.size_eq] using hf
     have hagr1 : Agrees src dst vm dm q1 vmap dmap := agrees_pop ha hpq
-    have hmeas1 : measure q1 dmap < measure q dmap := measure_pop_lt hpq
     -- move the state's reads to the spec's total-read (`!`) vocabulary once;
     -- the proof-carrying writes keep their `set` form (the `_set_` lemmas)
     simp only [← getElem!_pos]
@@ -863,8 +901,6 @@ theorem homStep_agrees {src dst : WFConfig}
       have hdstD := dst.wf.1.read_inBounds hfs
       have hhsz : src.darts[packed.fst]!.head < vmap.size := by
         simpa only [ha.toBounded.vmap_wf.size_eq] using hsrcD.head_lt
-      have hfresh : dmap.idx? packed.fst = Option.none :=
-        IndexMap.idx?_eq_none_of_not_isSome hfsz (by grind [OptIdx.isSome])
       -- head consistency: if `vmap[h]` is set it already agrees with the hom
       have hvhead : vmap[src.darts[packed.fst]!.head]!.isSome = true →
           vmap[src.darts[packed.fst]!.head]! = OptIdx.some dst.darts[packed.snd]!.head := by
@@ -879,12 +915,10 @@ theorem homStep_agrees {src dst : WFConfig}
       have hnext := agrees_pushLink (agrees_pushLink ha1
           (link_obligation hsucc hsrcD.succ_lt hdstD.succ_lt))
         (link_obligation hpred hsrcD.pred_lt hdstD.pred_lt)
-      have hunm := unmapped_set_lt (v := packed.snd) hfsz hfresh
       -- The four guard facts select the success path. `hdeg` simplifies its
       -- test directly; reducing the nested head/succ/pred conditionals still
       -- takes three proof-search case splits.
-      grind (splits := 3) only [measure, !Queue.live_push, !live_pushLink_le,
-        !Queue.live_pop, AgreesResult]
+      grind (splits := 3) only [AgreesResult]
 
 /-- **Completeness on the fuel driver**: given a reference homomorphism, from
 any `Agrees` state with enough fuel, `homCoreGoImp` returns `some`. Ordinary
@@ -905,15 +939,17 @@ theorem homCoreGoImp_complete {src dst : WFConfig}
     · have h : r.isSome := by
         simpa only [AgreesResult, heq] using hstep
       grind [homCoreGoImp, Option.isSome_iff_exists]
-    · obtain ⟨ha', hlt⟩ : _ ∧ _ := by
+    · have ha' : Agrees src dst vm dm q' vmap' dmap' := by
         simpa only [AgreesResult, heq] using hstep
+      have hlt := homStep_next_measure heq
       obtain ⟨r', hr'⟩ := ih q' vmap' dmap' (homStep_next_safe heq) ha' (by grind)
       exact ⟨r', by grind [homCoreGoImp]⟩
 
 /-- **Completeness of `homCore`**: if a rooted homomorphism `src → dst` exists,
 the seeded BFS returns `some`. The seed state `Agrees` with the reference hom
 (the root pair is queued and correct, the maps start empty), so `homCoreGoImp`
-succeeds at enough fuel and the bridge transports it to `homCoreGo` = `homCore`. -/
+succeeds at enough fuel and `homCoreGo_eq_imp` transports it to
+`homCoreGo` = `homCore`. -/
 theorem homCore_complete {src dst : WFConfig} {degreeTest : Degree → Degree → Bool}
     {dartFrom dartTo : Nat} {vm dm : IndexMap}
     (hdf : dartFrom < src.darts.size) (hdt : dartTo < dst.darts.size)
@@ -932,7 +968,7 @@ theorem homCore_complete {src dst : WFConfig} {degreeTest : Degree → Degree �
   refine ⟨r, ?_⟩
   unfold homCore
   rw [dif_pos ⟨hdf, hdt⟩]
-  exact homCoreGoImp_le _ _ _ _ _ _ hr
+  exact (homCoreGo_eq_imp _ _ _ _ _ (Nat.lt_succ_self _)).trans hr
 
 /-- **`homomorphismExists` is complete**: if a rooted homomorphism exists, the
 `.isSome` fast path reports it. With `homomorphismExists_sound`, this gives
