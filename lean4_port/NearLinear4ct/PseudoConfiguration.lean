@@ -158,45 +158,43 @@ borrowed parameters. -/
   | .some s, .some sStar => q.push (SmallNatPair.pack s sStar)
   | _, _ => q
 
-/-- Every worklist slot decodes to an in-range dart pair. Quantified over
-*all* slots, not just live ones: the storage is append-only (`pop?` only
-advances `head`, never overwriting), so a dead slot is a formerly-live one
-and the stronger form costs nothing -- while making pop-preservation
-definitional (`items` is untouched) with no `head` side conditions in the
-lemmas. The popped element's liveness witness is `pop?`'s own bound
-`head < items.size`, consumed in `HomBounded.pop`. Erased at runtime; it
-supplies the index proofs for `homStep`'s reads and writes. -/
+/-- Every live worklist entry decodes to an in-range dart pair. Stated over
+`Queue.Active`, the queue's abstract interface, and maintained purely
+through the `active_*` lemmas -- the queue's representation never appears
+in the reasoning. Erased at runtime; it supplies the index proofs for
+`homStep`'s reads and writes. -/
 def HomBounded (sD dD : Nat) (q : Queue SmallNatPair) : Prop :=
-  ∀ i (h : i < q.items.size),
-    (q.items[i]'h).fst < sD ∧ (q.items[i]'h).snd < dD
+  ∀ p, q.Active p → p.fst < sD ∧ p.snd < dD
 
 namespace HomBounded
 
-/-- A fresh queue has no slots. -/
+/-- A fresh queue has nothing active. -/
 theorem empty {sD dD cap : Nat} :
-    HomBounded sD dD (Queue.emptyWithCapacity cap) := by
-  intro i h
-  exact absurd h (by simp [Queue.emptyWithCapacity])
+    HomBounded sD dD (Queue.emptyWithCapacity cap) :=
+  fun p hp => absurd hp (Queue.not_active_emptyWithCapacity p)
 
-/-- The popped pair is in range and the rest stays bounded. -/
+/-- The popped pair was active, hence in range; popping only shrinks the
+active set. -/
 theorem pop {sD dD : Nat} {q q' : Queue SmallNatPair} {x : SmallNatPair}
     (hb : HomBounded sD dD q) (hp : q.pop? = some (x, q')) :
-    (x.fst < sD ∧ x.snd < dD) ∧ HomBounded sD dD q' := by
-  grind [HomBounded, Queue.pop?]
+    (x.fst < sD ∧ x.snd < dD) ∧ HomBounded sD dD q' :=
+  ⟨hb x (Queue.active_head hp), fun p hp' => hb p (Queue.active_pop hp hp')⟩
 
-/-- Pushing an element whose decode is in range keeps every slot bounded. -/
+/-- Pushing an in-range element: the active set grows by exactly `x`. -/
 theorem push {sD dD : Nat} {q : Queue SmallNatPair} {x : SmallNatPair}
     (hb : HomBounded sD dD q) (hx : x.fst < sD ∧ x.snd < dD) :
-    HomBounded sD dD (q.push x) := by
-  grind [HomBounded, Queue.push]
+    HomBounded sD dD (q.push x) :=
+  fun p hp => match Queue.active_push hp with
+    | .inl hact => hb p hact
+    | .inr heq => heq ▸ hx
 
-/-- Pushing a packed in-range pair keeps every slot bounded (the new slot by
-`fst_pack`/`snd_pack`, which need the `dD ≤ pairBase` decode bound). -/
+/-- Pushing a packed in-range pair (the decode by `fst_pack`/`snd_pack`,
+which need the `dD ≤ pairBase` bound). -/
 theorem push_pack {sD dD : Nat} (hdD : dD ≤ SmallNatPair.pairBase)
     {q : Queue SmallNatPair} {a b : Nat}
     (hb : HomBounded sD dD q) (ha : a < sD) (hbb : b < dD) :
-    HomBounded sD dD (q.push (SmallNatPair.pack a b)) := by
-  grind [HomBounded, Queue.push]
+    HomBounded sD dD (q.push (SmallNatPair.pack a b)) :=
+  hb.push (by grind)
 
 /-- `pushLink` keeps every slot bounded: the both-`some` arm is a `push` of
 in-range links, every other arm is the identity. -/

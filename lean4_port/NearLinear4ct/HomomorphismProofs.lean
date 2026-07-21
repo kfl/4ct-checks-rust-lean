@@ -161,18 +161,11 @@ end IndexMap
 
 namespace PseudoConfiguration.HomState
 
-/-- The threaded worklist invariant covers every active (live) element. -/
-theorem HomBounded.active {sD dD : Nat} {q : Queue SmallNatPair}
-    (hb : HomBounded sD dD q) {p : SmallNatPair} (hp : q.Active p) :
-    p.fst < sD ∧ p.snd < dD := by
-  obtain ⟨i, -, hi⟩ := hp
-  grind [HomBounded]
-
 /-- **Structural invariant** (`Bounded` half of `HomState.WF`): sizes + all
 indices in bounds. Enough for output-WF; no dart-local (semantic) content.
 The queue clause is the executable layer's `HomBounded` -- one structural
-invariant, no parallel versions; active-element bounds follow through
-`HomBounded.active`, and the threaded size facts are `vmap_wf.size_eq`/
+invariant, no parallel versions; active-element bounds are its direct
+application, and the threaded size facts are `vmap_wf.size_eq`/
 `dmap_wf.size_eq`. -/
 structure Bounded (src dst : PseudoConfiguration)
     (q : Queue SmallNatPair) (vmap dmap : IndexMap) : Prop where
@@ -213,7 +206,7 @@ the both-`some` arm is a plain `push`, every other arm is the identity. -/
 /-- `pushLink` grows the live length by at most one. -/
 theorem live_pushLink_le {q : Queue SmallNatPair} {os od : OptIdx} :
     (pushLink q os od).live ≤ q.live + 1 := by
-  grind [pushLink.eq_def, Queue.live, Queue.push]
+  grind [pushLink.eq_def, Queue.live_push]
 
 /-- `pushLink` on in-range links (the dart `InBounds` fields) keeps `Bounded`. -/
 theorem bounded_pushLink {src dst : WFConfig}
@@ -463,7 +456,7 @@ theorem homStep_next_sound
   split at hst
   · grind
   · rename_i packed q1 heq
-    have hfb := HomBounded.active hs.queued_bd (Queue.active_head heq)
+    have hfb := hs.queued_bd packed (Queue.active_head heq)
     have hfsz : packed.fst < dmap.size := by
       simpa only [hs.dmap_wf.size_eq] using hfb.1
     -- move the state's reads to the spec's total-read (`!`) vocabulary once;
@@ -877,7 +870,7 @@ theorem homStep_agrees {src dst : WFConfig}
     rfl
   · rename_i packed q1 hpq
     have hpk : q.Active packed := Queue.active_head hpq
-    have hbd := HomBounded.active ha.toBounded.queued_bd hpk
+    have hbd := ha.toBounded.queued_bd packed hpk
     have hcorrect : dm.idx? packed.fst = Option.some packed.snd := ha.queue_ok packed hpk
     have hf : packed.fst < src.darts.size := hbd.1
     have hfs : packed.snd < dst.darts.size := hbd.2

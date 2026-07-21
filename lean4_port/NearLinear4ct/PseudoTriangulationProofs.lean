@@ -468,9 +468,7 @@ private theorem GlueCoherent.init {pt : PseudoTriangulation} (hpt : pt.WF)
     exact ⟨s, by simpa only [root_new hi] using hs, .root hslt hslt rfl⟩
   · intro p hp
     obtain ⟨hp₁, hp₂⟩ := hpairs p hp
-    obtain ⟨i, hi, hip⟩ := Array.mem_iff_getElem.mp hp
-    exact .queued hp₁ hp₂ ⟨i, by simp [Queue.ofArray],
-      Array.getElem?_eq_some_iff.mpr ⟨hi, hip⟩⟩
+    exact .queued hp₁ hp₂ (Queue.active_ofArray_of_mem hp)
 
 private theorem GlueCoherent.pop_same {pt : PseudoTriangulation}
     {dartPairs : Array (Nat × Nat)} {darts : Array Dart} {ufV ufD : Unionfind}

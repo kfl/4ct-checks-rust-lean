@@ -1,5 +1,6 @@
 import NearLinear4ct.OptIdx
 import NearLinear4ct.Degree
+import NearLinear4ct.Queue
 import Linen
 
 /-!
@@ -122,59 +123,6 @@ where
   go : List α → List α → Bool
     | ys@(_ :: rest), _ :: cnt => if ltPrefix ys xs then false else go rest cnt
     | _, _ => true
-
-/-- A FIFO queue for the BFS worklists (`homomorphism`, `freeHomomorphism`,
-`resolveDegreeIssues`, `fixOutRules`). Mirrors the pseudocode's `Q ← ∅` /
-`Q.push` directly, with `Q.empty()` / `Q.pop()` merged into the total `pop?`.
-The representation is a flat array walked by a head index, so nothing is paid
-over the open-coded form -- only the bookkeeping is named. -/
-structure Queue (α : Type) where
-  items : Array α
-  head : Nat
-  /-- The head never runs past the backing array: a `Queue` is well-formed by
-  construction (erased at runtime), so the proofs never carry a separate
-  queue-wellformedness invariant. -/
-  queue_invariant : head ≤ items.size
-
-instance : Inhabited (Queue α) := ⟨⟨#[], 0, Nat.le_refl 0⟩⟩
-
-namespace Queue
-
-/-- The empty queue (pseudocode `Q ← ∅`). -/
-protected def empty : Queue α := ⟨#[], 0, Nat.le_refl 0⟩
-
-/-- An empty queue whose backing array reserves `cap` slots, so `push` never
-regrows mid-BFS (the final size is known up front). -/
-def emptyWithCapacity (cap : Nat) : Queue α := ⟨Array.mkEmpty cap, 0, Nat.zero_le _⟩
-
-/-- A queue seeded with `xs` (the initial obligations). -/
-def ofArray (xs : Array α) : Queue α := ⟨xs, 0, Nat.zero_le _⟩
-
-/-- Whether the queue is exhausted (pseudocode `Q.empty()`). -/
-def isEmpty (q : Queue α) : Bool := q.head ≥ q.items.size
-
-/-- Number of not-yet-popped elements (`push` +1, `pop?` −1). Used as a
-termination measure in the proofs. -/
-def live (q : Queue α) : Nat := q.items.size - q.head
-
-/-- Enqueue `x` (pseudocode `Q.push(x)`).
-
-`@[inline]` so the wrapper `Queue` rebuild is visible to the caller's reuse
-analysis (Perceus cannot reuse constructors across a call boundary). -/
-@[inline] def push (q : Queue α) (x : α) : Queue α :=
-  ⟨q.items.push x, q.head, by simpa [Array.size_push] using Nat.le_succ_of_le q.queue_invariant⟩
-
-/-- The pseudocode's `Q.empty()` test and `x ← Q.pop()` as one total step:
-the front element and the advanced queue, or `none` when exhausted. The
-emptiness test *is* the bounds proof (`queue_invariant` makes them the same
-fact), so the read is proof-carrying -- no `!`/`?` indexing. For
-`while let some (x, q') := q.pop? do` worklist loops. -/
-@[inline] def pop? (q : Queue α) : Option (α × Queue α) :=
-  if h : q.head < q.items.size then
-    some (q.items[q.head], ⟨q.items, q.head + 1, h⟩)
-  else none
-
-end Queue
 
 /-! ### Token helpers for the flat integer file formats (`FORMAT.md`) -/
 
