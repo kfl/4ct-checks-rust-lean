@@ -15,8 +15,8 @@
 #SBATCH --partition=modi_short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=128     # whole 128-core node; enum_cartwheels is embarrassingly
-#SBATCH --exclusive             # parallel, so MAX_JOBS below tracks the full allocation
+#SBATCH --cpus-per-task=128     # all 128 SMT hardware threads (64 physical cores);
+#SBATCH --exclusive             # MAX_JOBS below tracks the full allocation
 #SBATCH --mem=0                 # all node RAM (else the cgroup may cap at the 1G default,
 #SBATCH --time=02:00:00         # OOM-killing the 128 enum_cartwheels workers)
 #SBATCH --output=full-%j.out

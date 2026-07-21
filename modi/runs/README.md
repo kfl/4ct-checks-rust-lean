@@ -1,6 +1,6 @@
 # Verification run logs
 
-Raw output of the full A.3-A.6 differential on MODI (one 64-core /
+Raw output of the full A.2-A.6 differential on MODI (one 64-core /
 128-SMT-thread node per degree). Two runs are archived, named by SLURM job
 array id:
 
@@ -10,6 +10,10 @@ array id:
   the published history, so it has no git ref). Kept as an archive; its
   timings are not comparable to `229`'s in absolute terms (different stock
   image, drifted environment).
+
+These per-degree logs start with the A.2 non-blocked `combine_rules` stage.
+The separate A.1 empty-configuration differential is run by `modi/run_p7.sh 0`
+and is not archived here.
 
 Per run:
 

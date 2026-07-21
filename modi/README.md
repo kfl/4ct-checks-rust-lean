@@ -11,30 +11,40 @@ Scripts for running the near-linear-4CT **Rust and Lean ports** on
 
 The ports are built **in place** under the MODI mount and run inside MODI's
 **stock Apptainer image** -- MODI blocks rootless `apptainer build --fakeroot`, so
-there is no custom image to build. The C++ reference is supplied as a prebuilt
-static binary from the sibling `computer-checks` repo.
+there is no custom image to build. The C++ reference is built elsewhere from a
+separate `computer-checks` checkout and supplied to MODI as a prebuilt static
+binary; its source checkout is not staged.
 
 ## Layout on MODI
 
-`~/modi_mount` is the only directory the compute nodes can see, so everything
-lives there as two **sibling** checkouts:
+`~/modi_mount` is the NFS share mounted on every compute node. The setup script
+places this program checkout and two nested data checkouts there, plus a
+binary-only compatibility path for the C++ oracle:
 
 ```
 ~/modi_mount/
   4ct-checks-rust-lean/   <- this repo (Rust + Lean ports, these scripts)
-  computer-checks/        <- the C++ reference; its build/src/main is the C++ oracle
+    rust_port/discharging-rules/          <- data checkout
+    rust_port/reducible-configurations/   <- data checkout
+  computer-checks/
+    build/src/main        <- staged C++ oracle binary; no C++ source checkout
 ```
 
 The scripts resolve the C++ binary at `../computer-checks/build/src/main` relative
-to this repo, matching that layout (override with `CPP=...`).
+to this repo, matching that compatibility path (override with `CPP=...`).
 
 ## Files
 
-- **`modi_setup.sh`** -- one-shot, idempotent setup: clone/update the repos and data, stage the C++ binary from the ERDA root, install rustup/elan if missing, build both ports. Start here.
-- **`Dockerfile`** -- toolchain image to build the **C++ reference binary** (in the sibling `computer-checks` repo) as a static glibc-only ELF.
+- **`modi_setup.sh`** -- one-shot, idempotent setup: clone/update this repo and
+  the two data repos, stage the C++ binary from the ERDA root, install
+  rustup/elan if missing, and build both ports. Start here.
+- **`Dockerfile`** -- toolchain image for building the **C++ reference binary**
+  as a static glibc-only ELF from a separate `computer-checks` source checkout
+  on a Docker-capable machine.
 - **`run_p7.sh`** -- the cheap byte-identical subset (combine_rules A.1/A.2); **run this first**.
 - **`p7_job.sh`** -- `sbatch` wrapper that runs `run_p7.sh 0` inside the stock image.
-- **`full_differential.sh`** -- **full** 3-way pipeline differential (A.3-A.6): combine_rules -> enum_wheels -> enum_cartwheels -> check_*.
+- **`full_differential.sh`** -- **full** 3-way A.2-A.6 differential:
+  `combine_rules` -> `enum_wheels` -> `enum_cartwheels` -> `check_*`.
 - **`full_job.sh`** -- `sbatch` wrapper for `full_differential.sh` (single degree; degree-7 gate by default).
 - **`full_array.sh`** -- `sbatch` job ARRAY: all degrees 7-11 as separate jobs, checkpoint+resume via a ledger.
 - **`scaling.sh`** -- parallel wall-clock thread sweep (Rust & Lean vs serial C++).
@@ -51,10 +61,12 @@ to this repo, matching that layout (override with `CPP=...`).
   unavailable.
 
 ## MODI facts these scripts assume (from the MODI user guide)
+- **Hardware**: eight nodes, each with two 32-core AMD EPYC 7501 processors and
+  256 GB RAM. SMT exposes 128 hardware threads to the full-node benchmark jobs.
 - **Apptainer** is the container runtime (not Singularity).
-- **`~/modi_mount`** is the *only* directory the compute nodes can see; the repos,
-  and any retrievable job output, must live there (50 GB/user cap). **Submit jobs
-  from `~/modi_mount`.**
+- **`~/modi_mount`** is the shared NFS directory available on the compute nodes;
+  the repos and any retrievable job output must live there (50 GB/user cap).
+  **Submit jobs from `~/modi_mount`.**
 - **`~/modi_images/`** holds the `.sif` images (the stock `hpc-notebook-*.sif`).
 - **`srun`/`sacct` are not supported** -- run `apptainer` directly in the job body.
 - Interactive node: **`salloc`**. Partitions: **`modi_devel`** (20 min, default) |
@@ -144,7 +156,7 @@ self-speedups, and Rust-vs-serial-C++.
 > single-threaded), so its scaling plateaus early. For a representative *compute*
 > scaling curve, use a `check_*` phase once the cartwheel data is staged (step 4).
 
-## 4. Full correctness -- the whole A.3-A.6 pipeline (goal 1)
+## 4. Full correctness -- the A.2-A.6 pipeline (goal 1)
 > **Lemma coverage:** this script covers **A.2-A.6** (its `combine_rules` stage is the
 > A.2 non-blocked variant, `-C reducible-configurations/D`, needed as input to A.3). The
 > **A.1** empty-config combine (`-C empty`) is byte-diffed by `run_p7.sh 0` (step 2). So a

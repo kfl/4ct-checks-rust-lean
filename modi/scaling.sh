@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIBDIR="$(cat "$ROOT/.lean_libdir" 2>/dev/null || dirname "$(find /root/.elan "${HOME:-/root}/.elan" -name 'libleanshared*' 2>/dev/null | head -1)" 2>/dev/null || true)"
 [ -n "$LIBDIR" ] && export LD_LIBRARY_PATH="$LIBDIR:${LD_LIBRARY_PATH:-}"
 
-CPP="$(dirname "$ROOT")/computer-checks/build/src/main"   # sibling C++ repo
+CPP="$(dirname "$ROOT")/computer-checks/build/src/main"   # source checkout or staged-binary path
 RUST="$ROOT/rust_port/target/release/main"
 LEAN="$ROOT/lean4_port/.lake/build/bin/main"
 R="$ROOT/rust_port/discharging-rules/R"
@@ -26,7 +26,7 @@ OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
 ARGS=(--combine_rules -R "$R" -C "$C" -o "$OUT")   # the measured workload
 
 RUNS="${RUNS:-3}"
-# `nproc` can mis-report inside SLURM/containers (returns 2 on a 128-core MODI node);
+# `nproc` can mis-report inside SLURM/containers (returns 2 on a 128-thread MODI node);
 # prefer SLURM's allocated count, then the hardware count, then nproc.
 NP="${SLURM_CPUS_ON_NODE:-$(nproc --all 2>/dev/null || nproc)}"
 THREADS="${THREADS:-}"
@@ -44,7 +44,7 @@ best() {
   echo "$min"
 }
 
-echo "## scaling on $(uname -sm), $NP cores, best of $RUNS runs, workload: combine_rules"
+echo "## scaling on $(uname -sm), $NP logical CPUs, best of $RUNS runs, workload: combine_rules"
 cpp=""
 if [ -x "$CPP" ]; then
   cpp="$(best "$CPP" "${ARGS[@]}")"

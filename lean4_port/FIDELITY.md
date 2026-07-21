@@ -16,24 +16,26 @@ has been reduced to machine-checked proof. The reference is the
 
 Fidelity is established two ways:
 
-- **Behavioural** -- the byte-exact oracle tests (`lake exe test`, 137 oracles)
-  and the differential harness (`p7_differential.sh`) pin the output to the
-  reference C++ implementation. The on-disk file formats it parses and emits
-  (configurations, rules, combined rules, cartwheels) are specified
+- **Behavioural** -- `lake exe test` runs fixture-based unit and exact-equality
+  checks. The 3-way `p7_differential.sh` byte-compares the A.1/A.2 output on real
+  data; `../modi/full_differential.sh` does the same for file-producing stages
+  A.2-A.3 and compares exit codes for the A.4-A.6 checks. The on-disk file
+  formats (configurations, rules, combined rules, cartwheels) are specified
   byte-for-byte in `../FORMAT.md`.
 
-- **Structural** -- naming follows the appendix (lowerCamelCase, terse), so each
-  routine maps to a like-named Lean function. The code is an article supplement,
-  so there are no glossaries or renames.
+- **Structural** -- naming generally follows the appendix (lowerCamelCase,
+  terse), so routines map directly to Lean functions. Additional helper names
+  and control-flow refactorings are called out under Deliberate deviations.
 
-## Correspondence: a 1:1 transcription of Appendix A
+## Correspondence with Appendix A
 
-Every routine in Appendix A (A.2 `homomorphism` through A.10's cartwheel-combine
-checks) ports to a like-named Lean function in the module for its section:
-`PseudoTriangulation`, `PseudoConfiguration`, `Configuration`, `Cartwheel`,
-`CombineCartwheel`. The pseudocode's imperative shape is preserved -- `Queue`
-worklists, early exits, in-place updates -- so the code reads as it does on the
-page. Only the deviations below depart from a literal transcription.
+Appendix A routines from A.2 `homomorphism` through A.10's cartwheel-combine
+checks have corresponding, usually like-named Lean functions in the module for
+their section: `PseudoTriangulation`, `PseudoConfiguration`, `Configuration`,
+`Cartwheel`, `CombineCartwheel`. The implementation preserves the pseudocode's
+routine boundaries and, where practical, its imperative shape: `Queue`
+worklists, early exits, and in-place updates. The representation, control-flow,
+and parallelism differences are documented below.
 
 ## Deliberate deviations
 

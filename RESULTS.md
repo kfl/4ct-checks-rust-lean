@@ -1,17 +1,18 @@
 # Results: Rust and Lean ports of the near-linear 4CT computer checks
 
 The near-linear 4CT computer-check pipeline has been independently
-re-implemented in Rust and Lean 4, and both ports are verified
-byte-identical to the C++ original and to the paper's published counts
-across the complete A.3-A.6 run on the real data.
+re-implemented in Rust and Lean 4. Both ports produce output byte-identical to
+the C++ original and match the paper's published counts across the A.2-A.6 run
+on the real data; A.1 is checked by a separate `combine_rules` differential.
 
-This is two independent results:
+This gives two results:
 
-- **Correctness.** Three independent implementations (C++, Rust, Lean), in three
-  languages, produce byte-for-byte identical output at every file-producing
-  stage, and every count matches the values published in the paper. A bug
-  shared by all three would have to survive three separate translations and
-  coincidentally match the published numbers.
+- **Differential correctness evidence.** The C++, Rust, and Lean
+  implementations produce byte-for-byte identical output at every
+  file-producing stage, and every count matches the values published in the
+  paper. The separately written ports reduce the risk of port-specific
+  transcription errors. This comparison does not exclude a defect shared by
+  the paper's pseudocode, the reference implementation, and both ports.
 
 - **Performance.** The ports parallelise the stages the C++ original runs
   serially. On the nodes described below, that makes Rust the fastest of the
@@ -20,11 +21,12 @@ This is two independent results:
   faster than C++ overall. These ratios are properties of this hardware and
   dispatch setup, not per-operation speedups; Sec. 3 and 4 give the breakdown.
 
-Run on MODI (University of Copenhagen, SCIENCE HPC centre): 2 x AMD EPYC 7501
-nodes -- 64 physical cores presenting 128 SMT hardware threads -- with 256 GB
-RAM. Measured at commit `0d05d5e` (SLURM job array 229); the raw per-degree
-logs are archived in [`modi/runs/`](modi/runs/). For *how* to build and run,
-see [`modi/README.md`](modi/README.md).
+Run on MODI (University of Copenhagen, SCIENCE HPC centre). Each degree used one
+node with two AMD EPYC 7501 processors: 64 physical cores, 128 SMT hardware
+threads, and 256 GB RAM. Measured at commit `0d05d5e` (SLURM job array 229); the
+raw per-degree A.2-A.6 logs are archived in [`modi/runs/`](modi/runs/). The
+separate A.1 run is not archived there. For *how* to build and run, see
+[`modi/README.md`](modi/README.md).
 
 ---
 
@@ -43,9 +45,11 @@ compared:
 | A.5   | `check_7triangle`                       | every 7-triangle bad cartwheel is dischargeable       |
 | A.6   | `check_deg7`                            | every degree-7-centred bad cartwheel is dischargeable |
 
-**Verification method.** A 3-way differential
-([`modi/full_differential.sh`](modi/full_differential.sh)), run per
-centre-degree as a SLURM job array ([`modi/full_array.sh`](modi/full_array.sh)):
+**Verification method.** Two 3-way differentials: `modi/run_p7.sh 0` checks A.1
+(and repeats A.2), while
+[`modi/full_differential.sh`](modi/full_differential.sh) checks A.2-A.6 per
+centre degree as a SLURM job array
+([`modi/full_array.sh`](modi/full_array.sh)):
 
 - **File-producing stages** (`combine_rules`, `enum_wheels`, `enum_cartwheels`)
   -- each port's output directory is byte-compared (`diff -r`) against C++. Any
@@ -90,8 +94,8 @@ the byte-identical rule sets realise those.)
 
 ## 3. Performance results
 
-Per-port wall-clock (seconds), 128-way parallel (one worker per SMT thread;
-the nodes have 64 physical cores), one degree per row-block. `enum_cartwheels`
+Per-port wall-clock (seconds), 128-way parallel (one worker per SMT hardware
+thread on a 64-physical-core node), one degree per row-block. `enum_cartwheels`
 ("cart") is parallelised across processes; the other stages are single-process
 (internally parallel where the port supports it). Ratios are vs C++.
 

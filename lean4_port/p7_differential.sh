@@ -7,16 +7,16 @@
 # pipeline (free homomorphism), the reducible-configuration blocking path
 # (blockedByReducibleConfiguration / representativeDegree / containConf /
 # homomorphism), and byte-exact output formatting. The cartwheel enumeration
-# engine and check drivers (A.3-A.6) are covered instead by the ported unit-test
-# oracles (`lake exe test`), which are exact-equality oracles vs the C++ test
-# suite; the full A.3-A.6 enumeration is heavy and intentionally not run here.
+# engine and check drivers have smaller fixture-based coverage in `lake exe
+# test`; their full real-data A.3-A.6 differential is
+# `../modi/full_differential.sh` and is intentionally not run here.
 #
 # Usage: ./p7_differential.sh [NRULES]   (default: all rules)
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NRULES="${1:-0}" # 0 = all
-CPP="${CPP:-../../computer-checks/build/src/main}"   # sibling C++ repo
+CPP="${CPP:-../../computer-checks/build/src/main}"   # source checkout or staged-binary path
 RUST="${RUST:-../rust_port/target/release/main}"
 LEAN="${LEAN:-.lake/build/bin/main}"
 # The data repos live in the Rust port dir (already cloned).

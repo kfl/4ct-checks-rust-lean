@@ -9,14 +9,14 @@
 #SBATCH --partition=modi_short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=128      # MODI nodes are 128-core; --exclusive alone leaves the
-#SBATCH --exclusive              # cgroup at the default ~2 CPUs, so request them explicitly
+#SBATCH --cpus-per-task=128      # all 128 SMT hardware threads (64 physical cores);
+#SBATCH --exclusive              # request them explicitly to avoid the default ~2-CPU cgroup
 #SBATCH --time=00:30:00
 #SBATCH --output=scaling-%j.out
-echo "node: $(hostname), cores: $(nproc)"
+echo "node: $(hostname), logical CPUs: $(nproc)"
 cd "$HOME/modi_mount/4ct-checks-rust-lean"
 # scaling.sh locates libleanshared itself (searches $HOME/.elan). RUNS via --env.
-# `nproc` mis-reports 2 inside this env even though the job owns all 128 cores
+# `nproc` mis-reports 2 inside this env even though the job owns all 128 hardware threads
 # (Cpus_allowed_list 0-127), so set the sweep explicitly rather than letting
 # scaling.sh derive it from nproc.
 # newest stock image -- a pinned name rotates out whenever MODI updates images

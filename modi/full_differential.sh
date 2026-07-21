@@ -1,6 +1,6 @@
 #!/bin/bash
-# Full-pipeline 3-way differential (Lemmas A.3-A.6): the heavy follow-up to the
-# combine_rules-only p7. Runs, for C++, Rust AND Lean:
+# Full-pipeline 3-way differential (Lemmas A.2-A.6): the heavy follow-up to the
+# A.1/A.2 combine_rules-only p7. Runs, for C++, Rust AND Lean:
 #
 #   combine_rules -> enum_wheels(-d) -> enum_cartwheels(per wheel) -> check_{deg7,deg8,7triangle}
 #
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CPP="${CPP:-$(dirname "$ROOT")/computer-checks/build/src/main}"   # sibling C++ repo
+CPP="${CPP:-$(dirname "$ROOT")/computer-checks/build/src/main}"   # source checkout or staged-binary path
 RUST="${RUST:-$ROOT/rust_port/target/release/main}"
 LEAN="${LEAN:-$ROOT/lean4_port/.lake/build/bin/main}"
 DATA="${DATA:-$ROOT/rust_port}"                 # holds the two data repos
@@ -122,7 +122,7 @@ for p in $PORTS; do
   # xargs -P gives true MAX_JOBS-way concurrency with negligible per-spawn overhead.
   # RAYON_NUM_THREADS=1 / LEAN_NUM_THREADS=1: the ports parallelise config-load internally,
   # so without the cap 128 per-wheel procs each spawn a full thread pool (~16k threads) and
-  # oversubscribe the cores. 1 thread/proc x 128 procs = clean 1:1; this takes Rust's cart
+  # oversubscribe the hardware threads. 1 thread/proc x 128 procs = clean 1:1; this takes Rust's cart
   # from 1.22x to 0.90x C++ (measured). The vars are harmless to C++, which ignores them.
   xargs -P "$MAXJ" -I{} env RAYON_NUM_THREADS=1 LEAN_NUM_THREADS=1 \
     "$bn" --enum_cartwheels -w {} -R "$R" -C "$C" -S "$WORK/$p/nb" -o "$WORK/$p/zero" < "$list" >/dev/null 2>&1 || true

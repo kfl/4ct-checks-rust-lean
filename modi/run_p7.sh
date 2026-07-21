@@ -21,14 +21,15 @@ fi
 [ -n "$LIBDIR" ] && export LD_LIBRARY_PATH="$LIBDIR:${LD_LIBRARY_PATH:-}"
 
 # p7_differential.sh resolves its binaries relative to lean4_port; override here so
-# the paths are anchored at the repo root. The C++ reference lives in the sibling
-# `computer-checks` repo (the static binary is dropped at its build/src/main).
+# the paths are anchored at the repo root. The C++ reference uses the sibling
+# `computer-checks/build/src/main` path; on MODI that tree contains only the
+# staged static binary, not a source checkout.
 export CPP="${CPP:-$(dirname "$ROOT")/computer-checks/build/src/main}"
 export RUST="${RUST:-$ROOT/rust_port/target/release/main}"
 export LEAN="${LEAN:-$ROOT/lean4_port/.lake/build/bin/main}"
 export DATA="${DATA:-$ROOT/rust_port}"
 
-echo "## p7 differential on $(uname -sm), $(nproc) cores"
+echo "## p7 differential on $(uname -sm), $(nproc) logical CPUs"
 echo "##   C++ = $CPP"
 echo "##   Rust= $RUST"
 echo "##   Lean= $LEAN"

@@ -244,13 +244,7 @@ samples only):
 - **SoA `Dart` layout** -- no hotspot to attack: re-profiled, `Dart` reads never
   appear high in either workload.
 
-- **Nested / inner parallelism** -- measured a regression: the outer
-  `parForEach` already saturates the cores.
-
 - **Fast-fail degree pre-check** -- formulated, measured, no win; rejected.
-
-- **Proof-carrying hot indexing** -- LANDED (2026-07-17); see the codegen
-  lesson above for the mechanism and the measured numbers.
 
 ## Reproduce
 

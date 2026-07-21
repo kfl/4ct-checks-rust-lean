@@ -45,13 +45,14 @@ cargo test
 Build the CLI with `cargo build --release` (binary at
 `rust_port/target/release/main`).
 
-**Lean** (the `test` executable runs the in-repo proof-obligation checks):
+**Lean** (compile-time theorem checking plus executable unit/oracle tests):
 ```sh
 cd lean4_port
-lake exe test      # builds if needed, then runs the checks
+lake exe test      # checks the library, then runs the executable checks
 ```
-`lake build` compiles the library and both executables. A failing proof
-obligation makes the process exit non-zero -- "success" is "the run completes".
+`lake build` compiles the library and both executables, so an unproved or broken
+theorem is a compile error. The `test` executable separately exits non-zero if
+one of its fixture-based checks fails.
 
 ## Full validation
 
