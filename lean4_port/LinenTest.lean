@@ -30,6 +30,19 @@ def combinatorTests (c : Counter) : IO Unit := do
   let monadic ← Linen.mapIO inputs fun i => pure (i * 3)
   expect c "mapIO ordered" (monadic == inputs.map (· * 3))
 
+def reduceTests (c : Counter) : IO Unit := do
+  let inputs := Array.range 257
+  let seqSum := (inputs.map (fun i => i * i)).foldl (· + ·) 7
+  let seqCat := (inputs.map (fun i => [i])).foldl (· ++ ·) []
+  for chunk in [1, 3, 16, 1000] do
+    expect c s!"mapReduce sum c={chunk}"
+      (Linen.mapReduce inputs (fun i => i * i) (· + ·) 7 (chunkSize := chunk) == seqSum)
+    expect c s!"mapReduce non-commutative c={chunk}"
+      (Linen.mapReduce inputs (fun i => [i]) (· ++ ·) [] (chunkSize := chunk) == seqCat)
+  let monadic ← Linen.mapReduceM inputs (fun i => pure (i * 3)) (· + ·) 0
+  expect c "mapReduceM sum" (monadic == (inputs.map (· * 3)).foldl (· + ·) 0)
+  expect c "mapReduce empty" (Linen.mapReduce #[] (fun i => [i]) (· ++ ·) [7] == [7])
+
 def errorTests (c : Counter) : IO Unit := do
   let captureFirstError : IO String := do
     try
@@ -46,6 +59,7 @@ def errorTests (c : Counter) : IO Unit := do
 def main : IO UInt32 := do
   let c ← IO.mkRef 0
   combinatorTests c
+  reduceTests c
   errorTests c
   let failures ← c.get
   if failures == 0 then

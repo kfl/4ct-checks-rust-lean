@@ -1,7 +1,7 @@
 # Stand-alone-ready `Linen`, the `NearLinear4ct` library, and their executables.
 name = "NearLinear4ct"
 version = "0.1.0"
-defaultTargets = ["Linen", "NearLinear4ct", "main", "test", "linenTest"]
+defaultTargets = ["Linen", "NearLinear4ct", "main", "test", "linenTest", "linenBench"]
 
 # Beyond-default linters
 moreLeanArgs = [

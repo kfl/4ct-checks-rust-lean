@@ -176,9 +176,9 @@ samples only):
 
 ## Nested check parallelism and its thread-count sensitivity
 
-- The measurements below describe the original eager-task implementation. The
-  `prototype/lean-linen` branch replaces it with the bounded dynamic executor
-  documented in `LINEN.md`; its full-corpus matrix is pending.
+- The measurements below describe the original eager-task implementation,
+  since replaced by the bounded dynamic executor documented in `LINEN.md`;
+  its full-corpus matrix is pending.
 - The check drivers were parallel at two levels: `parForEach` over the checked
   cartwheels and, inside each, `combineEachCartwheel`'s candidate sweep as an
   order-preserving `parFlatMap` (one task per candidate). At full thread

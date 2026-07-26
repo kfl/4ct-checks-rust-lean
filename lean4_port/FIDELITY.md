@@ -160,8 +160,8 @@ page. Only the deviations below depart from a literal transcription.
   `Cartwheel.lean`), rule expansion (`Rule.lean`), and configuration-file
   parsing (`Configuration.lean`) -- but exploits them only because each packs
   into a pure, order-preserving combinator (`parMap`/`parFilterMap`/`parMapM`):
-  a bounded Linen team dynamically claims independent elements and writes
-  them back at their original indices. The scheduler's atomic claim cursor and
+  a bounded Linen team dynamically claims independent elements and restores
+  the results to input order. The scheduler's atomic claim cursor and
   worker-local result buffers are encapsulated below the combinators; user
   functions still only read immutable data. Pure `parMap` is definitionally the
   serial `Array.map` and uses the executor only through `implemented_by`, so

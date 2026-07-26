@@ -2,8 +2,8 @@
 
 Linen is a small data-parallel executor for Lean. Its name follows the textile
 lineage from Cilk to Rayon while giving a nod to Lean. The implementation is
-kept independent of `NearLinear4ct` so it can eventually be extracted into a
-stand-alone package.
+independent of `NearLinear4ct` and can be extracted into a stand-alone
+package.
 
 ## Goal
 
@@ -23,43 +23,54 @@ team of at most one Lean task per configured worker repeatedly:
 
 1. claims the next small, half-open chunk;
 2. computes it outside the atomic claim operation;
-3. appends indexed results to its worker-local buffer; and
+3. appends results and the chunk's start index to its worker-local buffers; and
 4. returns to claim more work.
 
-After the workers join, their buffers are merged into input order serially. No
-result-side synchronization occurs in the hot path.
+After the workers join, their chunk runs are merged into input order serially.
+No result-side synchronisation occurs in the hot path.
 
-The default chunk size is one because a cartwheel candidate is the measured
-natural work unit. The worker count follows this precedence:
+The per-call `chunkSize` argument controls claim granularity and is clamped to
+at least one. Smaller chunks preserve balancing when element costs vary;
+larger chunks amortise claim overhead. The default of one preserves
+candidate-level balancing.
+
+At process startup, Linen reads the worker count once using this precedence:
 
 1. `LINEN_WORKERS`;
 2. `LEAN_NUM_THREADS`; and
-3. hardware concurrency.
+3. the machine's logical core count.
 
-`LINEN_CHUNK_SIZE` overrides the claim size. Invalid or zero overrides are
-ignored.
+Invalid or zero-valued worker overrides are ignored. If querying the logical
+core count fails, Linen falls back to one worker.
 
 Pure `Linen.map` has `xs.map f` as its Lean definition and installs the worker
 engine only with `implemented_by`. Consequently, proofs see exactly the serial
 specification, while compiled executables get parallel evaluation.
-`Linen.mapIO` collects every `Except` result before re-raising the first failure
-in input order, matching the existing observable error policy. NearLinear4ct's
-existing `par*` functions are thin compatibility wrappers around this API.
+`Linen.mapIO` is fail-fast: after any worker reports an error, workers stop
+claiming new chunks and finish the chunks they already claimed (a failing
+worker stops its own chunk at the error); then the error with the smallest
+input index is re-raised. NearLinear4ct's existing `par*` functions
+are thin compatibility wrappers around this API.
+
+`Linen.mapReduce` folds each claimed chunk to one partial within its worker,
+then restores the partials to input order. If the partials outnumber the
+configured workers, one bounded parallel pass folds contiguous runs, leaving
+at most one partial per worker for the final serial fold.
+
+Its specification is the sequential left fold. A `Std.Associative` instance
+for the combining operation is the caller's obligation that makes the
+specification and the parallel runtime agree. Commutativity is not required,
+so associative non-commutative operations reduce deterministically.
 
 ## Scope and limitations
 
-This is a bounded dynamic executor, not yet a full Rayon clone: there are no
-per-worker deques or global cross-region stealing. Each nested parallel region
-creates its own bounded team. Lean's task runtime prevents nested joins from
-starving the pool, but concurrent nested regions can still queue up to the
-square of the worker count. The prototype is intended to establish whether
-removing per-candidate task traffic fixes the measured low-thread regression
-before considering a persistent global pool or help-join protocol.
-
-The claim cursor is still shared by every worker. Candidate work is large
-enough that one atomic claim should be cheap, but `LINEN_CHUNK_SIZE`
-provides the granularity lever and profiling should verify the assumption on
-the full check.
+Linen is inspired by Rayon but is not yet a Rayon clone. It is a bounded
+dynamic executor without per-worker deques, global cross-region work stealing,
+a persistent worker pool, or a help-join protocol. Each nested parallel region
+creates its own bounded team and atomic claim cursor. Lean's task runtime
+prevents nested joins from starving the pool. With one level of nesting and
+`W` configured workers, the outer workers can collectively queue up to `W²`
+inner tasks; deeper nesting or multiple concurrent regions can queue more.
 
 ## Validation and benchmark
 
@@ -70,24 +81,50 @@ lake exe test
 lake exe linenTest
 ```
 
-Run the side-by-side scheduler microbenchmark:
+Run the microbenchmark suite (the first argument sets the repetition count,
+defaulting to three):
 
 ```sh
 lake exe linenBench
 LEAN_NUM_THREADS=1 lake exe linenBench
-LEAN_NUM_THREADS=4 LINEN_CHUNK_SIZE=4 lake exe linenBench
+LEAN_NUM_THREADS=4 lake exe linenBench
 ```
 
-A one-run smoke measurement on the 10-core M1 Pro (2026-07-15, chunk size 1)
-was directionally positive in every row. Times are milliseconds and are not a
-replacement for the full repeated benchmark:
+Each run sweeps the claim granularities in-process and covers the pure, `IO`,
+and reducing entry points plus refcount-heavy and allocation-heavy workloads.
 
-| Threads | Trivial: task/element | Trivial: Linen | Uneven: task/element | Uneven: Linen |
-|--------:|----------------------:|---------------:|---------------------:|--------------:|
-|       1 |                    35 |              1 |                  103 |            75 |
-|       4 |                   108 |             45 |                   59 |            25 |
-|      10 |                   296 |            155 |                  113 |            15 |
+Smoke measurements for the pure map cases on a 10-core M1 Pro (2026-07-26)
+are medians of three back-to-back runs, in milliseconds, against the eager
+one-task-per-element baseline. `Scheduler` maps `(· + 1)` over 200,000
+elements; `Uneven` maps `unevenWork` over 50,000 elements. `Threads` is the
+configured worker count (`LEAN_NUM_THREADS` in these runs). The machine has
+eight performance and two efficiency cores, so eight is the largest
+homogeneous configuration and the ten-row mixes in the slower cores.
 
-The decisive experiment remains the full `check_7triangle`/`check_deg7` matrix
-at x128, x64, and x32, followed by the byte-exact differential gate described
-in `PERFORMANCE_NOTES.md`.
+| Threads | Scheduler: eager | Scheduler: Linen c=1 | Scheduler: Linen c=64 | Uneven: eager | Uneven: Linen c=1 | Uneven: Linen c=64 |
+|--------:|-----------------:|---------------------:|----------------------:|--------------:|------------------:|-------------------:|
+|       1 |               37 |                  1.7 |                   1.6 |           104 |                76 |                 76 |
+|       4 |              140 |                   37 |                    23 |            64 |                24 |                 21 |
+|       8 |              246 |                  102 |                    21 |           100 |                15 |                 12 |
+|      10 |              319 |                  166 |                    34 |           120 |                17 |                 11 |
+
+## TODO
+
+- [ ] Profile the full checks at 128, 64, and 32 workers.
+- [ ] Measure claim-cursor contention at high worker counts (the c=1 columns
+      degrade as workers grow; data above 8 threads on the M1 is confounded by
+      its efficiency cores). Only if it binds, weigh structural remedies:
+      guided chunk decay or per-worker deques.
+- [ ] Attribute the pure-scan anomaly: with near-zero per-element work the
+      parallel worker loop costs an order of magnitude more per element than
+      the serial paths and grows with worker count (`sum` and `scheduler`
+      cases in `linenBench`). The `static` task baseline at identical
+      granularity does not show it, and neither does the serial fast path,
+      so the cost sits in the monadic worker loop itself -- not in claim
+      traffic, chunk granularity, or task scheduling.
+- [ ] Add deterministically shuffled or replayed cost distributions to the
+      benchmark (the clustered case covers the adversarial-for-static
+      extreme; shuffled covers the no-spatial-structure one).
+- [ ] Rotate configuration order between repetition rounds: execution order
+      is fixed within a process, so slow thermal and allocator drift stays
+      correlated with configuration.

@@ -245,19 +245,19 @@ parallel, then concatenate in order. -/
 def parFlatMap (xs : Array α) (f : α → Array β) : Array β :=
   Linen.flatMap xs f
 
-/-- Map an `IO` action over `xs` in parallel, preserving order and re-raising the
-first failure in index order. The bounded workers still run every element before
-the ordered result pass. For independent IO (e.g. reading + parsing many files),
-this overlaps the work across cores. -/
+/-- Map an `IO` action over `xs` in parallel, preserving order. The first
+failure stops workers from claiming further work, and the failure at the
+smallest input index is re-raised deterministically. For independent IO
+(e.g. reading + parsing many files), this overlaps the work across cores. -/
 def parMapM (xs : Array α) (f : α → IO β) : IO (Array β) := do
   Linen.mapIO xs f
 
 /-- Run `f` on every element in parallel and fail the whole computation if any
-invocation fails. The bounded team runs all invocations, then the ordered result
-pass re-raises the first error -- so a failing `proofAssert` inside a worker
-aborts the process with a non-zero exit. The closures only read shared immutable
-data (shared by reference-counting, not copied), so results are thread-count
-independent. -/
+invocation fails. Workers stop claiming further work after the first failure
+and the error at the smallest input index is re-raised -- so a failing
+`proofAssert` inside a worker aborts the process promptly with a non-zero exit.
+The closures only read shared immutable data (shared by reference-counting, not
+copied), so results are thread-count independent. -/
 def parForEach (xs : Array α) (f : α → IO Unit) : IO Unit :=
   Linen.forEach xs f
 
