@@ -103,25 +103,24 @@ homogeneous configuration and the ten-row mixes in the slower cores.
 
 | Threads | Scheduler: eager | Scheduler: Linen c=1 | Scheduler: Linen c=64 | Uneven: eager | Uneven: Linen c=1 | Uneven: Linen c=64 |
 |--------:|-----------------:|---------------------:|----------------------:|--------------:|------------------:|-------------------:|
-|       1 |               37 |                  1.7 |                   1.6 |           104 |                76 |                 76 |
-|       4 |              140 |                   37 |                    23 |            64 |                24 |                 21 |
-|       8 |              246 |                  102 |                    21 |           100 |                15 |                 12 |
-|      10 |              319 |                  166 |                    34 |           120 |                17 |                 11 |
+|       1 |               36 |                  1.3 |                   1.2 |           104 |                76 |                 76 |
+|       4 |              139 |                   48 |                   3.7 |            63 |                23 |                 21 |
+|       8 |              241 |                  124 |                   4.7 |            98 |                13 |                 11 |
+|      10 |              339 |                  209 |                   5.8 |           120 |                21 |                 10 |
 
 ## TODO
 
 - [ ] Profile the full checks at 128, 64, and 32 workers.
-- [ ] Measure claim-cursor contention at high worker counts (the c=1 columns
-      degrade as workers grow; data above 8 threads on the M1 is confounded by
-      its efficiency cores). Only if it binds, weigh structural remedies:
-      guided chunk decay or per-worker deques.
-- [ ] Attribute the pure-scan anomaly: with near-zero per-element work the
-      parallel worker loop costs an order of magnitude more per element than
-      the serial paths and grows with worker count (`sum` and `scheduler`
-      cases in `linenBench`). The `static` task baseline at identical
-      granularity does not show it, and neither does the serial fast path,
-      so the cost sits in the monadic worker loop itself -- not in claim
-      traffic, chunk granularity, or task scheduling.
+- [ ] Amortise claim traffic at fine granularity: with the dedicated pure
+      workers in place, the shared cursor dominates every c=1 column on
+      cheap elements (claim-light `onewave` runs up to 60x faster), and it
+      still costs one atomic exchange plus a cache-line bounce per chunk.
+      Candidates: guided chunk decay (large early claims, finer tail) with
+      run descriptors so the merge tolerates variable chunk sizes.
+- [ ] Route the pure runtimes' serial fast paths through the unchecked chunk
+      loops: they fold with generic closure calls today (~40x a literal fold
+      on trivial operations), while the parallel workers' direct loops come
+      within ~7x of it.
 - [ ] Add deterministically shuffled or replayed cost distributions to the
       benchmark (the clustered case covers the adversarial-for-static
       extreme; shuffled covers the no-spatial-structure one).

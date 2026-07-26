@@ -1,18 +1,18 @@
 import Std.Async.System
 
 /-!
-A small, dependency-free data-parallel executor.
+A small data-parallel array executor with no dependencies beyond Lean's
+standard library.
 
 Lean's task pool is a good fit for coarse tasks, but representing every
 element of a large array as its own `Task` pays queue and scheduler traffic
-per element. `Linen.mapM` instead starts a bounded team of workers. Workers
-repeatedly claim a small chunk from an atomic cursor, so cheap and expensive
-elements balance dynamically without becoming individual Lean `Task`s.
+per element. Linen instead starts a bounded set of workers that claim chunks
+from an atomic cursor. This balances uneven work without creating a task per
+element.
 
 The worker count follows `LINEN_WORKERS`, then `LEAN_NUM_THREADS`, then the
-machine's logical core count. The claim size is the per-call `chunkSize`
-argument and defaults to one: granularity is a property of each call site's
-workload, so it lives in the code rather than the environment.
+machine's logical core count. The per-call `chunkSize` argument controls claim
+granularity and defaults to one.
 -/
 
 namespace Linen
@@ -28,8 +28,7 @@ private def positiveEnvNat (name : String) : BaseIO (Option Nat) := do
   return if n == 0 then none else some n
 
 /-- Read Linen's executor settings. Invalid and zero-valued overrides are
-ignored, leaving at least one worker; a failing core-count query degrades to
-one worker. -/
+ignored. A failed core-count query falls back to one worker. -/
 def Config.fromEnv : IO Config := do
   let override ← positiveEnvNat "LINEN_WORKERS"
   let runtime ← positiveEnvNat "LEAN_NUM_THREADS"
@@ -46,52 +45,72 @@ def Config.fromEnv : IO Config := do
 /-- Process-wide executor settings, read once at startup. -/
 initialize config : Config ← Config.fromEnv
 
-/-- Claim the next half-open chunk.  This is the executor's scheduling point:
-workers that finish cheap chunks return here and take work from the common
-remainder instead of becoming idle. Fail-fast cancellation reuses the cursor
-(a failing worker moves it to the end), so claiming stays a single shared
-atomic operation. -/
-private def claim (cursor : IO.Ref Nat) (size chunkSize : Nat) :
-    BaseIO (Option (Nat × Nat)) := do
+/-- Atomically claim the next chunk. Returns its start index, or `size` when
+exhausted; the caller computes the end. Returning only the start avoids
+allocating chunk metadata. -/
+private def claim (cursor : IO.Ref Nat) (size chunkSize : Nat) : BaseIO Nat := do
   cursor.modifyGet fun next =>
     if next < size then
-      let stop := (next + chunkSize).min size
-      (some (next, stop), stop)
+      (next, (next + chunkSize).min size)
     else
-      (none, next)
+      (next, next)
 
-/-- Infallible worker: values in claim order plus the start index of every
-claimed chunk. Chunk lengths are derivable (`min chunkSize (size - start)`),
-so the hot loop pushes bare values with no per-element bookkeeping. -/
-private partial def workerPure (cursor : IO.Ref Nat) (xs : Array α)
+/-- Initial value-buffer capacity for one worker is `⌈size/count⌉`. A worker
+that claims more than the average grows its buffer. -/
+private def valuesCapacity (size count : Nat) : Nat :=
+  (size + count - 1) / count
+
+/-- Capacity estimate for one worker's chunk-start buffer under even
+claiming. -/
+private def startsCapacity (size count chunkSize : Nat) : Nat :=
+  (size + chunkSize - 1) / chunkSize / count + 1
+
+/-- Monadic `mapM` worker. It appends values in claim order and records each
+chunk's start; the merge derives chunk lengths from those starts. -/
+private partial def workerMapMLoop (cursor : IO.Ref Nat) (xs : Array α)
     (f : α → BaseIO β) (chunkSize : Nat) (values : Array β)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
-  let some (start, stop) ← claim cursor xs.size chunkSize
-    | return (values, starts)
+  let start ← claim cursor xs.size chunkSize
+  if start ≥ xs.size then return (values, starts)
+  let stop := (start + chunkSize).min xs.size
   let mut values := values
   for x in xs[start:stop] do
     values := values.push (← f x)
-  workerPure cursor xs f chunkSize values (starts.push start)
+  workerMapMLoop cursor xs f chunkSize values (starts.push start)
 
-/-- Reducing worker: each claimed chunk is folded left-to-right into a single
-partial, seeded by the chunk's first element, so the buffer holds one value
-per chunk. -/
-private partial def workerReduce (cursor : IO.Ref Nat) (xs : Array α)
+/-- Allocate buffers when the task runs so workers do not share a captured
+array. -/
+private def workerMapM (cursor : IO.Ref Nat) (xs : Array α)
+    (f : α → BaseIO β) (chunkSize valuesCap startsCap : Nat) :
+    BaseIO (Array β × Array Nat) :=
+  workerMapMLoop cursor xs f chunkSize (Array.mkEmpty valuesCap)
+    (Array.mkEmpty startsCap)
+
+/-- Monadic `mapReduceM` worker. Each chunk is folded left-to-right into one
+partial, seeded by its first element. -/
+private partial def workerMapReduceMLoop (cursor : IO.Ref Nat) (xs : Array α)
     (f : α → BaseIO β) (op : β → β → β) (chunkSize : Nat)
     (partials : Array β) (starts : Array Nat) :
     BaseIO (Array β × Array Nat) := do
-  let some (start, stop) ← claim cursor xs.size chunkSize
-    | return (partials, starts)
+  let start ← claim cursor xs.size chunkSize
+  if start ≥ xs.size then return (partials, starts)
+  let stop := (start + chunkSize).min xs.size
   let some x ← pure xs[start]?
     | return (partials, starts)
   let mut acc ← f x
   for x in xs[start + 1:stop] do
     acc := op acc (← f x)
-  workerReduce cursor xs f op chunkSize (partials.push acc) (starts.push start)
+  workerMapReduceMLoop cursor xs f op chunkSize (partials.push acc) (starts.push start)
 
-/-- One chunk of fallible work, as explicit recursion so the failure exit does
-not thread an early-exit step through the `forIn` lowering. Returns the input
-index and error of the first failure, if any. -/
+/-- Allocate worker-local buffers inside the task. -/
+private def workerMapReduceM (cursor : IO.Ref Nat) (xs : Array α)
+    (f : α → BaseIO β) (op : β → β → β) (chunkSize startsCap : Nat) :
+    BaseIO (Array β × Array Nat) :=
+  workerMapReduceMLoop cursor xs f op chunkSize (Array.mkEmpty startsCap)
+    (Array.mkEmpty startsCap)
+
+/-- Run one fallible chunk and return its first failing index and error.
+Explicit recursion keeps early-exit bookkeeping out of the success loop. -/
 private partial def runChunk (xs : Array α) (f : α → BaseIO (Except ε β))
     (stop : Nat) (i : Nat) (values : Array β) :
     BaseIO (Array β × Option (Nat × ε)) := do
@@ -105,21 +124,21 @@ private partial def runChunk (xs : Array α) (f : α → BaseIO (Except ε β))
   else
     return (values, none)
 
-/-- Fallible worker. On failure it moves the cursor to the end -- so every
-worker stops claiming within one chunk -- and records its failure if it is the
-smallest-index one seen. The cursor is monotonic, so every element before the
-smallest failing index has run and the reported failure is deterministic.
-Failed chunks are not recorded in `starts`; results are only merged when no
-worker failed. -/
-private partial def workerIO (cursor : IO.Ref Nat)
+/-- Fallible `mapIO` worker. On failure it sets the cursor to `size`,
+preventing new claims while the current chunks run to completion, and retains
+the lowest-index failure. Because chunks are claimed in order, all earlier elements have run
+when the tasks join. Failed chunks are omitted; results are merged only when
+every worker succeeds. -/
+private partial def workerMapIOLoop (cursor : IO.Ref Nat)
     (failure : IO.Ref (Option (Nat × ε))) (xs : Array α)
     (f : α → BaseIO (Except ε β)) (chunkSize : Nat) (values : Array β)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
-  let some (start, stop) ← claim cursor xs.size chunkSize
-    | return (values, starts)
+  let start ← claim cursor xs.size chunkSize
+  if start ≥ xs.size then return (values, starts)
+  let stop := (start + chunkSize).min xs.size
   match ← runChunk xs f stop start values with
   | (values, none) =>
-    workerIO cursor failure xs f chunkSize values (starts.push start)
+    workerMapIOLoop cursor failure xs f chunkSize values (starts.push start)
   | (values, some (i, e)) =>
     cursor.set xs.size
     failure.modify fun current =>
@@ -127,6 +146,14 @@ private partial def workerIO (cursor : IO.Ref Nat)
       | some (j, _) => if i < j then some (i, e) else current
       | none => some (i, e)
     return (values, starts)
+
+/-- Allocate worker-local buffers inside the task. -/
+private def workerMapIO (cursor : IO.Ref Nat)
+    (failure : IO.Ref (Option (Nat × ε))) (xs : Array α)
+    (f : α → BaseIO (Except ε β)) (chunkSize valuesCap startsCap : Nat) :
+    BaseIO (Array β × Array Nat) :=
+  workerMapIOLoop cursor failure xs f chunkSize (Array.mkEmpty valuesCap)
+    (Array.mkEmpty startsCap)
 
 private def spawnWorkers (count : Nat)
     (work : BaseIO (Array β × Array Nat)) :
@@ -140,11 +167,66 @@ private def workerCount (size chunkSize : Nat) : Nat :=
   let chunks := (size + chunkSize - 1) / chunkSize
   config.workers.min chunks
 
-/-- Ordinal placement of per-worker chunk runs. Chunk starts are multiples of
-`chunkSize`, so each chunk has the ordinal `start / chunkSize`; the tables
-record, per ordinal, the worker that claimed the chunk (`+ 1`, with `0` for
-unclaimed) and the offset of its run in that worker's buffer, where the chunk
-starting at `start` contributes `lenOf start` buffer entries. -/
+/-! Workers for the pure runtimes (`mapImpl` and `mapReduceImpl`). Their inner
+loops call `f` and `op` without `BaseIO`. Bounds derived from `claim` justify
+the array reads; the proofs are erased at compile time. Task setup, claiming,
+bookkeeping, and ordered merging remain outside the inner loops. -/
+
+private def mapChunkPure (xs : Array α) (f : α → β) (stop : Nat)
+    (hstop : stop ≤ xs.size) (i : Nat) (values : Array β) : Array β :=
+  if hi : i < stop then
+    mapChunkPure xs f stop hstop (i + 1)
+      (values.push (f (xs[i]'(Nat.lt_of_lt_of_le hi hstop))))
+  else values
+termination_by stop - i
+
+private partial def workerMapPureLoop (cursor : IO.Ref Nat) (xs : Array α)
+    (f : α → β) (chunkSize : Nat) (values : Array β) (starts : Array Nat) :
+    BaseIO (Array β × Array Nat) := do
+  let start ← claim cursor xs.size chunkSize
+  if start ≥ xs.size then return (values, starts)
+  let stop := (start + chunkSize).min xs.size
+  workerMapPureLoop cursor xs f chunkSize
+    (mapChunkPure xs f stop (Nat.min_le_right _ _) start values)
+    (starts.push start)
+
+private def workerMapPure (cursor : IO.Ref Nat) (xs : Array α)
+    (f : α → β) (chunkSize valuesCap startsCap : Nat) :
+    BaseIO (Array β × Array Nat) :=
+  workerMapPureLoop cursor xs f chunkSize (Array.mkEmpty valuesCap)
+    (Array.mkEmpty startsCap)
+
+private def reduceChunkPure (xs : Array α) (f : α → β) (op : β → β → β)
+    (stop : Nat) (hstop : stop ≤ xs.size) (i : Nat) (acc : β) : β :=
+  if hi : i < stop then
+    reduceChunkPure xs f op stop hstop (i + 1)
+      (op acc (f (xs[i]'(Nat.lt_of_lt_of_le hi hstop))))
+  else acc
+termination_by stop - i
+
+private partial def workerReducePureLoop (cursor : IO.Ref Nat) (xs : Array α)
+    (f : α → β) (op : β → β → β) (chunkSize : Nat) (partials : Array β)
+    (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
+  let start ← claim cursor xs.size chunkSize
+  if hstart : start < xs.size then
+    let stop := (start + chunkSize).min xs.size
+    let seed := f (xs[start]'hstart)
+    let acc := reduceChunkPure xs f op stop (Nat.min_le_right _ _) (start + 1) seed
+    workerReducePureLoop cursor xs f op chunkSize (partials.push acc)
+      (starts.push start)
+  else
+    return (partials, starts)
+
+private def workerReducePure (cursor : IO.Ref Nat) (xs : Array α)
+    (f : α → β) (op : β → β → β) (chunkSize startsCap : Nat) :
+    BaseIO (Array β × Array Nat) :=
+  workerReducePureLoop cursor xs f op chunkSize (Array.mkEmpty startsCap)
+    (Array.mkEmpty startsCap)
+
+/-- Build lookup tables from chunk ordinal to worker and buffer offset.
+`slotWorker` stores the worker index plus one, reserving zero for unclaimed
+chunks. `slotOffset` stores the run's offset in that worker's buffer; `lenOf`
+advances the offset between runs. -/
 private def placeChunks (outs : Array (Array β × Array Nat))
     (chunkCount chunkSize : Nat) (lenOf : Nat → Nat) :
     Array Nat × Array Nat := Id.run do
@@ -192,13 +274,11 @@ private def orderedPartials (outs : Array (Array β × Array Nat))
           ps := ps.push p
   return ps
 
-/-- Combine per-chunk partials into `((init ⋆ p₀) ⋆ p₁) ⋆ ⋯` for chunk-ordinal
-order `p₀, p₁, …`; associativity of `⋆` makes the total equal the sequential
-left fold. When the partials outnumber the workers, one bounded parallel level
-folds contiguous runs of `⌈count/workers⌉` partials first -- order-preserving,
-so associativity still suffices -- leaving at most one partial per worker for
-the serial combine. At most as many partials as workers would give a level
-with no `⋆` applications, so that case combines serially outright. -/
+/-- Combine chunk partials in input order. When partials outnumber workers,
+first fold contiguous groups in parallel, leaving at most one partial per
+worker for the final serial fold. Associativity preserves the sequential
+left-fold result. If there are already at most as many partials as workers,
+the parallel level would apply no `op`, so it is skipped. -/
 private def mergeReduce (outs : Array (Array β × Array Nat))
     (size chunkSize : Nat) (op : β → β → β) (init : β) : BaseIO β := do
   let ps := orderedPartials outs size chunkSize
@@ -206,58 +286,86 @@ private def mergeReduce (outs : Array (Array β × Array Nat))
     return ps.foldl op init
   else
     let levelChunk := (ps.size + config.workers - 1) / config.workers
+    let count := workerCount ps.size levelChunk
     let cursor ← IO.mkRef 0
-    let levelOuts ← spawnWorkers (workerCount ps.size levelChunk)
-      (workerReduce cursor ps pure op levelChunk #[] #[])
+    let levelOuts ← spawnWorkers count
+      (workerReducePure cursor ps id op levelChunk
+        (startsCapacity ps.size count levelChunk))
     return (orderedPartials levelOuts ps.size levelChunk).foldl op init
 
-/-- Bounded, dynamically balanced map engine.  At most one Lean task per
-configured worker is created, regardless of `xs.size`; results are restored to
-input order after all workers finish. `chunkSize` sets the claim granularity
-for this call and is clamped to at least one. -/
+/-- Parallel map using at most one task per configured worker. Workers claim
+chunks dynamically, and the results are restored to input order. `chunkSize`
+is clamped to at least one. -/
 def mapM (xs : Array α) (f : α → BaseIO β) (chunkSize : Nat := 1) :
     BaseIO (Array β) := do
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
     xs.mapM f
   else
+    let count := workerCount xs.size chunkSize
     let cursor ← IO.mkRef 0
-    let outs ← spawnWorkers (workerCount xs.size chunkSize)
-      (workerPure cursor xs f chunkSize #[] #[])
+    let outs ← spawnWorkers count
+      (workerMapM cursor xs f chunkSize
+        (valuesCapacity xs.size count)
+        (startsCapacity xs.size count chunkSize))
     return merge outs xs.size chunkSize
 
-/-- Bounded, dynamically balanced map-reduce engine: chunks are folded to one
-partial each as they are claimed, and the partials are combined in input
-order, so associativity of `op` (not commutativity) is what makes the result
-equal the sequential left fold from `init` -- hence the `Std.Associative`
-obligation. -/
+/-- Monadic map-reduce using dynamically claimed chunks. Each chunk produces
+one partial; `mergeReduce` combines them in input order. `op` must be
+associative but need not be commutative. -/
 def mapReduceM (xs : Array α) (f : α → BaseIO β) (op : β → β → β)
     (init : β) (chunkSize : Nat := 1) [Std.Associative op] : BaseIO β := do
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
     xs.foldlM (fun acc x => return op acc (← f x)) init
   else
+    let count := workerCount xs.size chunkSize
     let cursor ← IO.mkRef 0
-    let outs ← spawnWorkers (workerCount xs.size chunkSize)
-      (workerReduce cursor xs f op chunkSize #[] #[])
+    let outs ← spawnWorkers count
+      (workerMapReduceM cursor xs f op chunkSize
+        (startsCapacity xs.size count chunkSize))
     mergeReduce outs xs.size chunkSize op init
 
-/-- Runtime implementation of `map`. The public definition remains the
-sequential specification, so theorem proving never has to model tasks, atomic
-references, or scheduling. -/
+/-- Parallel engine for the pure `map` runtime; preconditions (more than one
+worker, `size > chunkSize`) are checked by `mapImpl`. -/
+private def mapCoreIO (xs : Array α) (f : α → β) (chunkSize : Nat) :
+    BaseIO (Array β) := do
+  let count := workerCount xs.size chunkSize
+  let cursor ← IO.mkRef 0
+  let outs ← spawnWorkers count
+    (workerMapPure cursor xs f chunkSize
+      (valuesCapacity xs.size count)
+      (startsCapacity xs.size count chunkSize))
+  return merge outs xs.size chunkSize
+
+/-- Parallel engine for the pure `mapReduce` runtime; preconditions as for
+`mapCoreIO`. -/
+private def reduceCoreIO (xs : Array α) (f : α → β) (op : β → β → β)
+    (init : β) (chunkSize : Nat) : BaseIO β := do
+  let count := workerCount xs.size chunkSize
+  let cursor ← IO.mkRef 0
+  let outs ← spawnWorkers count
+    (workerReducePure cursor xs f op chunkSize
+      (startsCapacity xs.size count chunkSize))
+  mergeReduce outs xs.size chunkSize op init
+
+/-- Runtime implementation of `map`. Its public specification is `xs.map f`,
+so tasks and scheduling are absent from proofs. -/
 private unsafe def mapImpl.{u, v} {α : Type u} {β : Type v}
     (xs : Array α) (f : α → β) (chunkSize : Nat := 1) : Array β :=
-  -- `BaseIO`/`IO.Ref` store `Type 0`; the casts only erase universe
-  -- bookkeeping. `NonScalar` is pointer-represented, so the compiler passes
-  -- the runtime values through `f` and the result array unchanged (the same
-  -- erasure pattern as `Array.mapMUnsafe`).
-  unsafeCast <| unsafeBaseIO <|
-    mapM (unsafeCast xs : Array NonScalar)
-      (fun x => pure ((unsafeCast f : NonScalar → NonScalar) x)) chunkSize
+  let chunkSize := chunkSize.max 1
+  if config.workers == 1 || xs.size ≤ chunkSize then
+    xs.map f
+  else
+    -- `unsafeBaseIO` is justified because `f` is pure and the result does not
+    -- depend on scheduling. The `NonScalar` casts bridge `BaseIO`'s `Type 0`
+    -- boundary using the boxed erasure pattern from `Array.mapMUnsafe`.
+    unsafeCast (unsafeBaseIO (mapCoreIO (unsafeCast xs : Array NonScalar)
+      (unsafeCast f : NonScalar → NonScalar) chunkSize))
 
-/-- Parallel `Array.map`, order-preserving and definitionally equal to the
-sequential operation for reasoning: for every `chunkSize` the specification is
-`xs.map f` -- the claim granularity only affects scheduling. -/
+/-- Parallel `Array.map`, preserving input order. Its specification is
+`xs.map f` for every `chunkSize`; chunk size affects runtime scheduling, not
+the result. -/
 @[implemented_by mapImpl]
 def map.{u, v} {α : Type u} {β : Type v}
     (xs : Array α) (f : α → β) (chunkSize : Nat := 1) : Array β :=
@@ -276,50 +384,45 @@ def flatMap (xs : Array α) (f : α → Array β) (chunkSize : Nat := 1) :
 private unsafe def mapReduceImpl.{u, v} {α : Type u} {β : Type v}
     (xs : Array α) (f : α → β) (op : β → β → β) (init : β)
     (chunkSize : Nat := 1) [Std.Associative op] : β :=
-  if config.workers == 1 || xs.size ≤ chunkSize.max 1 then
-    -- Serial fast path on the pure operation. Routing this case through
-    -- `mapReduceM` would pay the monadic fold's per-element bind machinery
-    -- for no benefit.
+  let chunkSize := chunkSize.max 1
+  if config.workers == 1 || xs.size ≤ chunkSize then
+    -- Serial fast path avoids task setup and intermediate partials.
     xs.foldl (fun acc x => op acc (f x)) init
   else
-    -- The same universe erasure as `mapImpl`; `op` and `init` ride along as
-    -- `NonScalar` values, and the erased associativity obligation (about the
-    -- original `op`, which the caller supplied) is re-stated with `lcProof`.
-    unsafeCast <| unsafeBaseIO <|
-      @mapReduceM NonScalar NonScalar (unsafeCast xs)
-        (fun x => pure ((unsafeCast f : NonScalar → NonScalar) x))
-        (unsafeCast op) (unsafeCast init) chunkSize lcProof
+    -- The same trust boundary as `mapImpl`; `op` and `init` are also cast
+    -- through `NonScalar`.
+    unsafeCast (unsafeBaseIO (reduceCoreIO (unsafeCast xs : Array NonScalar)
+      (unsafeCast f : NonScalar → NonScalar)
+      (unsafeCast op) (unsafeCast init) chunkSize))
 
-/-- Parallel map-reduce with the sequential left fold `(xs.map f).foldl op
-init` as its specification. The `Std.Associative op` instance is the caller's
-obligation that makes the specification and the parallel runtime agree: the
-engine folds each claimed chunk to one partial and combines partials in input
-order, so associativity alone (no commutativity, no identity law for `init`)
-closes the gap.
-
-`op` runs in parallel both inside chunk folds and in the partial combine's
-bounded parallel level (see `mergeReduce`); at most one `op` application per
-worker is serial. -/
+/-- Parallel map-reduce with sequential specification
+`(xs.map f).foldl op init`. Partials are combined in input order, so
+associativity is sufficient: `op` need not be commutative, and `init` need not
+be an identity. On the parallel path, contiguous groups of partials are also
+combined in parallel when needed; the final serial fold applies `op` at most
+`config.workers` times. -/
 @[implemented_by mapReduceImpl]
 def mapReduce.{u, v} {α : Type u} {β : Type v}
     (xs : Array α) (f : α → β) (op : β → β → β) (init : β)
     (chunkSize : Nat := 1) [Std.Associative op] : β :=
   (xs.map f).foldl op init
 
-/-- Parallel `IO` map, fail-fast: the first failure stops workers from
-claiming further chunks, and the failure at the smallest input index is
-re-raised deterministically (see `workerIO`). `chunkSize` sets the claim
-granularity for this call and is clamped to at least one. -/
+/-- Parallel `IO` map. A failure stops new claims; after current chunks finish,
+the failure with the lowest input index is rethrown deterministically (see
+`workerMapIOLoop`). `chunkSize` is clamped to at least one. -/
 def mapIO (xs : Array α) (f : α → IO β) (chunkSize : Nat := 1) :
     IO (Array β) := do
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
     xs.mapM f
   else
+    let count := workerCount xs.size chunkSize
     let cursor ← IO.mkRef 0
     let failure ← IO.mkRef (none : Option (Nat × IO.Error))
-    let outs ← spawnWorkers (workerCount xs.size chunkSize)
-      (workerIO cursor failure xs (fun x => (f x).toBaseIO) chunkSize #[] #[])
+    let outs ← spawnWorkers count
+      (workerMapIO cursor failure xs (fun x => (f x).toBaseIO) chunkSize
+        (valuesCapacity xs.size count)
+        (startsCapacity xs.size count chunkSize))
     match ← failure.get with
     | some (_, e) => throw e
     | none => return merge outs xs.size chunkSize
