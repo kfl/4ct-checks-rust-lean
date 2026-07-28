@@ -1,40 +1,37 @@
 import Linen
 
 /-!
-Microbenchmark for Linen. It compares serial execution, an eager
-one-`Task`-per-element strategy, and true static partitioning with the
-bounded worker implementation on scheduler-bound, compute-uneven (evenly
-spaced and clustered outliers), refcount-heavy, and allocation-heavy
-workloads, over the pure, `IO`, and reducing entry points.
+Microbenchmark suite for Linen. It compares serial execution, one task per
+element, static partitions, and Linen's bounded dynamic workers across cheap,
+uneven, clustered, allocating, and refcount workloads. The suite covers pure
+maps, `IO` maps, reductions, and all four serial/Linen choices for two nested
+map levels.
 
-Run with `lake exe linenBench [reps]`; use `LEAN_NUM_THREADS` to probe
-scaling. Claim granularities are swept in-process via the `chunkSize`
-argument: the fixed sizes plus `onewave`, a chunk size producing one wave of
-approximately `workers` chunks. Every configuration is executed once untimed
-before its samples, and
-each configuration reports its back-to-back timings in microseconds -- the
-repetition count is the executable's first argument, defaulting to three.
+Run with `lake exe linenBench [reps]`. `LINEN_WORKERS` overrides
+`LEAN_NUM_THREADS`; unset it when using `LEAN_NUM_THREADS` to measure scaling.
+Most cases sweep fixed `chunkSize` values plus `onewave`, which produces at
+most one chunk per configured worker. Each configuration has one untimed
+warmup followed by back-to-back samples in microseconds. The first argument is
+the repetition count and defaults to three.
 -/
 
 /-! ## Timing harness
 
-An opaque evaluation barrier plus a repeated timer, self-contained. Nothing
-in this section knows about Linen. -/
+An opaque evaluation barrier plus a repeated timer.
+Self-contained. Nothing in this section knows about Linen. -/
 
-/-- Evaluate a pure thunk inside `IO`, opaque to the compiler, so the work can
-be neither hoisted out of the timing loop, sunk past a timestamp, nor shared
-between repetitions. (`IO.lazyPure` is not enough: it carries no `noinline`,
-so the compiler sees straight through it. This plays the role of criterion's
-`black_box`.) -/
+/-- Invoke a pure thunk through a no-inline `IO` boundary, hiding its body from
+call-site optimization across the timestamps. `IO.lazyPure` is inline and does
+not provide this boundary. -/
 @[noinline]
-def blackBox (fn : Unit → α) : IO α :=
+private def blackBox (fn : Unit → α) : IO α :=
   pure (fn ())
 
-/-- Time `reps` back-to-back executions, after one untimed execution that
-warms this exact configuration. All repetition results are kept, checked
-equal to each other after the timing loop, and consumed (checksum, caller
-equality checks) outside the timed windows. -/
-def timed (reps : Nat) (label : String) (run : IO (Array Nat)) : IO (Array Nat) := do
+/-- Warm one configuration once, time `reps` executions, then verify the
+results and print the samples and checksum. Verification is outside the timed
+windows. -/
+private def timed (reps : Nat) (label : String)
+    (run : IO (Array Nat)) : IO (Array Nat) := do
   let _ ← run
   let mut times : Array Nat := #[]
   let mut results : Array (Array Nat) := #[]
@@ -55,41 +52,39 @@ def timed (reps : Nat) (label : String) (run : IO (Array Nat)) : IO (Array Nat) 
 
 /-! ## Baselines and workloads -/
 
-/-- The eager strategy for pure maps: one `Task` per element. It pays no
-`Except` boxing, unlike `eagerTaskMapIO`, so it is the cheaper of the two
-baselines. -/
-def eagerTaskMap (xs : Array α) (f : α → β) : Array β :=
+/-- Pure-map baseline with one `Task` per element. -/
+private def eagerTaskMap (xs : Array α) (f : α → β) : Array β :=
   (xs.map (fun x => Task.spawn (fun _ => f x))).map (·.get)
 
-/-- The eager strategy for `IO` maps: one `IO.asTask` per element, joined in
-index order. -/
-def eagerTaskMapIO (xs : Array α) (f : α → IO β) : IO (Array β) := do
+/-- `IO`-map baseline with one `IO.asTask` per element, joined in input order. -/
+private def eagerTaskMapIO (xs : Array α) (f : α → IO β) : IO (Array β) := do
   let tasks ← xs.mapM fun x => IO.asTask (f x)
   tasks.mapM fun t => IO.ofExcept t.get
 
+/-- Deterministic, non-inlined CPU work with tunable iteration count. -/
 @[noinline]
-def mix : Nat → Nat → Nat
+private def mix : Nat → Nat → Nat
   | 0, acc => acc
   | fuel + 1, acc => mix fuel ((acc * 1664525 + 1013904223) % 4294967291)
 
-/-- Mostly medium elements with regularly spaced expensive outliers. The even
-spacing means large contiguous partitions receive near-equal outlier counts,
-so this distribution challenges per-element scheduling overhead, not
-partition balance. -/
+/-- Medium-cost elements with regularly spaced expensive outliers. Large
+contiguous partitions receive nearly equal outlier counts, largely controlling
+for static partition imbalance. -/
 @[noinline]
-def unevenWork (i : Nat) : Nat :=
+private def unevenWork (i : Nat) : Nat :=
   mix (if i % 97 == 0 then 4000 else 200) (i + 1)
 
-/-- Uniformly cheap elements with every expensive element clustered in the
-final sixteenth, so contiguous static partitions leave the expensive suffix
-on only a small subset of workers while small dynamic claims spread it. -/
+/-- Cheap elements followed by an expensive final sixteenth. Contiguous static
+partitions assign that suffix to few workers, while small dynamic claims can
+distribute it. -/
 @[noinline]
-def clusteredWork (size i : Nat) : Nat :=
+private def clusteredWork (size i : Nat) : Nat :=
   mix (if i ≥ size - size / 16 then 4000 else 200) (i + 1)
 
-/-- True static partitioning: segment `w` is assigned to task `w` directly,
-with no claim cursor -- the no-dynamic-scheduling control. -/
-def staticTaskMap (workers : Nat) (xs : Array α) (f : α → Nat) : Array Nat :=
+/-- Static-partition control: task `w` receives segment `w` directly, without
+a claim cursor. -/
+private def staticTaskMap (workers : Nat) (xs : Array α)
+    (f : α → Nat) : Array Nat :=
   let chunk := (xs.size + workers - 1) / workers
   let tasks := (Array.range workers).map fun w =>
     Task.spawn fun _ => Id.run do
@@ -100,41 +95,38 @@ def staticTaskMap (workers : Nat) (xs : Array α) (f : α → Nat) : Array Nat :
       return out
   (tasks.map (·.get)).flatten
 
-/-- Builds the boxed workload's input: 50000 distinct small arrays, so every
-element read is a refcount operation on its own object -- refcount traffic
-without cross-worker contention on any single refcount word.
+/-- Build 50,000 small arrays at runtime. Separate inner objects generate
+refcount traffic without contention on one shared refcount.
 
-A function rather than a constant on purpose: module-level constants and
-extracted closed terms are marked persistent at initialisation, which makes
-refcount operations on them no-ops and would silently null the refcount side
-of the persistent/mutable comparison. Call it through `blackBox` so the
-allocation genuinely happens at runtime. -/
-def mkBoxedInputs (_ : Unit) : Array (Array Nat) :=
+This must remain a function called through `blackBox`: extracted constants are
+marked persistent at initialization, which would eliminate the refcount
+traffic intended by the mutable/persistent comparison. -/
+private def mkBoxedInputs (_ : Unit) : Array (Array Nat) :=
   (Array.range 50000).map fun i => Array.range (i % 64)
 
 private unsafe def persistImpl (a : α) : BaseIO α :=
   Runtime.markPersistent a
 
-/-- Mark an object graph persistent: reference-count operations on it become
-no-ops (the objects are never freed). The specification is the identity;
-marking is purely a runtime effect. -/
+/-- Mark an object graph persistent, making reference-count operations no-ops.
+The specification is the identity; marking is only a runtime effect. -/
 @[implemented_by persistImpl]
-def persist (a : α) : BaseIO α := pure a
+private def persist (a : α) : BaseIO α := pure a
 
 /-! ## Benchmark cases -/
 
-def chunkSweep : List Nat := [1, 4, 16, 64]
+/-- Fixed claim sizes used by the benchmark cases. -/
+private def chunkSweep : List Nat := [1, 4, 16, 64]
 
-/-- The swept claim granularities: the fixed sizes plus a `onewave` split of
-one contiguous chunk per configured worker. The chunks of the `onewave` split
-are still handed out by the shared dynamic cursor -- a fast worker may claim
-two -- so it minimises claim traffic without fixing the assignment; the fixed
-assignment control is `staticTaskMap`. -/
-def sweeps (size : Nat) : List (String × Nat) :=
+/-- Fixed claim sizes plus `onewave`, which creates at most one chunk per
+configured worker. `onewave` still uses dynamic claiming; `staticTaskMap` is
+the fixed-assignment control. -/
+private def sweeps (size : Nat) : List (String × Nat) :=
   chunkSweep.map (fun c => (s!"c={c}", c)) ++
     [("onewave", (size + Linen.config.workers - 1) / Linen.config.workers)]
 
-def benchCase (reps : Nat) (label : String) (xs : Array α) (f : α → Nat) : IO Unit := do
+/-- Compare serial, eager, static, and Linen pure maps. -/
+private def benchCase (reps : Nat) (label : String) (xs : Array α)
+    (f : α → Nat) : IO Unit := do
   let serial ← timed reps s!"{label}, map serial" (blackBox fun _ => xs.map f)
   let eager ← timed reps s!"{label}, map eager" (blackBox fun _ => eagerTaskMap xs f)
   let static ← timed reps s!"{label}, map static"
@@ -147,10 +139,11 @@ def benchCase (reps : Nat) (label : String) (xs : Array α) (f : α → Nat) : I
     unless serial == linen do
       throw (IO.userError s!"{label}: map implementations disagree")
 
-/-- Every element allocates a fresh small array, and the combinator's final
-`flatten` is a serial pass over the boxed results -- allocation pressure on
-the parallel side, allocator/copy work on the serial side. -/
-def benchCaseFlat (reps : Nat) (label : String) (xs : Array Nat) (f : Nat → Array Nat) : IO Unit := do
+/-- Compare serial, eager, and Linen map-then-flatten. With an allocating
+mapper, allocation occurs during the mapped phase; every implementation
+flattens the boxed results serially. -/
+private def benchCaseFlat (reps : Nat) (label : String) (xs : Array Nat)
+    (f : Nat → Array Nat) : IO Unit := do
   let serial ← timed reps s!"{label}, flatMap serial"
     (blackBox fun _ => (xs.map f).flatten)
   let eager ← timed reps s!"{label}, flatMap eager"
@@ -163,10 +156,10 @@ def benchCaseFlat (reps : Nat) (label : String) (xs : Array Nat) (f : Nat → Ar
     unless serial == linen do
       throw (IO.userError s!"{label}: flatMap implementations disagree")
 
-/-- Pure actions through the `IO` entry point: this stresses `mapIO`'s
-scheduling and error-representation overhead, not real I/O or failure
-handling. -/
-def benchCaseIO (reps : Nat) (label : String) (xs : Array Nat) (f : Nat → Nat) : IO Unit := do
+/-- Run pure work through the `IO` entry point, measuring its scheduling and
+error-representation overhead rather than real I/O or failures. -/
+private def benchCaseIO (reps : Nat) (label : String) (xs : Array Nat)
+    (f : Nat → Nat) : IO Unit := do
   let serial ← timed reps s!"{label}, mapIO serial" (xs.mapM (fun i => pure (f i)))
   let eager ← timed reps s!"{label}, mapIO eager" (eagerTaskMapIO xs (fun i => pure (f i)))
   unless serial == eager do
@@ -177,7 +170,10 @@ def benchCaseIO (reps : Nat) (label : String) (xs : Array Nat) (f : Nat → Nat)
     unless serial == linen do
       throw (IO.userError s!"{label}: mapIO implementations disagree")
 
-def benchCaseReduce (reps : Nat) (label : String) (xs : Array Nat) (f : Nat → Nat) : IO Unit := do
+/-- Compare serial, eager, and Linen map-plus-fold with Linen's fused
+`mapReduce`, using the same claim sizes for the two Linen paths. -/
+private def benchCaseReduce (reps : Nat) (label : String) (xs : Array Nat)
+    (f : Nat → Nat) : IO Unit := do
   -- Reductions produce one value; a singleton array reuses the timing plumbing.
   let serial ← timed reps s!"{label}, reduce serial map+fold"
     (blackBox fun _ => #[(xs.map f).foldl (· + ·) 0])
@@ -185,9 +181,8 @@ def benchCaseReduce (reps : Nat) (label : String) (xs : Array Nat) (f : Nat → 
     (blackBox fun _ => #[(eagerTaskMap xs f).foldl (· + ·) 0])
   unless serial == eager do
     throw (IO.userError s!"{label}: reduce implementations disagree")
-  -- Materialised map-plus-fold and fused reduction run at the same chunk
-  -- size, so their difference isolates fusion rather than mixing in
-  -- granularity effects.
+  -- Holding chunk size constant avoids confounding this comparison with claim
+  -- granularity.
   for (tag, chunk) in sweeps xs.size do
     let materialised ← timed reps s!"{label}, reduce Linen map+fold {tag}"
       (blackBox fun _ => #[(Linen.map xs f (chunkSize := chunk)).foldl (· + ·) 0])
@@ -196,19 +191,16 @@ def benchCaseReduce (reps : Nat) (label : String) (xs : Array Nat) (f : Nat → 
     unless serial == materialised && serial == fused do
       throw (IO.userError s!"{label}: reduce implementations disagree")
 
-/-- Big numbers make `(· + ·)` an expensive combining operation (one
-multi-kilobyte limb addition per application), so reducing them with an `id`
-mapper stresses the engine's parallelisation of the `op` work itself -- both
-in the chunk folds and in the partial combine's bounded parallel level. -/
-def bigNums : Array Nat :=
+/-- Inputs whose additions operate on roughly 64,000-bit `Nat` values, making
+addition expensive in chunk folds and, when used, the parallel partial
+combine. -/
+private def bigNums : Array Nat :=
   (Array.range 5000).map fun i => 2 ^ 64000 + i
 
-/-- Pure reduction (`id` mapper) against a serial fold. With cheap elements
-this stresses the reduction machinery itself -- per-chunk folds, the ordered
-partial merge, and the memory-bandwidth ceiling of scanning the input. With
-expensive elements (`bigNums`) it probes how much of the combining work the
-engine parallelises at each chunk size. -/
-def benchCaseReduceId (reps : Nat) (label : String) (xs : Array Nat) : IO Unit := do
+/-- Compare fused reduction with an identity mapper against a serial fold.
+Cheap inputs expose reduction overhead; `bigNums` makes `op` dominate. -/
+private def benchCaseReduceId (reps : Nat) (label : String)
+    (xs : Array Nat) : IO Unit := do
   let serial ← timed reps s!"{label}, reduce serial fold"
     (blackBox fun _ => #[xs.foldl (· + ·) 0])
   for (tag, chunk) in sweeps xs.size do
@@ -217,9 +209,32 @@ def benchCaseReduceId (reps : Nat) (label : String) (xs : Array Nat) : IO Unit :
     unless serial == fused do
       throw (IO.userError s!"{label}: reduce implementations disagree")
 
-/-- Check every engine end-to-end before any timing; per-configuration
-warming is handled by `timed`. -/
-def sanityChecks : IO Unit := do
+/-- Compare all four serial/Linen choices for two nested map levels. Each group
+maps uneven work over its elements and then folds the results. When both levels
+use Linen, every active outer worker can start an inner worker team, exposing
+nested task-pool overhead. Both Linen levels use the default chunk size. -/
+private def benchCaseNested (reps : Nat) (label : String)
+    (groups inner : Nat) : IO Unit := do
+  let gs := Array.range groups
+  let innerXs := Array.range inner
+  let serialGroup := fun g =>
+    (innerXs.map (fun i => unevenWork (g * inner + i))).foldl (· + ·) 0
+  let linenGroup := fun g =>
+    (Linen.map innerXs (fun i => unevenWork (g * inner + i))).foldl (· + ·) 0
+  let serial ← timed reps s!"{label}, outer serial / inner serial"
+    (blackBox fun _ => gs.map serialGroup)
+  let seqPar ← timed reps s!"{label}, outer serial / inner Linen"
+    (blackBox fun _ => gs.map linenGroup)
+  let parSeq ← timed reps s!"{label}, outer Linen / inner serial"
+    (blackBox fun _ => Linen.map gs serialGroup)
+  let parPar ← timed reps s!"{label}, outer Linen / inner Linen"
+    (blackBox fun _ => Linen.map gs linenGroup)
+  unless serial == seqPar && serial == parSeq && serial == parPar do
+    throw (IO.userError s!"{label}: nested compositions disagree")
+
+/-- Smoke-check the core eager, map, mapIO, and mapReduce paths before timing.
+`timed` handles per-configuration warmup. -/
+private def sanityChecks : IO Unit := do
   let xs := Array.range 4096
   let expected := xs.map (· + 1)
   unless eagerTaskMap xs (· + 1) == expected do
@@ -244,6 +259,8 @@ def main (args : List String) : IO UInt32 := do
   benchCase reps "scheduler" (Array.range 200000) (· + 1)
   benchCase reps "uneven" (Array.range 50000) unevenWork
   benchCase reps "clustered" (Array.range 50000) (clusteredWork 50000)
+  benchCaseNested reps "nested-wide" 300 300
+  benchCaseNested reps "nested-narrow" 8 11250
   benchCaseFlat reps "alloc" (Array.range 100000) (fun i => Array.range (i % 7))
   benchCaseIO reps "scheduler" (Array.range 200000) (· + 1)
   benchCaseIO reps "uneven" (Array.range 50000) unevenWork
@@ -251,19 +268,18 @@ def main (args : List String) : IO UInt32 := do
   benchCaseReduce reps "uneven" (Array.range 50000) unevenWork
   benchCaseReduceId reps "sum" (Array.range 1000000)
   benchCaseReduceId reps "bigsum" bigNums
-  -- The refcount A/B runs last: `persist` retains its object graphs for the
-  -- rest of the process, so running it earlier would let the retained memory
-  -- shadow unrelated cases.
-  -- Uncontended: the same workload on a mutable and a persistent copy.
-  -- Element reads on the persistent copy skip the atomic refcount update
+  -- The refcount comparisons run last because `persist` retains its object
+  -- graphs for the rest of the process, increasing memory use in later cases.
+  -- Uncontended: equivalent mutable and persistent inputs.
+  -- Element reads from the persistent inputs skip the atomic refcount update
   -- (the refcount call itself remains), so the comparison estimates the
   -- effect of skipping the atomic updates.
   let boxedInputs ← blackBox mkBoxedInputs
   benchCase reps "boxed" boxedInputs (·.foldl (· + ·) 0)
   let persistentInputs ← persist (← blackBox mkBoxedInputs)
   benchCase reps "boxed-persistent" persistentInputs (·.foldl (· + ·) 0)
-  -- Contended: every element is the same shared object, so all workers hit a
-  -- single refcount word -- the cache-line ping-pong case.
+  -- Contended: every element is the same shared object. On the mutable input,
+  -- all workers update one refcount cache line.
   let hot ← blackBox fun _ => Array.range 64
   benchCase reps "shared" (Array.replicate 50000 hot) (·.foldl (· + ·) 0)
   let hotPersistent ← persist (← blackBox fun _ => Array.range 64)

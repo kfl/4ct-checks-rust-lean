@@ -91,7 +91,9 @@ LEAN_NUM_THREADS=4 lake exe linenBench
 ```
 
 Each run sweeps the claim granularities in-process and covers the pure, `IO`,
-and reducing entry points plus refcount-heavy and allocation-heavy workloads.
+and reducing entry points, refcount-heavy and allocation-heavy workloads, and
+nested two-level compositions -- wide and narrow outer levels -- in all four
+serial/parallel splits.
 
 Smoke measurements for the pure map cases on a 10-core M1 Pro (2026-07-26)
 are medians of three back-to-back runs, in milliseconds, against the eager
