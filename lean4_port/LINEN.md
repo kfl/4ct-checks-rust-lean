@@ -113,12 +113,12 @@ homogeneous configuration and the ten-row mixes in the slower cores.
 ## TODO
 
 - [ ] Profile the full checks at 128, 64, and 32 workers.
-- [ ] Amortise claim traffic at fine granularity: with the dedicated pure
-      workers in place, the shared cursor dominates every c=1 column on
-      cheap elements (claim-light `onewave` runs up to 60x faster), and it
-      still costs one atomic exchange plus a cache-line bounce per chunk.
-      Candidates: guided chunk decay (large early claims, finer tail) with
-      run descriptors so the merge tolerates variable chunk sizes.
+- [ ] Amortise claim traffic at fine granularity: the shared cursor makes
+      c=1 collapse as worker count grows. Coarser claims retain useful
+      scaling on uneven and clustered workloads, although the best
+      granularity depends on the workload and machine topology. Candidates:
+      guided chunk decay (large early claims, finer tail) with run
+      descriptors so the merge tolerates variable chunk sizes.
 - [ ] Route the pure runtimes' serial fast paths through the unchecked chunk
       loops: they fold with generic closure calls today (~40x a literal fold
       on trivial operations), while the parallel workers' direct loops come
