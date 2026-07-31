@@ -25,7 +25,8 @@ IMG="${IMG:-$(ls -t "$HOME"/modi_images/hpc-notebook-*.sif 2>/dev/null | head -1
 echo "image: $IMG"
 # Five repetitions (plus one untimed warm-up each) per configuration; the c=1
 # rows at high thread counts dominate the wall time, so trim REPS or THREADS
-# here if the job runs against the partition limit.
+# if the job runs against the partition limit, e.g.:
+#   REPS=3 THREADS="32 64 96 128" sbatch --export=ALL modi/linen_job.sh
 apptainer exec --bind "$HOME/modi_mount" \
-  --env REPS=5 --env THREADS="1 2 4 8 16 32 64 96 128" \
+  --env REPS="${REPS:-5}" --env THREADS="${THREADS:-1 2 4 8 16 32 64 96 128}" \
   "$IMG" modi/linen.sh
