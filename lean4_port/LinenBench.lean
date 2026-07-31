@@ -4,8 +4,9 @@ import Linen
 Microbenchmark suite for Linen. It compares serial execution, one task per
 element, static partitions, and Linen's bounded dynamic workers across cheap,
 uneven, clustered, allocating, and refcount workloads. The suite covers pure
-maps, `IO` maps, reductions, and all four serial/Linen choices for two nested
-map levels.
+maps, `IO` maps, reductions, and nested workloads with stable widths, a
+draining outer tail, repeated short regions, allocating fan-out, and three
+parallel levels.
 
 Run with `lake exe linenBench [reps]`. `LINEN_WORKERS` overrides
 `LEAN_NUM_THREADS`; unset it when using `LEAN_NUM_THREADS` to measure scaling.
@@ -49,6 +50,26 @@ private def timed (reps : Nat) (label : String)
   let checksum := first.foldl (· ^^^ ·) 0 % (2 ^ 64)
   IO.println s!"{label}: {times} us (checksum {checksum})"
   return first
+
+/-- Time a Linen configuration and report the worker-budget traffic caused by
+its warmup and measured repetitions. Counter reads stay outside the timed
+windows. -/
+private def timedWithBudget (reps : Nat) (label : String)
+    (run : IO (Array Nat)) : IO (Array Nat) := do
+  let before ← Linen.budgetStats
+  let result ← timed reps label run
+  let after ← Linen.budgetStats
+  let attempts := after.attempts - before.attempts
+  let deniedBudget := after.deniedBudget - before.deniedBudget
+  IO.println s!"{label}, budget delta: \
+    spawned={after.spawnedTasks - before.spawnedTasks} \
+    grown={after.grownTasks - before.grownTasks} \
+    granted={attempts - deniedBudget} \
+    releases={after.releases - before.releases} \
+    deniedBudget={deniedBudget} \
+    deniedRegion={after.deniedRegion - before.deniedRegion} \
+    underflows={after.underflows - before.underflows}"
+  return result
 
 /-! ## Baselines and workloads -/
 
@@ -209,10 +230,23 @@ private def benchCaseReduceId (reps : Nat) (label : String)
     unless serial == fused do
       throw (IO.userError s!"{label}: reduce implementations disagree")
 
-/-- Compare all four serial/Linen choices for two nested map levels. Each group
-maps uneven work over its elements and then folds the results. When both levels
-use Linen, every active outer worker can start an inner worker team, exposing
-nested task-pool overhead. Both Linen levels use the default chunk size. -/
+/-- Compare all four serial/Linen choices for two nested map levels. Every
+composition containing Linen also reports its worker-budget traffic. -/
+private def benchNestedGroups (reps : Nat) (label : String) (gs : Array Nat)
+    (serialGroup linenGroup : Nat → Nat) : IO Unit := do
+  let serial ← timed reps s!"{label}, outer serial / inner serial"
+    (blackBox fun _ => gs.map serialGroup)
+  let seqPar ← timedWithBudget reps s!"{label}, outer serial / inner Linen"
+    (blackBox fun _ => gs.map linenGroup)
+  let parSeq ← timedWithBudget reps s!"{label}, outer Linen / inner serial"
+    (blackBox fun _ => Linen.map gs serialGroup)
+  let parPar ← timedWithBudget reps s!"{label}, outer Linen / inner Linen"
+    (blackBox fun _ => Linen.map gs linenGroup)
+  unless serial == seqPar && serial == parSeq && serial == parPar do
+    throw (IO.userError s!"{label}: nested compositions disagree")
+
+/-- Equal-sized groups with regularly distributed expensive elements. Wide
+and narrow outer levels expose the two steady-state composition choices. -/
 private def benchCaseNested (reps : Nat) (label : String)
     (groups inner : Nat) : IO Unit := do
   let gs := Array.range groups
@@ -221,16 +255,92 @@ private def benchCaseNested (reps : Nat) (label : String)
     (innerXs.map (fun i => unevenWork (g * inner + i))).foldl (· + ·) 0
   let linenGroup := fun g =>
     (Linen.map innerXs (fun i => unevenWork (g * inner + i))).foldl (· + ·) 0
-  let serial ← timed reps s!"{label}, outer serial / inner serial"
-    (blackBox fun _ => gs.map serialGroup)
-  let seqPar ← timed reps s!"{label}, outer serial / inner Linen"
-    (blackBox fun _ => gs.map linenGroup)
-  let parSeq ← timed reps s!"{label}, outer Linen / inner serial"
-    (blackBox fun _ => Linen.map gs serialGroup)
-  let parPar ← timed reps s!"{label}, outer Linen / inner Linen"
-    (blackBox fun _ => Linen.map gs linenGroup)
-  unless serial == seqPar && serial == parSeq && serial == parPar do
-    throw (IO.userError s!"{label}: nested compositions disagree")
+  benchNestedGroups reps label gs serialGroup linenGroup
+
+/-- A wide outer map that drains to one long-lived, internally parallel group.
+The heavy group contains many medium claims rather than one indivisible
+element, allowing it to absorb slots released by retiring outer workers. -/
+private def benchCaseNestedDrainingTail (reps : Nat) : IO Unit := do
+  let groups := 512
+  let inner := 128
+  let gs := Array.range groups
+  let innerXs := Array.range inner
+  let work := fun g i =>
+    mix (if g == 0 then 50000 else 200) (g * inner + i + 1)
+  let serialGroup := fun g =>
+    (innerXs.map (work g)).foldl (· + ·) 0
+  let linenGroup := fun g =>
+    (Linen.map innerXs (work g)).foldl (· + ·) 0
+  benchNestedGroups reps "nested-draining-tail" gs serialGroup linenGroup
+
+/-- Each outer item opens several successive short inner regions. Total work
+is comparable to the other nested cases, but repeated setup and joins expose
+the fixed cost of nested regions under a saturated outer level. -/
+private def benchCaseNestedRepeated (reps : Nat) : IO Unit := do
+  let groups := 256
+  let rounds := 8
+  let inner := 32
+  let gs := Array.range groups
+  let innerXs := Array.range inner
+  let serialGroup := fun g => Id.run do
+    let mut total := 0
+    for r in [0:rounds] do
+      for i in [0:inner] do
+        total := total + mix 200 (g * rounds * inner + r * inner + i + 1)
+    return total
+  let linenGroup := fun g => Id.run do
+    let mut total := 0
+    for r in [0:rounds] do
+      let base := g * rounds * inner + r * inner
+      total := total +
+        (Linen.map innerXs (fun i => mix 200 (base + i + 1))).foldl (· + ·) 0
+    return total
+  benchNestedGroups reps "nested-repeated" gs serialGroup linenGroup
+
+/-- Deterministic variable fan-out with small allocations. Empty, singleton,
+and wider results exercise nested `flatMap` buffering and ordered flattening
+without depending on an application data format. -/
+@[noinline]
+private def fanoutWork (seed : Nat) : Array Nat :=
+  let value := mix (if seed % 97 == 0 then 800 else 200) (seed + 1)
+  let width := if seed % 11 == 0 then 0 else if seed % 29 == 0 then 8 else seed % 4 + 1
+  (Array.range width).map (value + ·)
+
+private def benchCaseNestedFanout (reps : Nat) : IO Unit := do
+  let groups := 300
+  let inner := 256
+  let gs := Array.range groups
+  let innerXs := Array.range inner
+  let serialGroup := fun g =>
+    ((innerXs.map fun i => fanoutWork (g * inner + i)).flatten).foldl (· + ·) 0
+  let linenGroup := fun g =>
+    (Linen.flatMap innerXs (fun i => fanoutWork (g * inner + i))).foldl (· + ·) 0
+  benchNestedGroups reps "nested-fanout" gs serialGroup linenGroup
+
+/-- Three nested map levels with only 64 outer groups. On wide machines the
+middle level can use otherwise idle capacity; the all-Linen row also exposes
+the known conservatism of parents retaining slots across nested joins. -/
+private def benchCaseNestedDepth3 (reps : Nat) : IO Unit := do
+  let outerXs := Array.range 64
+  let middleXs := Array.range 16
+  let innerXs := Array.range 64
+  let leafSerial := fun g m =>
+    (innerXs.map fun i => mix 200 (g * 1024 + m * 64 + i + 1)).foldl (· + ·) 0
+  let leafLinen := fun g m =>
+    (Linen.map innerXs fun i => mix 200 (g * 1024 + m * 64 + i + 1)).foldl (· + ·) 0
+  let groupSerial := fun g => (middleXs.map (leafSerial g)).foldl (· + ·) 0
+  let groupMiddle := fun g => (Linen.map middleXs (leafSerial g)).foldl (· + ·) 0
+  let groupAll := fun g => (Linen.map middleXs (leafLinen g)).foldl (· + ·) 0
+  let serial ← timed reps "nested-depth3, all serial"
+    (blackBox fun _ => outerXs.map groupSerial)
+  let outer ← timedWithBudget reps "nested-depth3, outer Linen"
+    (blackBox fun _ => Linen.map outerXs groupSerial)
+  let outerMiddle ← timedWithBudget reps "nested-depth3, outer + middle Linen"
+    (blackBox fun _ => Linen.map outerXs groupMiddle)
+  let all ← timedWithBudget reps "nested-depth3, all levels Linen"
+    (blackBox fun _ => Linen.map outerXs groupAll)
+  unless serial == outer && serial == outerMiddle && serial == all do
+    throw (IO.userError "nested-depth3: compositions disagree")
 
 /-- Smoke-check the core eager, map, mapIO, and mapReduce paths before timing.
 `timed` handles per-configuration warmup. -/
@@ -261,6 +371,10 @@ def main (args : List String) : IO UInt32 := do
   benchCase reps "clustered" (Array.range 50000) (clusteredWork 50000)
   benchCaseNested reps "nested-wide" 300 300
   benchCaseNested reps "nested-narrow" 8 11250
+  benchCaseNestedDrainingTail reps
+  benchCaseNestedRepeated reps
+  benchCaseNestedFanout reps
+  benchCaseNestedDepth3 reps
   benchCaseFlat reps "alloc" (Array.range 100000) (fun i => Array.range (i % 7))
   benchCaseIO reps "scheduler" (Array.range 200000) (· + 1)
   benchCaseIO reps "uneven" (Array.range 50000) unevenWork

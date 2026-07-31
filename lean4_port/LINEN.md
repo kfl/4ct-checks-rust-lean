@@ -1,102 +1,127 @@
 # Linen
 
-Linen is a small data-parallel executor for Lean. Its name follows the textile
-lineage from Cilk to Rayon while giving a nod to Lean. The implementation is
-independent of `NearLinear4ct` and can be extracted into a stand-alone
-package.
+Linen is a small data-parallel executor for Lean inspired by the Rust library
+Rayon. Its name continues the textile lineage from Cilk through Rayon. The
+implementation is independent of `NearLinear4ct` and intended for extraction
+into a standalone package.
 
 ## Goal
 
-The check drivers need fine-grained load balancing because individual
-cartwheel candidates vary greatly in cost. The original `parMap` achieved that
-by eagerly creating one Lean `Task` per candidate. On reduced thread counts at
-the many-core host, the resulting tens of millions of queue operations and
-futex transitions dominate CPU time.
+The check drivers from `NearLinear4ct` need fine-grained load balancing because
+individual cartwheel candidates vary greatly in cost. The original `parMap`
+achieved that by eagerly creating one Lean `Task` per candidate. At 32 workers
+on the 128-thread benchmark host, queue operations and futex transitions put 69%
+of CPU time in the kernel.
 
 Linen keeps candidate-level dynamic balancing without representing every
 candidate as a runtime task.
 
 ## Design
 
-`Linen.mapM` creates an atomic claim cursor for each parallel region. Each
-worker in the region's team repeatedly:
+A parallel region is one invocation of a Linen operation over an input array.
+The function applied to an element may itself invoke Linen, creating nested
+regions.
 
-1. claims the next small, half-open chunk;
-2. computes it outside the atomic claim operation;
-3. appends results and the chunk's start index to its worker-local buffers; and
-4. returns to claim more work.
+Linen divides each region's input into chunks: contiguous ranges of indices
+written as `[start, stop)`, including `start` but not `stop`.
 
-After the workers join, their chunk runs are merged into input order serially.
-No result-side synchronisation occurs in the hot path.
+Each region has its own claim cursor, a counter shared by its workers. It
+points to the first index not yet assigned. A worker claims a chunk by moving
+the cursor past it. This update is atomic, so workers cannot claim overlapping
+chunks. Every worker repeatedly:
 
-Teams are drawn from a single process-wide slot budget of `config.workers`
-worker slots. A region spawns a worker task only while it can reserve a slot,
-and always runs one worker inline on its caller, so at most `config.workers`
-Linen worker tasks are live or queued at any time and nested work without a
-slot runs serially on its caller. Workers retry reservation once per
-successful claim (two scalar-counter reads when nothing is free), so a team
-that started small grows as other regions retire and release slots; in the
-measured nested check workloads most workers were spawned by this growth
-path rather than at region entry. The
-inline worker holds a slot when one is free, making a saturated budget
-visible to the growth gates.
+1. claims the next chunk by atomically advancing the cursor;
+2. computes the chunk outside the atomic operation;
+3. appends its results and `start` to worker-local buffers; and
+4. returns to claim another chunk.
 
-The per-call `chunkSize` argument controls claim granularity and is clamped to
-at least one. Smaller chunks preserve balancing when element costs vary;
-larger chunks amortise claim overhead. The default of one preserves
-candidate-level balancing.
+After the workers join, Linen uses the recorded start indices to merge their
+chunk runs into input order. The result path requires no synchronisation while
+workers run.
 
-At process startup, Linen reads the worker count once using this precedence:
+All regions, including nested ones, share a process-wide budget of
+`config.workers` slots. A region runs one worker inline and spawns another only
+after reserving a slot, so no more than `config.workers` Linen worker tasks are
+live or queued. A region that cannot reserve a slot still makes progress
+inline. Workers retry reservations once per successful claim, before
+computing the claimed chunk, so a new sibling starts working while the
+claimer computes; surviving regions thereby grow as other regions finish.
 
-1. `LINEN_WORKERS`;
-2. `LEAN_NUM_THREADS`; and
-3. the machine's logical core count.
+The per-call `chunkSize` controls claim granularity and is clamped to at least
+one. Small chunks improve balancing when element costs vary; large chunks
+amortise claim overhead. The default is one.
 
-Invalid or zero-valued worker overrides are ignored. If querying the logical
-core count fails, Linen falls back to one worker.
+Pure `Linen.map` is defined as `xs.map f` and installs the parallel executor
+through `implemented_by`. Proofs therefore see the serial specification while
+compiled programs use the parallel implementation.
 
-Pure `Linen.map` has `xs.map f` as its Lean definition and installs the worker
-engine only with `implemented_by`. Consequently, proofs see exactly the serial
-specification, while compiled executables get parallel evaluation.
-`Linen.mapIO` is fail-fast: after any worker reports an error, workers stop
-claiming new chunks and finish the chunks they already claimed (a failing
-worker stops its own chunk at the error); then the error with the smallest
-input index is re-raised. NearLinear4ct's existing `par*` functions
-are thin compatibility wrappers around this API.
+`Linen.mapIO` stops its failing chunk and further claims in that region, lets
+other claimed chunks finish, and rethrows the failure with the lowest input
+index.
 
-`Linen.mapReduce` folds each claimed chunk to one partial within its worker,
-then restores the partials to input order. If the partials outnumber the
-configured workers, one bounded parallel pass folds contiguous runs, leaving
-at most one partial per worker for the final serial fold.
+`Linen.mapReduce` takes a `[Std.Associative op]` instance, which supplies a
+proof that `op` is associative. Its runtime folds each chunk to one partial and
+combines the partials in input order, using one bounded parallel combine pass
+when necessary. The operation need not be commutative, and `init` need not be
+an identity.
 
-Its specification is the sequential left fold. A `Std.Associative` instance
-for the combining operation is the caller's obligation that makes the
-specification and the parallel runtime agree. Commutativity is not required,
-so associative non-commutative operations reduce deterministically.
+At startup, Linen reads the worker count from `LINEN_WORKERS`, then
+`LEAN_NUM_THREADS`, then the machine's logical core count. Invalid and zero
+values are ignored; a failed core-count query falls back to one worker.
+
+## Verification status
+
+Lean reasons about serial specifications for the pure combinators. In
+particular, `Linen.map` is defined as `xs.map f`, and `Linen.mapReduce` as
+`(xs.map f).foldl op init`. `filterMap` and `flatMap` are built from this serial
+`map`. Consequently, proofs using these functions see no tasks, cursors, or
+scheduling decisions.
+
+The `[Std.Associative op]` instance required by `Linen.mapReduce` proves that
+`op` is associative, which permits the runtime to regroup contiguous values
+without changing the result. Commutativity is not required, and `init` need
+not be an identity.
+
+The compiled parallel implementations replace the serial definitions through
+`implemented_by` and cross an `unsafeBaseIO`/`unsafeCast` boundary. Their
+equivalence to the serial specifications has not been proved in Lean. The pure
+worker loops contain local proofs for their array bounds, but these do not
+establish end-to-end correctness.
+
+The following remain to be proved:
+
+- the equivalence of `mapImpl` and `mapReduceImpl` to their serial
+  specifications;
+- formal result-order and error specifications for `mapM`, `mapReduceM`, and
+  `mapIO`, including any required assumptions about effects; and
+- the worker-budget, release, and liveness invariants of nested regions.
+
+The contract tests exercise these properties across worker counts and
+scheduling shapes, but tests are evidence rather than proofs.
 
 ## Diagnostics
 
-The slot budget keeps an always-on reservation ledger, updated only on
-reservation events (never on the per-claim gate path); the engine's
-measured results include this cost. `Linen.activeSlots` and
-`Linen.budgetStats` expose it as supported diagnostics, and the test suite
-asserts its invariants: at quiescence `underflows` is zero, granted
-reservations equal `releases`, `active` is zero, and `peak` never exceeds
-the configured worker count. The check driver prints the ledger to stderr
-under `--budget_stats`.
+Linen keeps always-on counters for reservation attempts, releases, and worker
+creation. Per-claim read gates do not update them, and the benchmarks include
+their cost. `Linen.activeSlots` reports current occupancy;
+`Linen.budgetStats` returns the cumulative counters.
+
+At quiescence, `underflows` and `active` must be zero, granted reservations
+must equal `releases`, and `peak` must not exceed `config.workers`. The test
+suite checks these invariants.
 
 ## Scope and limitations
 
-Linen is inspired by Rayon but is not yet a Rayon clone. It is a bounded
-dynamic executor without per-worker deques, global cross-region work stealing,
-a persistent worker pool, or a help-join protocol. Each nested parallel region
-has its own atomic claim cursor, but all regions share the worker-slot
-budget, so nesting depth and concurrent regions cannot multiply the task
-count. Lean's task runtime prevents nested joins from starving the pool. Two
-known conservatisms under-provision teams slightly rather than oversubscribe:
-an outer worker blocked joining its inner region keeps its slot, and a
-slotted worker entering a nested region reserves a second slot for its
-inline role.
+Linen is inspired by Rayon but is not a Rayon clone. It has no per-worker
+deques, cross-region work stealing, persistent worker pool, or help-join
+protocol. The shared slot budget bounds live or queued worker tasks across
+nested and concurrent regions, while Lean's task runtime prevents nested joins
+from starving the pool.
+
+Two conservative accounting choices avoid oversubscription but can
+under-provision nested work: an outer worker retains its slot while waiting for
+an inner region, and a slotted worker reserves another slot for the nested
+region's inline worker.
 
 ## Validation and benchmark
 
@@ -116,18 +141,17 @@ LEAN_NUM_THREADS=1 lake exe linenBench
 LEAN_NUM_THREADS=4 lake exe linenBench
 ```
 
-Each run sweeps the claim granularities in-process and covers the pure, `IO`,
-and reducing entry points, refcount-heavy and allocation-heavy workloads, and
-nested two-level compositions -- wide and narrow outer levels -- in all four
-serial/parallel splits.
+The suite sweeps claim sizes and covers pure maps, `IO` maps, reductions,
+reference-counting, allocation, and nested composition. Nested cases include
+wide and narrow steady states, a draining outer tail, repeated short regions,
+allocating fan-out, and three parallel levels. Two-level cases run all four
+serial/parallel splits, with worker-budget traffic reported for
+parallel/parallel execution.
 
-Smoke measurements for the pure map cases on a 10-core M1 Pro (2026-07-26)
-are medians of three back-to-back runs, in milliseconds, against the eager
-one-task-per-element baseline. `Scheduler` maps `(· + 1)` over 200,000
-elements; `Uneven` maps `unevenWork` over 50,000 elements. `Threads` is the
-configured worker count (`LEAN_NUM_THREADS` in these runs). The machine has
-eight performance and two efficiency cores, so eight is the largest
-homogeneous configuration and the ten-row mixes in the slower cores.
+The table reports medians of three pure-map runs on a 10-core M1 Pro on
+2026-07-26, in milliseconds. `Scheduler` maps `(· + 1)` over 200,000 elements;
+`Uneven` maps `unevenWork` over 50,000. The machine has eight performance and
+two efficiency cores, so the ten-worker results include the slower cores.
 
 | Threads | Scheduler: eager | Scheduler: Linen c=1 | Scheduler: Linen c=64 | Uneven: eager | Uneven: Linen c=1 | Uneven: Linen c=64 |
 |--------:|-----------------:|---------------------:|----------------------:|--------------:|------------------:|-------------------:|
@@ -138,16 +162,40 @@ homogeneous configuration and the ten-row mixes in the slower cores.
 
 ## TODO
 
-- [ ] Profile the full checks at 128, 96, 64, and 32 workers.
-- [ ] Amortise claim overhead at fine granularity: the shared cursor makes
-      c=1 collapse as worker count grows on cheap elements. Coarser claims
-      retain useful scaling on uneven and clustered workloads, although the
-      best granularity depends on the workload and machine topology.
-      Candidates include guided chunk decay (large early claims, finer tail)
-      with run descriptors for variable-size merging. Team sizing is now
-      handled by the occupancy budget and no longer coupled to `chunkSize`
-      (a chunk-count cap aside), so this is purely a claim-granularity
-      question.
+- [ ] Prove that `mapImpl` and `mapReduceImpl` implement their serial
+      specifications for every chunk size and worker schedule, assuming
+      `[Std.Associative op]` for `mapReduce`.
+- [ ] Give `mapM`, `mapReduceM`, and `mapIO` formal specifications covering
+      result order and error selection, with explicit assumptions about
+      effects where needed.
+- [ ] Prove the slot-budget and release invariants, and liveness of nested
+      region growth and joins.
+- [ ] Amortise fine-grained claim overhead. The shared cursor makes `c=1`
+      collapse on cheap elements as worker count grows, while the best fixed
+      claim size depends on the workload and machine. Evaluate guided decay --
+      large early claims followed by a finer tail -- with run descriptors for
+      variable-size merging. The occupancy budget already handles team sizing,
+      so this is a separate claim-granularity problem.
+- [ ] Isolate and reduce the fixed cost of short-lived regions.
+      `nested-repeated` measures repeated setup and joins; `nested-fanout`
+      adds allocation and ordered flattening; `nested-depth3` compounds region
+      overhead and slot retention. `nested-draining-tail` is the control that
+      any change must preserve.
+
+      First report worker-budget deltas for every nested composition containing
+      Linen, not only parallel/parallel. Then evaluate two independent A/B
+      changes:
+
+      1. allocate the region's team counter and task registry only when the
+         first worker can be spawned; and
+      2. replace entry seeding with growth-only startup.
+
+      Run each change across the full claim-size sweep and all nested cases at
+      several worker counts. Growth-only startup is most likely to regress
+      coarse and `onewave` claims, which provide few opportunities to expand
+      the team. If depth-three overhead remains after region setup is cheaper,
+      isolate retained parent slots and the extra inline-slot reservation.
+      Prefer removing structural overhead before adding a small-region cutoff.
 - [ ] Route the pure runtimes' serial fast paths through the unchecked chunk
       loops: they fold with generic closure calls today (~40x a literal fold
       on trivial operations), while the parallel workers' direct loops come
