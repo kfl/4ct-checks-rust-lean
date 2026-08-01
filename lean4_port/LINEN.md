@@ -87,9 +87,12 @@ not be an identity.
 
 The compiled parallel implementations replace the serial definitions through
 `implemented_by` and cross an `unsafeBaseIO`/`unsafeCast` boundary. Their
-equivalence to the serial specifications has not been proved in Lean. The pure
-worker loops contain local proofs for their array bounds, but these do not
-establish end-to-end correctness.
+equivalence to the serial specifications has not been proved in Lean. The
+pure worker loops contain local proofs for their array bounds, and the
+serial chunk loops are proved equal to their specification slices in
+`Linen.lean`'s verified-properties section -- so the serial fast paths are
+verified outright, and the associative regrouping core for `mapReduce` is
+proved -- but the parallel path's correctness remains unproved.
 
 The following remain to be proved:
 
@@ -176,9 +179,20 @@ two efficiency cores, so the ten-worker results include the slower cores.
 
 ## TODO
 
-- [ ] Prove that `mapImpl` and `mapReduceImpl` implement their serial
-      specifications for every chunk size and worker schedule, assuming
-      `[Std.Associative op]` for `mapReduce`.
+- [ ] Close the `mapImpl`/`mapReduceImpl` correspondence along the ladder
+      split at the `unsafeBaseIO` trust boundary. Done, in `Linen.lean`:
+      `mapChunkPure` computes the mapped slice appended to its accumulator
+      and `reduceChunkPure` the left fold of the mapped slice (verifying the
+      serial fast paths as the specifications), and `foldl_seeded_partials`
+      is the associative regrouping core. Open: a pure well-formedness
+      predicate on worker output (aligned chunk starts, each ordinal claimed
+      exactly once, buffers the mapped slices of their runs in claim order);
+      that `merge` reconstructs `xs.map f` from any well-formed output --
+      establishing that worker count and claim order cannot affect the
+      result -- and `orderedPartials`/`mergeReduce` likewise via the
+      regrouping lemma. The final bridge, that the concurrent runtime always
+      produces well-formed output, requires reasoning about atomic claims
+      and tasks; it stays an explicitly trusted step.
 - [ ] Give `mapM`, `mapReduceM`, and `mapIO` formal specifications covering
       result order and error selection, with explicit assumptions about
       effects where needed.

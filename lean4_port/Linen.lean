@@ -628,6 +628,97 @@ def forEach (xs : Array α) (f : α → IO Unit) (chunkSize : Nat := 1) :
     IO Unit :=
   discard <| mapIO xs f chunkSize
 
+/-! ## Verified properties
+
+The runtime implementations' trust boundary sits at `unsafeBaseIO`: Lean
+cannot directly state kernel theorems about this unsafe task execution, so the
+correspondence between the parallel engine and the serial specifications is
+split into pure lemmas about the engine's pieces. Below, the serial chunk loops
+equal their specification slices, which verifies the serial fast paths
+outright, and the associative regrouping core is proved. The ordered-merge
+reconstruction, the connection from `orderedPartials` through the optional
+second reduction level to that regrouping lemma, and the bridge asserting that
+the concurrent runtime always yields well-formed worker output remain open
+(see LINEN.md). -/
+
+/-- The pure map chunk loop computes exactly the mapped slice, appended to
+the accumulator. -/
+private theorem mapChunkPure_eq (xs : Array α) (f : α → β) (stop : Nat)
+    (hstop : stop ≤ xs.size) (i : Nat) (values : Array β) :
+    mapChunkPure xs f stop hstop i values
+      = values ++ (xs.extract i stop).map f := by
+  unfold mapChunkPure
+  split
+  next hi =>
+    rw [mapChunkPure_eq xs f stop hstop (i + 1)]
+    grind
+  next hi =>
+    grind
+termination_by stop - i
+
+/-- The pure reduce chunk loop is the left fold of the mapped slice. -/
+private theorem reduceChunkPure_eq (xs : Array α) (f : α → β)
+    (op : β → β → β) (stop : Nat) (hstop : stop ≤ xs.size) (i : Nat)
+    (acc : β) :
+    reduceChunkPure xs f op stop hstop i acc
+      = ((xs.extract i stop).map f).foldl op acc := by
+  unfold reduceChunkPure
+  split
+  next hi =>
+    rw [reduceChunkPure_eq xs f op stop hstop (i + 1),
+      show xs.extract i stop = #[xs[i]] ++ xs.extract (i + 1) stop from by grind]
+    simp
+  next hi =>
+    rw [show xs.extract i stop = #[] from by grind]
+    simp
+termination_by stop - i
+
+/-- The serial fast path of `mapImpl` is the specification. -/
+private theorem mapChunkPure_full (xs : Array α) (f : α → β) :
+    mapChunkPure xs f xs.size (Nat.le_refl _) 0 (Array.mkEmpty xs.size)
+      = xs.map f := by
+  rw [mapChunkPure_eq]
+  simp
+
+/-- The serial fast path of `mapReduceImpl` is the specification's fused
+left fold. -/
+private theorem reduceChunkPure_full (xs : Array α) (f : α → β)
+    (op : β → β → β) (init : β) :
+    reduceChunkPure xs f op xs.size (Nat.le_refl _) 0 init
+      = (xs.map f).foldl op init := by
+  rw [reduceChunkPure_eq]
+  simp
+
+/-- Folding from a shifted accumulator commutes with an associative
+operation: the algebraic core of combining chunk partials in input order. -/
+private theorem foldl_assoc_shift (op : β → β → β) [Std.Associative op]
+    (l : List β) (a b : β) :
+    l.foldl op (op a b) = op a (l.foldl op b) := by
+  induction l generalizing b with
+  | nil => rfl
+  | cons x xs ih =>
+    calc (x :: xs).foldl op (op a b)
+        = xs.foldl op (op (op a b) x) := rfl
+      _ = xs.foldl op (op a (op b x)) := by
+            rw [Std.Associative.assoc (op := op)]
+      _ = op a ((x :: xs).foldl op b) := ih (op b x)
+
+/-- Regrouping lemma for `mapReduce`: folding seeded chunk partials in input
+order equals folding all elements, given associativity. Each chunk is
+represented as its seed and remaining elements, matching how
+`workerReducePureLoop` folds a claimed chunk from its first element. -/
+private theorem foldl_seeded_partials (op : β → β → β) [Std.Associative op]
+    (chunks : List (β × List β)) (init : β) :
+    (chunks.map fun c => c.2.foldl op c.1).foldl op init
+      = (chunks.map fun c => c.1 :: c.2).flatten.foldl op init := by
+  induction chunks generalizing init with
+  | nil => rfl
+  | cons c cs ih =>
+    simp only [List.map_cons, List.foldl_cons, List.flatten_cons,
+      List.foldl_append]
+    rw [← foldl_assoc_shift op c.2 init c.1]
+    exact ih _
+
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
 def activeSlots : BaseIO Nat :=
