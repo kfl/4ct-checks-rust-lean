@@ -47,6 +47,13 @@ inline. Workers retry reservations once per successful claim, before
 computing the claimed chunk, so a new sibling starts working while the
 claimer computes; surviving regions thereby grow as other regions finish.
 
+The implementation follows a functional-data-path, imperative-scheduler
+split: chunk computation, copying, placement, and assembly are bounded
+`Array.foldl`/`foldlM` definitions or pure step functions (fused loops, no
+intermediate collections), while the scheduler -- claiming, reservation,
+growth, joining -- uses explicit control flow where atomic sequencing and
+retries are the point.
+
 The per-call `chunkSize` controls claim granularity and is clamped to at least
 one. Small chunks improve balancing when element costs vary; large chunks
 amortise claim overhead. The default is one.
@@ -184,15 +191,33 @@ two efficiency cores, so the ten-worker results include the slower cores.
       `mapChunkPure` computes the mapped slice appended to its accumulator
       and `reduceChunkPure` the left fold of the mapped slice (verifying the
       serial fast paths as the specifications), and `foldl_seeded_partials`
-      is the associative regrouping core. Open: a pure well-formedness
-      predicate on worker output (aligned chunk starts, each ordinal claimed
-      exactly once, buffers the mapped slices of their runs in claim order);
-      that `merge` reconstructs `xs.map f` from any well-formed output --
-      establishing that worker count and claim order cannot affect the
-      result -- and `orderedPartials`/`mergeReduce` likewise via the
-      regrouping lemma. The final bridge, that the concurrent runtime always
-      produces well-formed output, requires reasoning about atomic claims
-      and tasks; it stays an explicitly trusted step.
+      is the associative regrouping core. Also done: the well-formedness
+      predicates (`WFWorkerOut`, `WFOuts` -- aligned in-range starts, buffers
+      exactly the folded chunk slices of their runs, each ordinal claimed
+      exactly once) and the pure assembly layer (`foldl_chunkSlice_range`:
+      ordered chunk slices reconstruct `xs.map f`; `extract_foldl_pieces`:
+      block extraction at prefix-sum offsets yields each run's slice).
+      Also done: `merge` is proved equal to a pure fold of `mergeStep` over
+      chunk ordinals (`merge_eq_foldl`), and the data path now follows the
+      functional-data-path/imperative-scheduler split: the chunk loops,
+      copy loop, and monadic per-chunk iterations are bounded
+      `Array.foldl`/`foldlM` definitions (their theorems collapse to core
+      fold lemmas), and `placeChunks` is a pure nested fold over named
+      state structures -- no loop-to-fold characterisation is needed there
+      at all. The well-formedness and extraction theory is parameterised by
+      a per-start `piece : Nat → Array β`, shared between the map
+      instantiation (chunk slices) and the reduce instantiation (singleton
+      partials). Also done, closing the map side: the `placeChunks`
+      table-correctness proof (`placeWorker_foldl_spec` /
+      `placeChunks_spec`: a proof-carrying run witness identifies an
+      ordinal's unique owner, worker index, and prefix-sum offset) and the
+      final assembly `merge_wf`: for any `WFOuts`-well-formed worker output,
+      `merge outs xs.size chunkSize = xs.map f`, so worker count and
+      claim order cannot affect the result. Open: the reduce-side
+      instantiation via the regrouping lemma. The final bridge, that the
+      concurrent runtime always produces well-formed output, requires
+      reasoning about atomic claims and tasks; it stays an explicitly
+      trusted step.
 - [ ] Give `mapM`, `mapReduceM`, and `mapIO` formal specifications covering
       result order and error selection, with explicit assumptions about
       effects where needed.

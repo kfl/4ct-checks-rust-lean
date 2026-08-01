@@ -92,9 +92,8 @@ private partial def workerMapMLoop (growth : BaseIO GrowResult)
   if start ≥ xs.size then return (values, starts)
   let stop := (start + chunkSize).min xs.size
   let growing ← if growing then (·.retryable) <$> growth else pure false
-  let mut values := values
-  for x in xs[start:stop] do
-    values := values.push (← f x)
+  let values ← xs.foldlM (fun values x => return values.push (← f x))
+    values start stop
   workerMapMLoop growth cursor xs f chunkSize growing values
     (starts.push start)
 
@@ -117,9 +116,9 @@ private partial def workerMapReduceMLoop (growth : BaseIO GrowResult)
   let growing ← if growing then (·.retryable) <$> growth else pure false
   let some x ← pure xs[start]?
     | return (partials, starts)
-  let mut acc ← f x
-  for x in xs[start + 1:stop] do
-    acc := op acc (← f x)
+  let seed ← f x
+  let acc ← xs.foldlM (fun acc x => return op acc (← f x))
+    seed (start + 1) stop
   workerMapReduceMLoop growth cursor xs f op chunkSize growing
     (partials.push acc) (starts.push start)
 
@@ -350,12 +349,8 @@ the array reads; the proofs are erased at compile time. Task setup, claiming,
 bookkeeping, and ordered merging remain outside the inner loops. -/
 
 private def mapChunkPure (xs : Array α) (f : α → β) (stop : Nat)
-    (hstop : stop ≤ xs.size) (i : Nat) (values : Array β) : Array β :=
-  if hi : i < stop then
-    mapChunkPure xs f stop hstop (i + 1)
-      (values.push (f (xs[i]'(Nat.lt_of_lt_of_le hi hstop))))
-  else values
-termination_by stop - i
+    (i : Nat) (values : Array β) : Array β :=
+  xs.foldl (fun values x => values.push (f x)) values i stop
 
 /-- Pure `map` worker with one team-growth attempt per successful claim.
 `growing` caches `growth`'s verdict: once the team is full the loop stops
@@ -369,7 +364,7 @@ private partial def workerMapPureLoop (growth : BaseIO GrowResult)
   let stop := (start + chunkSize).min xs.size
   let growing ← if growing then (·.retryable) <$> growth else pure false
   workerMapPureLoop growth cursor xs f chunkSize growing
-    (mapChunkPure xs f stop (Nat.min_le_right _ _) start values)
+    (mapChunkPure xs f stop start values)
     (starts.push start)
 
 /-- Allocate worker-local buffers inside the task. -/
@@ -380,12 +375,8 @@ private def workerMapPure (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
     (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
 
 private def reduceChunkPure (xs : Array α) (f : α → β) (op : β → β → β)
-    (stop : Nat) (hstop : stop ≤ xs.size) (i : Nat) (acc : β) : β :=
-  if hi : i < stop then
-    reduceChunkPure xs f op stop hstop (i + 1)
-      (op acc (f (xs[i]'(Nat.lt_of_lt_of_le hi hstop))))
-  else acc
-termination_by stop - i
+    (stop : Nat) (i : Nat) (acc : β) : β :=
+  xs.foldl (fun acc x => op acc (f x)) acc i stop
 
 /-- Pure reducing worker: each chunk folds to one partial seeded by its
 first element, with per-claim team growth. -/
@@ -398,7 +389,7 @@ private partial def workerReducePureLoop (growth : BaseIO GrowResult)
     let stop := (start + chunkSize).min xs.size
     let growing ← if growing then (·.retryable) <$> growth else pure false
     let seed := f (xs[start]'hstart)
-    let acc := reduceChunkPure xs f op stop (Nat.min_le_right _ _) (start + 1) seed
+    let acc := reduceChunkPure xs f op stop (start + 1) seed
     workerReducePureLoop growth cursor xs f op chunkSize growing
       (partials.push acc) (starts.push start)
   else
@@ -411,42 +402,92 @@ private def workerReducePure (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
   workerReducePureLoop growth cursor xs f op chunkSize true
     (Array.mkEmpty startsCap) (Array.mkEmpty startsCap)
 
+/-- Fold state while placing one worker's runs: the running buffer offset
+and the two placement tables. -/
+private structure PlaceRun where
+  offset : Nat
+  slotWorker : Array Nat
+  slotOffset : Array Nat
+
+/-- One run placed: record the owner and the run's buffer offset at the
+run's ordinal, and advance the offset. -/
+private def placeRun (chunkSize : Nat) (lenOf : Nat → Nat) (worker : Nat)
+    (st : PlaceRun) (start : Nat) : PlaceRun :=
+  { offset := st.offset + lenOf start,
+    slotWorker := st.slotWorker.set! (start / chunkSize) (worker + 1),
+    slotOffset := st.slotOffset.set! (start / chunkSize) st.offset }
+
+/-- Fold state across workers: the next worker index and the tables. -/
+private structure PlaceAll where
+  worker : Nat
+  slotWorker : Array Nat
+  slotOffset : Array Nat
+
+/-- One worker placed: fold its runs through `placeRun` and advance the
+worker index. -/
+private def placeWorker (chunkSize : Nat) (lenOf : Nat → Nat)
+    (st : PlaceAll) (out : Array β × Array Nat) : PlaceAll :=
+  let run := out.2.foldl (placeRun chunkSize lenOf st.worker)
+    { offset := 0, slotWorker := st.slotWorker,
+      slotOffset := st.slotOffset }
+  { worker := st.worker + 1, slotWorker := run.slotWorker,
+    slotOffset := run.slotOffset }
+
 /-- Build lookup tables from chunk ordinal to worker and buffer offset.
 `slotWorker` stores the worker index plus one, reserving zero for unclaimed
 chunks. `slotOffset` stores the run's offset in that worker's buffer; `lenOf`
 advances the offset between runs. -/
 private def placeChunks (outs : Array (Array β × Array Nat))
     (chunkCount chunkSize : Nat) (lenOf : Nat → Nat) :
-    Array Nat × Array Nat := Id.run do
-  let mut slotWorker : Array Nat := Array.replicate chunkCount 0
-  let mut slotOffset : Array Nat := Array.replicate chunkCount 0
-  for w in [0:outs.size] do
-    if let some (_, starts) := outs[w]? then
-      let mut offset := 0
-      for start in starts do
-        let ordinal := start / chunkSize
-        slotWorker := slotWorker.set! ordinal (w + 1)
-        slotOffset := slotOffset.set! ordinal offset
-        offset := offset + lenOf start
-  return (slotWorker, slotOffset)
+    Array Nat × Array Nat :=
+  let st := outs.foldl (placeWorker chunkSize lenOf)
+    { worker := 0, slotWorker := Array.replicate chunkCount 0,
+      slotOffset := Array.replicate chunkCount 0 }
+  (st.slotWorker, st.slotOffset)
+
+/-- Append `values[j:stop)` onto `r`: a bounded fold, which compiles to a
+tight loop with the bound computed once. -/
+private def pushRange (values : Array β) (stop j : Nat) (r : Array β) :
+    Array β :=
+  values.foldl (fun r value => r.push value) r j stop
+
+/-- One ordinal's contribution to the merge: append the owning worker's
+buffer segment, or nothing for an unclaimed ordinal. A pure function so
+`merge`'s loop body is a single state update, which the correspondence
+proofs convert to a fold directly. -/
+private def mergeStep (outs : Array (Array β × Array Nat))
+    (slotWorker slotOffset : Array Nat) (size chunkSize ordinal : Nat)
+    (result : Array β) : Array β :=
+  let w := slotWorker[ordinal]!
+  if w == 0 then result
+  else
+    match outs[w - 1]? with
+    | some (values, _) =>
+      let offset := slotOffset[ordinal]!
+      let stop := offset + chunkSize.min (size - ordinal * chunkSize)
+      pushRange values stop offset result
+    | none => result
+
+/-- Pure range loop over chunk ordinals: an index loop with no underlying
+collection, so a small recursion rather than a collection fold. -/
+private def mergeLoop (outs : Array (Array β × Array Nat))
+    (slotWorker slotOffset : Array Nat) (size chunkSize cc ordinal : Nat)
+    (result : Array β) : Array β :=
+  if ordinal < cc then
+    mergeLoop outs slotWorker slotOffset size chunkSize cc (ordinal + 1)
+      (mergeStep outs slotWorker slotOffset size chunkSize ordinal result)
+  else result
+termination_by cc - ordinal
 
 /-- Restore per-worker buffers to input order: place every chunk run by
-ordinal without sorting, then walk each run as a subarray. -/
+ordinal without sorting, then append each ordinal's segment. -/
 private def merge (outs : Array (Array β × Array Nat))
-    (size chunkSize : Nat) : Array β := Id.run do
+    (size chunkSize : Nat) : Array β :=
   let chunkCount := (size + chunkSize - 1) / chunkSize
-  let (slotWorker, slotOffset) :=
+  let tables :=
     placeChunks outs chunkCount chunkSize fun start => chunkSize.min (size - start)
-  let mut result : Array β := Array.mkEmpty size
-  for ordinal in [0:chunkCount] do
-    let w := slotWorker[ordinal]!
-    if w > 0 then
-      if let some (values, _) := outs[w - 1]? then
-        let offset := slotOffset[ordinal]!
-        let len := chunkSize.min (size - ordinal * chunkSize)
-        for value in values[offset : offset + len] do
-          result := result.push value
-  return result
+  mergeLoop outs tables.1 tables.2 size chunkSize chunkCount 0
+    (Array.mkEmpty size)
 
 /-- Collect per-chunk partials into chunk-ordinal order. -/
 private def orderedPartials (outs : Array (Array β × Array Nat))
@@ -544,10 +585,10 @@ private unsafe def mapImpl.{u, v} {α : Type u} {β : Type v}
     (xs : Array α) (f : α → β) (chunkSize : Nat := 1) : Array β :=
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
-    -- Serial fast path through the unchecked chunk loop: the erased bound
-    -- proof removes per-element bounds checks, and with `stop = xs.size`
-    -- the loop is exactly `xs.map f`.
-    mapChunkPure xs f xs.size (Nat.le_refl _) 0 (Array.mkEmpty xs.size)
+    -- Serial fast path through the bounded chunk fold: the bound is
+    -- clamped once and the inner reads are unchecked, and with
+    -- `stop = xs.size` the fold is exactly `xs.map f`.
+    mapChunkPure xs f xs.size 0 (Array.mkEmpty xs.size)
   else
     -- `unsafeBaseIO` is justified because `f` is pure and the result does not
     -- depend on scheduling. The `NonScalar` casts bridge `BaseIO`'s `Type 0`
@@ -578,11 +619,11 @@ private unsafe def mapReduceImpl.{u, v} {α : Type u} {β : Type v}
     (chunkSize : Nat := 1) [Std.Associative op] : β :=
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
-    -- Serial fast path through the unchecked chunk loop: no task setup, no
-    -- intermediate partials, no per-element bounds checks, and with
-    -- `stop = xs.size` the loop is exactly the fused left fold of the
-    -- specification.
-    reduceChunkPure xs f op xs.size (Nat.le_refl _) 0 init
+    -- Serial fast path through the bounded chunk fold: no task setup, no
+    -- intermediate partials, the bound clamped once with unchecked inner
+    -- reads, and with `stop = xs.size` the fold is exactly the fused left
+    -- fold of the specification.
+    reduceChunkPure xs f op xs.size 0 init
   else
     -- The same trust boundary as `mapImpl`; `op` and `init` are also cast
     -- through `NonScalar`.
@@ -635,73 +676,44 @@ cannot directly state kernel theorems about this unsafe task execution, so the
 correspondence between the parallel engine and the serial specifications is
 split into pure lemmas about the engine's pieces. Below, the serial chunk loops
 equal their specification slices, which verifies the serial fast paths
-outright, and the associative regrouping core is proved. The ordered-merge
-reconstruction, the connection from `orderedPartials` through the optional
-second reduction level to that regrouping lemma, and the bridge asserting that
-the concurrent runtime always yields well-formed worker output remain open
-(see LINEN.md). -/
+outright; the associative regrouping core and `map`'s ordered-merge
+reconstruction are also proved. The reduce-side instantiation -- including
+the optional second reduction level -- and the bridge asserting that the
+concurrent runtime always yields well-formed worker output remain open (see
+LINEN.md). -/
 
 /-- The pure map chunk loop computes exactly the mapped slice, appended to
 the accumulator. -/
 private theorem mapChunkPure_eq (xs : Array α) (f : α → β) (stop : Nat)
-    (hstop : stop ≤ xs.size) (i : Nat) (values : Array β) :
-    mapChunkPure xs f stop hstop i values
+    (i : Nat) (values : Array β) :
+    mapChunkPure xs f stop i values
       = values ++ (xs.extract i stop).map f := by
   unfold mapChunkPure
-  split
-  next hi =>
-    rw [mapChunkPure_eq xs f stop hstop (i + 1)]
-    grind
-  next hi =>
-    grind
-termination_by stop - i
+  rw [Array.foldl_eq_foldl_extract]
+  grind
 
 /-- The pure reduce chunk loop is the left fold of the mapped slice. -/
 private theorem reduceChunkPure_eq (xs : Array α) (f : α → β)
-    (op : β → β → β) (stop : Nat) (hstop : stop ≤ xs.size) (i : Nat)
-    (acc : β) :
-    reduceChunkPure xs f op stop hstop i acc
+    (op : β → β → β) (stop : Nat) (i : Nat) (acc : β) :
+    reduceChunkPure xs f op stop i acc
       = ((xs.extract i stop).map f).foldl op acc := by
   unfold reduceChunkPure
-  split
-  next hi =>
-    rw [reduceChunkPure_eq xs f op stop hstop (i + 1),
-      show xs.extract i stop = #[xs[i]] ++ xs.extract (i + 1) stop from by grind]
-    simp
-  next hi =>
-    rw [show xs.extract i stop = #[] from by grind]
-    simp
-termination_by stop - i
+  rw [Array.foldl_eq_foldl_extract]
+  grind [Array.foldl_map]
 
 /-- The serial fast path of `mapImpl` is the specification. -/
 private theorem mapChunkPure_full (xs : Array α) (f : α → β) :
-    mapChunkPure xs f xs.size (Nat.le_refl _) 0 (Array.mkEmpty xs.size)
+    mapChunkPure xs f xs.size 0 (Array.mkEmpty xs.size)
       = xs.map f := by
-  rw [mapChunkPure_eq]
-  simp
+  simp [mapChunkPure_eq]
 
 /-- The serial fast path of `mapReduceImpl` is the specification's fused
 left fold. -/
 private theorem reduceChunkPure_full (xs : Array α) (f : α → β)
     (op : β → β → β) (init : β) :
-    reduceChunkPure xs f op xs.size (Nat.le_refl _) 0 init
+    reduceChunkPure xs f op xs.size 0 init
       = (xs.map f).foldl op init := by
-  rw [reduceChunkPure_eq]
-  simp
-
-/-- Folding from a shifted accumulator commutes with an associative
-operation: the algebraic core of combining chunk partials in input order. -/
-private theorem foldl_assoc_shift (op : β → β → β) [Std.Associative op]
-    (l : List β) (a b : β) :
-    l.foldl op (op a b) = op a (l.foldl op b) := by
-  induction l generalizing b with
-  | nil => rfl
-  | cons x xs ih =>
-    calc (x :: xs).foldl op (op a b)
-        = xs.foldl op (op (op a b) x) := rfl
-      _ = xs.foldl op (op a (op b x)) := by
-            rw [Std.Associative.assoc (op := op)]
-      _ = op a ((x :: xs).foldl op b) := ih (op b x)
+  simp [reduceChunkPure_eq]
 
 /-- Regrouping lemma for `mapReduce`: folding seeded chunk partials in input
 order equals folding all elements, given associativity. Each chunk is
@@ -716,8 +728,546 @@ private theorem foldl_seeded_partials (op : β → β → β) [Std.Associative o
   | cons c cs ih =>
     simp only [List.map_cons, List.foldl_cons, List.flatten_cons,
       List.foldl_append]
-    rw [← foldl_assoc_shift op c.2 init c.1]
+    rw [← List.foldl_assoc (op := op) (l := c.2) (a₁ := init) (a₂ := c.1)]
     exact ih _
+
+/-! Rungs 3-4 of the correspondence ladder: well-formed worker output, and
+the pure assembly lemmas showing ordered chunk slices reconstruct the
+specification. -/
+
+/-- The mapped slice of the chunk starting at `s`. -/
+private def chunkSlice (xs : Array α) (f : α → β) (chunkSize s : Nat) :
+    Array β :=
+  (xs.extract s (min (s + chunkSize) xs.size)).map f
+
+/-- Well-formed output of one worker, parameterised by the `piece` each
+recorded start contributes: starts are chunk-aligned and below `bound`, and
+the value buffer is exactly the concatenated pieces of the recorded runs,
+in claim order. `map` instantiates `piece` with the mapped chunk slice; a
+reducing worker instantiates it with the singleton chunk partial, sharing
+this placement and extraction theory. -/
+private structure WFWorkerOut (piece : Nat → Array β)
+    (chunkSize bound : Nat) (out : Array β × Array Nat) : Prop where
+  aligned : ∀ start ∈ out.2.toList, start % chunkSize = 0 ∧ start < bound
+  values : out.1 = out.2.foldl (fun acc start => acc ++ piece start) #[]
+
+/-- A worker/run position whose recorded start is `start`. The output and
+both successful lookups travel with the indices, so consumers do not repeat
+Array/List lookup conversions. -/
+private structure RunAt (outs : List (Array β × Array Nat)) (start : Nat) where
+  worker : Nat
+  runIdx : Nat
+  out : Array β × Array Nat
+  worker_eq : outs[worker]? = some out
+  run_eq : out.2[runIdx]? = some start
+
+/-- An aligned run at ordinal `o` gives a `RunAt` witness for `o * c`. -/
+private theorem RunAt.exists_ofOrdinal (outs : List (Array β × Array Nat))
+    (c o s w k : Nat) (out : Array β × Array Nat)
+    (halign : ∀ out ∈ outs, ∀ start ∈ out.2.toList, start % c = 0)
+    (hworker : outs[w]? = some out) (hrun : out.2[k]? = some s)
+    (hso : s / c = o) :
+    ∃ run : RunAt outs (o * c), run.worker = w ∧ run.runIdx = k := by
+  have hmem : s ∈ out.2.toList := by
+    simpa using Array.mem_of_getElem? hrun
+  have hdiv := Nat.div_mul_cancel
+    (Nat.dvd_of_mod_eq_zero
+      (halign out (List.mem_of_getElem? hworker) s hmem))
+  have heq : s = o * c := by
+    rw [← hso]
+    exact hdiv.symm
+  exact ⟨⟨w, k, out, hworker, by simpa [heq] using hrun⟩, rfl, rfl⟩
+
+/-- Well-formed collective worker output, parameterised like
+`WFWorkerOut`: each worker is well formed and every chunk ordinal below the
+chunk count of `bound` is recorded exactly once across all workers. Worker
+count and claim order are otherwise unconstrained. The map correspondence
+instantiates `piece` with `chunkSlice xs f chunkSize` and `bound` with
+`xs.size`. -/
+private structure WFOuts (piece : Nat → Array β) (chunkSize bound : Nat)
+    (outs : Array (Array β × Array Nat)) : Prop where
+  chunkPos : 0 < chunkSize
+  workers : ∀ out ∈ outs.toList, WFWorkerOut piece chunkSize bound out
+  once : ∀ o < (bound + chunkSize - 1) / chunkSize,
+    ∃ run : RunAt outs.toList (o * chunkSize),
+      ∀ other : RunAt outs.toList (o * chunkSize),
+        other.worker = run.worker ∧ other.runIdx = run.runIdx
+
+/-- Concatenating the chunk slices of all ordinals in order reconstructs the
+mapped array. -/
+private theorem foldl_chunkSlice_range (xs : Array α) (f : α → β)
+    (chunkSize : Nat) (hchunk : 0 < chunkSize) :
+    (List.range ((xs.size + chunkSize - 1) / chunkSize)).foldl
+      (fun acc o => acc ++ chunkSlice xs f chunkSize (o * chunkSize)) #[]
+        = xs.map f := by
+  have aux : ∀ k : Nat,
+      (List.range k).foldl
+        (fun acc o => acc ++ chunkSlice xs f chunkSize (o * chunkSize)) #[]
+          = (xs.extract 0 (min (k * chunkSize) xs.size)).map f := by
+    intro k
+    induction k with
+    | zero => simp
+    | succ k ih =>
+      rw [List.range_succ, List.foldl_append]
+      simp only [List.foldl_cons, List.foldl_nil, ih]
+      unfold chunkSlice
+      rw [← Array.map_append]
+      congr 1
+      grind
+  rw [aux]
+  have hcover : xs.size ≤ (xs.size + chunkSize - 1) / chunkSize * chunkSize := by
+    have hdm := Nat.div_add_mod (xs.size + chunkSize - 1) chunkSize
+    have hlt := Nat.mod_lt (xs.size + chunkSize - 1) hchunk
+    grind
+  grind
+
+/-- Shifting a sum-fold's initial value out front. -/
+private theorem foldl_add_shift (g : Nat → Nat) (l : List Nat) (a : Nat) :
+    l.foldl (fun n s => n + g s) a = a + l.foldl (fun n s => n + g s) 0 := by
+  rw [← List.foldl_map (f := g) (g := (· + ·)),
+    ← List.foldl_map (f := g) (g := (· + ·)),
+    ← Nat.add_zero a, List.foldl_assoc, Nat.add_zero]
+
+/-- Appending more blocks to a buffer does not disturb an extraction that
+lies within the existing prefix. -/
+private theorem extract_foldl_append_of_le (g : Nat → Array β)
+    (l : List Nat) (b : Array β) (i j : Nat) (hj : j ≤ b.size) :
+    (l.foldl (fun acc s => acc ++ g s) b).extract i j = b.extract i j := by
+  induction l generalizing b with
+  | nil => rfl
+  | cons x xs ih =>
+    have hj' : j ≤ (b ++ g x).size := by grind
+    rw [List.foldl_cons, ih (b ++ g x) hj']
+    grind
+
+/-- `pushRange` appends exactly the extracted segment. -/
+private theorem pushRange_eq (values : Array β) (stop j : Nat)
+    (r : Array β) :
+    pushRange values stop j r = r ++ values.extract j stop := by
+  unfold pushRange
+  rw [Array.foldl_eq_foldl_extract]
+  simpa using (Array.foldl_push_eq_append
+    (as := values.extract j stop) (bs := r) (f := id) rfl)
+
+/-- Extracting a run's block from a well-formed buffer at its prefix-sum
+offset yields exactly that run's piece: the pure content of `merge`'s
+per-ordinal copy, given `WFWorkerOut.values`. Stated for an arbitrary
+per-start `piece`, so the map and reduce instantiations share it. -/
+private theorem extract_foldl_pieces (piece : Nat → Array β)
+    (starts : List Nat) (k : Nat) (hk : k < starts.length)
+    (acc : Array β) :
+    ((starts.foldl (fun b s => b ++ piece s) acc).extract
+        (acc.size
+          + (starts.take k).foldl (fun n s => n + (piece s).size) 0)
+        (acc.size
+          + (starts.take k).foldl (fun n s => n + (piece s).size) 0
+          + (piece starts[k]).size))
+      = piece starts[k] := by
+  induction starts generalizing k acc with
+  | nil => exact absurd hk (by simp)
+  | cons s rest ih =>
+    match k with
+    | 0 =>
+      simp only [List.foldl_cons, List.take_zero, List.foldl_nil,
+        Nat.add_zero, List.getElem_cons_zero]
+      rw [extract_foldl_append_of_le _ rest (acc ++ piece s) acc.size
+        (acc.size + (piece s).size) (by grind)]
+      grind
+    | k + 1 =>
+      simp only [List.foldl_cons, List.take_succ_cons,
+        List.getElem_cons_succ]
+      rw [foldl_add_shift _ (List.take k rest)]
+      simpa [Array.size_append, Nat.add_assoc]
+        using ih k (Nat.lt_of_succ_lt_succ hk) (acc ++ piece s)
+
+/-- The ordinal loop is the fold of `mergeStep` over the remaining
+ordinals. -/
+private theorem mergeLoop_eq (outs : Array (Array β × Array Nat))
+    (slotWorker slotOffset : Array Nat) (size chunkSize cc ordinal : Nat)
+    (result : Array β) :
+    mergeLoop outs slotWorker slotOffset size chunkSize cc ordinal result
+      = (List.range' ordinal (cc - ordinal)).foldl
+          (fun r o => mergeStep outs slotWorker slotOffset size chunkSize o r)
+          result := by
+  unfold mergeLoop
+  split
+  next h =>
+    rw [mergeLoop_eq outs slotWorker slotOffset size chunkSize cc
+      (ordinal + 1)]
+    rw [show cc - ordinal = (cc - (ordinal + 1)) + 1 from by omega]
+    simp [List.range'_succ]
+  next h =>
+    rw [show cc - ordinal = 0 from by omega]
+    rfl
+termination_by cc - ordinal
+
+/-- `merge` as a pure fold over chunk ordinals. -/
+private theorem merge_eq_foldl (outs : Array (Array β × Array Nat))
+    (size chunkSize : Nat) :
+    merge outs size chunkSize
+      = (List.range ((size + chunkSize - 1) / chunkSize)).foldl
+          (fun r o =>
+            mergeStep outs
+              (placeChunks outs ((size + chunkSize - 1) / chunkSize) chunkSize
+                fun start => chunkSize.min (size - start)).1
+              (placeChunks outs ((size + chunkSize - 1) / chunkSize) chunkSize
+                fun start => chunkSize.min (size - start)).2
+              size chunkSize o r)
+          (Array.mkEmpty size) := by
+  rw [merge, mergeLoop_eq]
+  simp [List.range_eq_range']
+
+/-- Prefix sum of piece lengths over the first `k` recorded runs: the
+buffer offset `placeChunks` records for run `k`. -/
+private def prefixLen (lenOf : Nat → Nat) (starts : List Nat) (k : Nat) :
+    Nat :=
+  (starts.take k).foldl (fun n s => n + lenOf s) 0
+
+/-- Split a left fold at a successfully looked-up element. -/
+private theorem foldl_split_at (l : List α) (f : β → α → β) (init : β)
+    (i : Nat) (x : α) (h : l[i]? = some x) :
+    l.foldl f init = (l.drop (i + 1)).foldl f (f ((l.take i).foldl f init) x) := by
+  obtain ⟨hi, hval⟩ := List.getElem?_eq_some_iff.mp h
+  calc l.foldl f init
+      = (l.take i ++ x :: l.drop (i + 1)).foldl f init := by
+        rw [← hval, ← List.drop_eq_getElem_cons hi, List.take_append_drop]
+    _ = (l.drop (i + 1)).foldl f (f ((l.take i).foldl f init) x) := by
+        rw [List.foldl_append, List.foldl_cons]
+
+/-- One worker's placement fold preserves table sizes. -/
+private theorem placeRun_foldl_sizes (c : Nat) (lenOf : Nat → Nat)
+    (w : Nat) (starts : List Nat) (st : PlaceRun) :
+    ((starts.foldl (placeRun c lenOf w) st).slotWorker.size
+        = st.slotWorker.size)
+      ∧ ((starts.foldl (placeRun c lenOf w) st).slotOffset.size
+        = st.slotOffset.size) := by
+  induction starts generalizing st with
+  | nil => exact ⟨rfl, rfl⟩
+  | cons s rest ih =>
+    simpa [placeRun] using ih (placeRun c lenOf w st s)
+
+/-- Ordinals a worker never writes keep their table entries. -/
+private theorem placeRun_foldl_untouched (c : Nat) (lenOf : Nat → Nat)
+    (w : Nat) (starts : List Nat) (st : PlaceRun) (o : Nat)
+    (ho : ∀ s ∈ starts, s / c ≠ o) :
+    ((starts.foldl (placeRun c lenOf w) st).slotWorker[o]?
+        = st.slotWorker[o]?)
+      ∧ ((starts.foldl (placeRun c lenOf w) st).slotOffset[o]?
+        = st.slotOffset[o]?) := by
+  induction starts generalizing st with
+  | nil => exact ⟨rfl, rfl⟩
+  | cons s rest ih =>
+    have hne : s / c ≠ o := ho s (by simp)
+    have hrest := ih (placeRun c lenOf w st s)
+      (fun s' hs' => ho s' (by simp [hs']))
+    grind [placeRun]
+
+/-- The run at position `K` writes its owner and prefix-sum offset, and --
+given no other run of this worker shares the ordinal -- the entry
+survives to the end of the worker's fold. -/
+private theorem placeRun_foldl_written (c : Nat) (lenOf : Nat → Nat)
+    (w : Nat) (starts : List Nat) (st : PlaceRun) (o K : Nat)
+    (hK : K < starts.length)
+    (hKo : starts[K] / c = o)
+    (hbw : o < st.slotWorker.size)
+    (hbo : o < st.slotOffset.size)
+    (huniq : ∀ k' (hk' : k' < starts.length),
+      starts[k'] / c = o → k' = K) :
+    ((starts.foldl (placeRun c lenOf w) st).slotWorker[o]?
+        = some (w + 1))
+      ∧ ((starts.foldl (placeRun c lenOf w) st).slotOffset[o]?
+        = some (st.offset + prefixLen lenOf starts K)) := by
+  induction starts generalizing st K with
+  | nil => exact absurd hK (by simp)
+  | cons s rest ih =>
+    match K with
+    | 0 =>
+      have hso : s / c = o := by simpa using hKo
+      have hrest : ∀ s' ∈ rest, s' / c ≠ o := by
+        intro s' hs' heq
+        obtain ⟨k', hk', hs'k⟩ := List.mem_iff_getElem.mp hs'
+        have h := huniq (k' + 1) (by simpa using Nat.succ_lt_succ hk')
+          (by simpa [hs'k] using heq)
+        omega
+      have hu := placeRun_foldl_untouched c lenOf w rest
+        (placeRun c lenOf w st s) o hrest
+      rw [List.foldl_cons]
+      grind [placeRun, prefixLen]
+    | K + 1 =>
+      have hKr : K < rest.length := by simpa using Nat.lt_of_succ_lt_succ hK
+      have hidx : ((s :: rest)[K + 1] : Nat) = rest[K] := by simp
+      have hbw' : o < (placeRun c lenOf w st s).slotWorker.size := by
+        simpa [placeRun] using hbw
+      have hbo' : o < (placeRun c lenOf w st s).slotOffset.size := by
+        simpa [placeRun] using hbo
+      have hrec := ih (placeRun c lenOf w st s) K hKr
+        (by simpa [hidx] using hKo) hbw' hbo'
+        (fun k' hk' heq => by
+          have h := huniq (k' + 1) (by simpa using Nat.succ_lt_succ hk') heq
+          omega)
+      constructor
+      · rw [List.foldl_cons]
+        exact hrec.1
+      · rw [List.foldl_cons, hrec.2]
+        congr 1
+        simp only [placeRun, prefixLen, List.take_succ_cons,
+          List.foldl_cons, Nat.zero_add]
+        rw [foldl_add_shift lenOf (List.take K rest) (lenOf s)]
+        omega
+
+/-- The worker index advances once per worker. -/
+private theorem placeWorker_foldl_worker (c : Nat) (lenOf : Nat → Nat)
+    (outsL : List (Array β × Array Nat)) (st : PlaceAll) :
+    (outsL.foldl (placeWorker c lenOf) st).worker
+      = st.worker + outsL.length := by
+  induction outsL generalizing st with
+  | nil => rfl
+  | cons out rest ih =>
+    rw [List.foldl_cons, ih]
+    simp [placeWorker]
+    omega
+
+/-- The worker fold preserves table sizes. -/
+private theorem placeWorker_foldl_sizes (c : Nat) (lenOf : Nat → Nat)
+    (outsL : List (Array β × Array Nat)) (st : PlaceAll) :
+    ((outsL.foldl (placeWorker c lenOf) st).slotWorker.size
+        = st.slotWorker.size)
+      ∧ ((outsL.foldl (placeWorker c lenOf) st).slotOffset.size
+        = st.slotOffset.size) := by
+  induction outsL generalizing st with
+  | nil => exact ⟨rfl, rfl⟩
+  | cons out rest ih =>
+    have hin := placeRun_foldl_sizes c lenOf st.worker out.2.toList
+      { offset := 0, slotWorker := st.slotWorker,
+        slotOffset := st.slotOffset }
+    have hrec := ih (placeWorker c lenOf st out)
+    rw [List.foldl_cons]
+    grind [placeWorker]
+
+/-- Workers that never record ordinal `o` leave its table entries alone. -/
+private theorem placeWorker_foldl_untouched (c : Nat) (lenOf : Nat → Nat)
+    (outsL : List (Array β × Array Nat)) (st : PlaceAll) (o : Nat)
+    (ho : ∀ out ∈ outsL, ∀ s ∈ out.2.toList, s / c ≠ o) :
+    ((outsL.foldl (placeWorker c lenOf) st).slotWorker[o]?
+        = st.slotWorker[o]?)
+      ∧ ((outsL.foldl (placeWorker c lenOf) st).slotOffset[o]?
+        = st.slotOffset[o]?) := by
+  induction outsL generalizing st with
+  | nil => exact ⟨rfl, rfl⟩
+  | cons out rest ih =>
+    have hin := placeRun_foldl_untouched c lenOf st.worker out.2.toList
+      { offset := 0, slotWorker := st.slotWorker,
+        slotOffset := st.slotOffset } o (ho out (by simp))
+    have hrec := ih (placeWorker c lenOf st out)
+      (fun out' hout' => ho out' (by simp [hout']))
+    rw [List.foldl_cons]
+    grind [placeWorker]
+
+/-- Proof-carrying form of table correctness. `RunAt` packages the owner and
+run lookups; splitting at that owner leaves only the suffix non-overwrite
+argument. -/
+private theorem placeWorker_foldl_spec (c : Nat) (lenOf : Nat → Nat)
+    (outsL : List (Array β × Array Nat)) (st : PlaceAll) (o : Nat)
+    (target : RunAt outsL (o * c))
+    (hc : 0 < c)
+    (hbw : o < st.slotWorker.size) (hbo : o < st.slotOffset.size)
+    (halign : ∀ out ∈ outsL, ∀ s ∈ out.2.toList, s % c = 0)
+    (huniq : ∀ other : RunAt outsL (o * c),
+      other.worker = target.worker ∧ other.runIdx = target.runIdx) :
+    ((outsL.foldl (placeWorker c lenOf) st).slotWorker[o]?
+        = some (st.worker + target.worker + 1))
+      ∧ ((outsL.foldl (placeWorker c lenOf) st).slotOffset[o]?
+        = some (prefixLen lenOf target.out.2.toList target.runIdx)) := by
+  have hW := (List.getElem?_eq_some_iff.mp target.worker_eq).1
+  let before := (outsL.take target.worker).foldl (placeWorker c lenOf) st
+  have hbeforeWorker : before.worker = st.worker + target.worker := by
+    rw [show before.worker = st.worker + (outsL.take target.worker).length from
+      placeWorker_foldl_worker c lenOf (outsL.take target.worker) st]
+    rw [List.length_take_of_le (Nat.le_of_lt hW)]
+  have hbeforeSizes :=
+    placeWorker_foldl_sizes c lenOf (outsL.take target.worker) st
+  have hbw' : o < before.slotWorker.size := by
+    rw [hbeforeSizes.1]
+    exact hbw
+  have hbo' : o < before.slotOffset.size := by
+    rw [hbeforeSizes.2]
+    exact hbo
+  obtain ⟨hK, hKval⟩ := Array.getElem?_eq_some_iff.mp target.run_eq
+  have hKl : target.runIdx < target.out.2.toList.length := by simpa using hK
+  have hKo : target.out.2.toList[target.runIdx] / c = o := by
+    rw [show target.out.2.toList[target.runIdx] = o * c from by simpa using hKval]
+    exact Nat.mul_div_cancel o hc
+  have hinner : ∀ k (hk : k < target.out.2.toList.length),
+      target.out.2.toList[k] / c = o → k = target.runIdx := by
+    intro k hk heq
+    have hrun : target.out.2[k]? = some target.out.2.toList[k] := by
+      rw [← Array.getElem?_toList, List.getElem?_eq_getElem hk]
+    obtain ⟨other, _, hk⟩ := RunAt.exists_ofOrdinal outsL c o _
+      target.worker k target.out halign target.worker_eq hrun heq
+    have hother := (huniq other).2
+    omega
+  have hwritten := placeRun_foldl_written c lenOf before.worker
+    target.out.2.toList
+    { offset := 0, slotWorker := before.slotWorker,
+      slotOffset := before.slotOffset }
+    o target.runIdx hKl hKo hbw' hbo' hinner
+  let afterOwner := placeWorker c lenOf before target.out
+  have howner : afterOwner.slotWorker[o]? = some (before.worker + 1)
+      ∧ afterOwner.slotOffset[o]?
+        = some (prefixLen lenOf target.out.2.toList target.runIdx) := by
+    simpa [afterOwner, placeWorker, Array.foldl_toList] using hwritten
+  have hafter : ∀ out ∈ outsL.drop (target.worker + 1),
+      ∀ s ∈ out.2.toList, s / c ≠ o := by
+    intro out hout s hs hso
+    obtain ⟨w, hw, houtval⟩ := List.mem_iff_getElem.mp hout
+    obtain ⟨k, hk, hsval⟩ := List.mem_iff_getElem.mp hs
+    have hworker : outsL[target.worker + 1 + w]? = some out := by
+      rw [← List.getElem?_drop]
+      exact houtval ▸ List.getElem?_eq_getElem hw
+    have hrun : out.2[k]? = some s := by
+      rw [← Array.getElem?_toList, List.getElem?_eq_getElem hk, hsval]
+    obtain ⟨other, hwEq, _⟩ := RunAt.exists_ofOrdinal outsL c o s
+      (target.worker + 1 + w) k out halign hworker hrun hso
+    have heq := (huniq other).1
+    omega
+  have hu := placeWorker_foldl_untouched c lenOf
+    (outsL.drop (target.worker + 1)) afterOwner o hafter
+  rw [foldl_split_at outsL (placeWorker c lenOf) st
+    target.worker target.out target.worker_eq]
+  exact ⟨by rw [hu.1, howner.1, hbeforeWorker], by rw [hu.2, howner.2]⟩
+
+/-- `placeChunks` computes the owner and prefix-sum tables from any
+uniquely-claimed, aligned worker output: the array-level table
+correctness. -/
+private theorem placeChunks_spec (outs : Array (Array β × Array Nat))
+    (cc c : Nat) (lenOf : Nat → Nat) (o : Nat)
+    (target : RunAt outs.toList (o * c))
+    (hc : 0 < c) (hocc : o < cc)
+    (halign : ∀ out ∈ outs.toList, ∀ s ∈ out.2.toList, s % c = 0)
+    (huniq : ∀ other : RunAt outs.toList (o * c),
+      other.worker = target.worker ∧ other.runIdx = target.runIdx) :
+    ((placeChunks outs cc c lenOf).1[o]? = some (target.worker + 1))
+      ∧ ((placeChunks outs cc c lenOf).2[o]?
+        = some (prefixLen lenOf target.out.2.toList target.runIdx)) := by
+  have hspec := placeWorker_foldl_spec c lenOf outs.toList
+    { worker := 0, slotWorker := Array.replicate cc 0,
+      slotOffset := Array.replicate cc 0 } o target hc
+    (by simpa using hocc) (by simpa using hocc) (by simpa using halign) huniq
+  unfold placeChunks
+  rw [← Array.foldl_toList]
+  exact ⟨by simpa using hspec.1, hspec.2⟩
+
+/-- Pointwise-equal step functions fold equally. -/
+private theorem foldl_congr_mem {σ δ : Type _} (l : List σ)
+    (f g : δ → σ → δ)
+    (h : ∀ x ∈ l, ∀ r, f r x = g r x) (init : δ) :
+    l.foldl f init = l.foldl g init := by
+  induction l generalizing init with
+  | nil => rfl
+  | cons x xs ih =>
+    rw [List.foldl_cons, List.foldl_cons, h x (by simp),
+      ih (fun x' hx' r => h x' (by simp [hx']) r)]
+
+/-- Sums of piece sizes agree with any length function that matches on the
+summed runs. -/
+private theorem prefixLen_congr (g₁ g₂ : Nat → Nat) (starts : List Nat)
+    (K : Nat) (h : ∀ s ∈ starts, g₁ s = g₂ s) :
+    prefixLen g₁ starts K = prefixLen g₂ starts K :=
+  foldl_congr_mem _ _ _
+    (fun s hs n => by rw [h s (List.mem_of_mem_take hs)]) 0
+
+/-- A successful `getElem?` lookup determines the panicking access. -/
+private theorem getElem!_of_getElem? [Inhabited δ] {xs : Array δ}
+    {i : Nat} {v : δ} (h : xs[i]? = some v) : xs[i]! = v := by
+  obtain ⟨hlt, hval⟩ := Array.getElem?_eq_some_iff.mp h
+  rw [getElem!_pos _ i hlt]
+  exact hval
+
+/-- The size of a chunk slice, for offset bookkeeping. -/
+private theorem chunkSlice_size (xs : Array α) (f : α → β)
+    (chunkSize s : Nat) :
+    (chunkSlice xs f chunkSize s).size = min (s + chunkSize) xs.size - s := by
+  unfold chunkSlice
+  simp
+
+/-- The chunk slice's size equals `merge`'s length function on in-range
+starts. -/
+private theorem chunkSlice_size_eq (xs : Array α) (f : α → β)
+    (chunkSize s : Nat) (hs : s < xs.size) :
+    (chunkSlice xs f chunkSize s).size = chunkSize.min (xs.size - s) := by
+  rw [chunkSlice_size]
+  simp only [Nat.min_def]
+  split <;> split <;> omega
+
+/-- At an ordinal carried by `target`, `merge`'s step appends exactly that
+run's chunk slice. -/
+private theorem mergeStep_owned (xs : Array α) (f : α → β) (c : Nat)
+    (outs : Array (Array β × Array Nat)) (o : Nat)
+    (target : RunAt outs.toList (o * c))
+    (h : WFOuts (chunkSlice xs f c) c xs.size outs)
+    (hocc : o < (xs.size + c - 1) / c)
+    (huniq : ∀ other : RunAt outs.toList (o * c),
+      other.worker = target.worker ∧ other.runIdx = target.runIdx)
+    (r : Array β) :
+    mergeStep outs
+      (placeChunks outs ((xs.size + c - 1) / c) c
+        fun start => c.min (xs.size - start)).1
+      (placeChunks outs ((xs.size + c - 1) / c) c
+        fun start => c.min (xs.size - start)).2
+      xs.size c o r
+      = r ++ chunkSlice xs f c (o * c) := by
+  have hmem : target.out ∈ outs.toList :=
+    List.mem_of_getElem? target.worker_eq
+  have hownA : outs[target.worker]? = some target.out := by
+    simpa using target.worker_eq
+  have hwf := h.workers target.out hmem
+  have halign : ∀ out ∈ outs.toList, ∀ s ∈ out.2.toList, s % c = 0 :=
+    fun out hout s hs => ((h.workers out hout).aligned s hs).1
+  have hspec := placeChunks_spec outs ((xs.size + c - 1) / c) c
+    (fun start => c.min (xs.size - start)) o target h.chunkPos hocc
+    halign huniq
+  obtain ⟨hKlt, hKeq⟩ := Array.getElem?_eq_some_iff.mp target.run_eq
+  have hKl : target.runIdx < target.out.2.toList.length := by simpa using hKlt
+  have hstart_mem : (o * c) ∈ target.out.2.toList := by
+    simpa using Array.mem_of_getElem? target.run_eq
+  have hstart_lt : o * c < xs.size := (hwf.aligned _ hstart_mem).2
+  have hlen : ∀ s ∈ target.out.2.toList,
+      (fun start => c.min (xs.size - start)) s
+        = ((chunkSlice xs f c ·) s).size := by
+    intro s hs
+    exact (chunkSlice_size_eq xs f c s (hwf.aligned s hs).2).symm
+  have h1 := getElem!_of_getElem? hspec.1
+  have h2 := (getElem!_of_getElem? hspec.2).trans
+    (prefixLen_congr _ _ target.out.2.toList target.runIdx hlen)
+  have hKtl : target.out.2.toList[target.runIdx] = o * c := by
+    simpa using hKeq
+  unfold mergeStep
+  rw [h1, h2]
+  simp only [Nat.add_sub_cancel, hownA,
+    show (target.worker + 1 == 0) = false from rfl,
+    Bool.false_eq_true, if_false]
+  rw [pushRange_eq, hwf.values, ← Array.foldl_toList]
+  congr 1
+  have hpieces := extract_foldl_pieces (chunkSlice xs f c ·)
+    target.out.2.toList target.runIdx hKl #[]
+  simpa only [prefixLen, Array.size_empty, Nat.zero_add, hKtl,
+    ← chunkSlice_size_eq xs f c (o * c) hstart_lt] using hpieces
+
+/-- Rung 4 closed for `map`: from any well-formed worker output, `merge`
+reconstructs the specification, so worker count and claim order cannot
+affect the result. -/
+private theorem merge_wf (xs : Array α) (f : α → β) (chunkSize : Nat)
+    (outs : Array (Array β × Array Nat))
+    (h : WFOuts (chunkSlice xs f chunkSize) chunkSize xs.size outs) :
+    merge outs xs.size chunkSize = xs.map f := by
+  rw [merge_eq_foldl, Array.mkEmpty_eq,
+    ← foldl_chunkSlice_range xs f chunkSize h.chunkPos]
+  refine foldl_congr_mem _ _ _ ?_ #[]
+  intro o ho r
+  have hocc : o < (xs.size + chunkSize - 1) / chunkSize :=
+    List.mem_range.mp ho
+  obtain ⟨target, huniq⟩ := h.once o hocc
+  exact mergeStep_owned xs f chunkSize outs o target h hocc huniq r
 
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
