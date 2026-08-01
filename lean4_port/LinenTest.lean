@@ -34,6 +34,13 @@ def combinatorTests (c : Counter) : IO Unit := do
   expect c "map nested wide" (wide == wideSeq)
   let monadic ← Linen.mapIO inputs fun i => pure (i * 3)
   expect c "mapIO ordered" (monadic == inputs.map (· * 3))
+  expect c "map empty" (Linen.map (#[] : Array Nat) (· + 1) == #[])
+  expect c "map singleton" (Linen.map #[7] (· * 2) == #[14])
+  for chunk in [1, 3, 300] do
+    expect c s!"map small c={chunk}"
+      (Linen.map #[1, 2, 3] (· + 10) (chunkSize := chunk) == #[11, 12, 13])
+  expect c "map serial (chunk beyond size)"
+    (Linen.map inputs (· * 7) (chunkSize := 1000) == inputs.map (· * 7))
 
 def reduceTests (c : Counter) : IO Unit := do
   let inputs := Array.range 257
@@ -47,6 +54,8 @@ def reduceTests (c : Counter) : IO Unit := do
   let monadic ← Linen.mapReduceM inputs (fun i => pure (i * 3)) (· + ·) 0
   expect c "mapReduceM sum" (monadic == (inputs.map (· * 3)).foldl (· + ·) 0)
   expect c "mapReduce empty" (Linen.mapReduce #[] (fun i => [i]) (· ++ ·) [7] == [7])
+  expect c "mapReduce singleton non-commutative"
+    (Linen.mapReduce #[5] (fun i => [i]) (· ++ ·) [1] == [1, 5])
 
 def errorTests (c : Counter) : IO Unit := do
   let captureFirstError : IO String := do

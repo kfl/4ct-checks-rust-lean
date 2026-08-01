@@ -544,7 +544,10 @@ private unsafe def mapImpl.{u, v} {α : Type u} {β : Type v}
     (xs : Array α) (f : α → β) (chunkSize : Nat := 1) : Array β :=
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
-    xs.map f
+    -- Serial fast path through the unchecked chunk loop: the erased bound
+    -- proof removes per-element bounds checks, and with `stop = xs.size`
+    -- the loop is exactly `xs.map f`.
+    mapChunkPure xs f xs.size (Nat.le_refl _) 0 (Array.mkEmpty xs.size)
   else
     -- `unsafeBaseIO` is justified because `f` is pure and the result does not
     -- depend on scheduling. The `NonScalar` casts bridge `BaseIO`'s `Type 0`
@@ -575,8 +578,11 @@ private unsafe def mapReduceImpl.{u, v} {α : Type u} {β : Type v}
     (chunkSize : Nat := 1) [Std.Associative op] : β :=
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
-    -- Serial fast path avoids task setup and intermediate partials.
-    xs.foldl (fun acc x => op acc (f x)) init
+    -- Serial fast path through the unchecked chunk loop: no task setup, no
+    -- intermediate partials, no per-element bounds checks, and with
+    -- `stop = xs.size` the loop is exactly the fused left fold of the
+    -- specification.
+    reduceChunkPure xs f op xs.size (Nat.le_refl _) 0 init
   else
     -- The same trust boundary as `mapImpl`; `op` and `init` are also cast
     -- through `NonScalar`.

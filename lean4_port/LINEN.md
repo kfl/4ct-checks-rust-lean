@@ -53,7 +53,10 @@ amortise claim overhead. The default is one.
 
 Pure `Linen.map` is defined as `xs.map f` and installs the parallel executor
 through `implemented_by`. Proofs therefore see the serial specification while
-compiled programs use the parallel implementation.
+compiled programs use the parallel implementation. The serial fast paths (one
+worker configured, or the whole input within one chunk) run the same
+unchecked chunk loops as the parallel workers, so single-threaded and
+small-array calls avoid both task setup and per-element bounds checks.
 
 `Linen.mapIO` stops its failing chunk and further claims in that region, lets
 other claimed chunks finish, and rethrows the failure with the lowest input
@@ -181,12 +184,6 @@ two efficiency cores, so the ten-worker results include the slower cores.
       effects where needed.
 - [ ] Prove the slot-budget and release invariants, and liveness of nested
       region growth and joins.
-- [ ] Amortise fine-grained claim overhead. The shared cursor makes `c=1`
-      collapse on cheap elements as worker count grows, while the best fixed
-      claim size depends on the workload and machine. Evaluate guided decay --
-      large early claims followed by a finer tail -- with run descriptors for
-      variable-size merging. The occupancy budget already handles team sizing,
-      so this is a separate claim-granularity problem.
 - [ ] Deferred design note -- fair slot handoff. The attempt-frequency bias
       is real (draining-matched), but the v1 FIFO-queue handoff collapsed
       Linen's slot-turnover loop and was reverted; the runs journal records
@@ -210,10 +207,6 @@ two efficiency cores, so the ten-worker results include the slower cores.
       geometry and opposite profitability, so a fix requires an explicit
       granularity hint or an online work-first policy. Deliberately
       deferred.
-- [ ] Route the pure runtimes' serial fast paths through the unchecked chunk
-      loops. Generic closure calls make a trivial fused fold about 40x slower
-      than a literal fold on the M1 and 110x slower on MODI; the exact factor is
-      machine-dependent, but the order-of-magnitude gap is not.
 - [ ] Isolate the `mapIO` success-path overhead. A trivial `IO` mapper remains
       slower than its serial control at every measured width; separate the
       costs of the generic monadic worker, error bookkeeping, and ordered
