@@ -1884,6 +1884,258 @@ private theorem foldl_keepLower_min {n : Nat} (l : List (Fin n × ε))
   exact huniq _ List.minOn_mem <| Fin.le_antisymm
     (List.apply_minOn_le_of_mem hmem) (hmin _ List.minOn_mem)
 
+/-! ## Fallible-schedule replay
+
+The fallible path's error selection, moved from prose to kernel: with
+claims made in ascending ordinal order, the claimed ordinals form a
+prefix of the chunk ordinals, so the chunk containing the least failing
+input index is always claimed, and its worker runs it to that failure.
+Its report reaches the register, and `foldl_keepLower_min` selects it. -/
+
+/-- The chunk ordinal containing input index `j`. -/
+private noncomputable def Chunking.ordinalOf {n : Nat}
+    (ck : Chunking n) (j : Fin n) :
+    ck.Ordinal :=
+  ⟨j.1 / ck.chunkSize, by
+    have hn : 0 < n := j.pos
+    rw [ck.count_eq,
+      show n + ck.chunkSize - 1 = n - 1 + ck.chunkSize by omega,
+      Nat.add_div_right (n - 1) ck.pos]
+    exact Nat.lt_succ_of_le (Nat.div_le_div_right (by omega))⟩
+
+/-- An index lies within its own chunk. -/
+private theorem Chunking.ordinalOf_mem {n : Nat} (ck : Chunking n)
+    (j : Fin n) :
+    ck.start (ck.ordinalOf j) ≤ j.1
+      ∧ j.1 < ck.stop (ck.ordinalOf j) (ck.start (ck.ordinalOf j)) rfl := by
+  refine ⟨Nat.div_mul_le_self j.1 ck.chunkSize, ?_⟩
+  show j.1 < (j.1 / ck.chunkSize * ck.chunkSize + ck.chunkSize).min n
+  refine Nat.lt_min.mpr ⟨?_, j.2⟩
+  have hmod := Nat.mod_lt j.1 ck.pos
+  have hdiv := Nat.div_add_mod' j.1 ck.chunkSize
+  omega
+
+/-- An index inside a chunk belongs to that chunk. -/
+private theorem Chunking.ordinalOf_eq {n : Nat} (ck : Chunking n)
+    {j : Fin n} {o : ck.Ordinal}
+    (hle : ck.start o ≤ j.1)
+    (hlt : j.1 < ck.stop o (ck.start o) rfl) :
+    ck.ordinalOf j = o := by
+  apply Fin.ext
+  apply Nat.div_eq_of_lt_le hle
+  rw [Nat.succ_mul]
+  exact Nat.lt_of_lt_of_le hlt (Nat.min_le_left _ _)
+
+/-- Chunk ordinals are monotone in the input index. -/
+private theorem Chunking.ordinalOf_mono {n : Nat} (ck : Chunking n)
+    {j j' : Fin n} (h : j ≤ j') :
+    (ck.ordinalOf j).1 ≤ (ck.ordinalOf j').1 :=
+  Nat.div_le_div_right h
+
+/-- A fallible chunk's reported failure is a real failure inside the
+chunk. -/
+private theorem runChunkSpec_failure (n : Nat)
+    (outcome : Fin n → Except ε β) (stop : Nat) (hstop : stop ≤ n)
+    (i : Nat) (values : Array β) (j : Fin n) (e : ε)
+    (h : (runChunkSpec n outcome stop hstop i values).2 = some (j, e)) :
+    outcome j = .error e ∧ i ≤ j.1 ∧ j.1 < stop := by
+  revert h
+  fun_induction runChunkSpec <;> grind only [= Lean.Grind.toInt_fin]
+
+/-- If `j₀` is the chunk's least failing index, the chunk reports it. -/
+private theorem runChunkSpec_least_failure (n : Nat)
+    (outcome : Fin n → Except ε β) (stop : Nat) (hstop : stop ≤ n)
+    (i : Nat) (values : Array β) (j₀ : Fin n) (e : ε)
+    (hij : i ≤ j₀.1) (hjs : j₀.1 < stop)
+    (hfail : outcome j₀ = .error e)
+    (hbelow : ∀ (j : Fin n) (e : ε), i ≤ j.1 → j.1 < j₀.1 →
+      outcome j = .error e → False) :
+    (runChunkSpec n outcome stop hstop i values).2 = some (j₀, e) := by
+  revert hij hbelow
+  fun_induction runChunkSpec <;> grind only [= Lean.Grind.toInt_fin]
+
+/-- One chunk's reported failure under `outcome`: its least failing
+index, if any. -/
+private noncomputable def chunkFailure {n : Nat}
+    (outcome : Fin n → Except ε β) (ck : Chunking n) (o : ck.Ordinal) :
+    Option (Fin n × ε) :=
+  (runChunkSpec (β := β) n outcome (ck.stop o (ck.start o) rfl)
+    (ck.stop_le o (ck.start o) rfl) (ck.start o) #[]).2
+
+/-- A reported pair is a real failure in the reporting chunk. -/
+private theorem chunkFailure_some {n : Nat}
+    (outcome : Fin n → Except ε β) (ck : Chunking n) (o : ck.Ordinal)
+    (p : Fin n × ε) (h : chunkFailure outcome ck o = some p) :
+    outcome p.1 = .error p.2 ∧ ck.ordinalOf p.1 = o := by
+  have hp := runChunkSpec_failure n outcome _ _ _ _ p.1 p.2
+    (by simpa [chunkFailure] using h)
+  exact ⟨hp.1, ck.ordinalOf_eq hp.2.1 hp.2.2⟩
+
+/-- The chunk containing the least failing input reports that failure. -/
+private theorem chunkFailure_least {n : Nat}
+    (outcome : Fin n → Except ε β) (ck : Chunking n)
+    (j₀ : Fin n) (e₀ : ε) (hfail : outcome j₀ = .error e₀)
+    (hleast : ∀ (j : Fin n) (e : ε), outcome j = .error e → j₀ ≤ j) :
+    chunkFailure outcome ck (ck.ordinalOf j₀) = some (j₀, e₀) := by
+  have hbounds := ck.ordinalOf_mem j₀
+  exact runChunkSpec_least_failure n outcome _ _ _ _ j₀ e₀ hbounds.1 hbounds.2
+    hfail (fun j e _ hj hf => Fin.not_le.mpr hj (hleast j e hf))
+
+/-- One worker's fallible trace: the chunks it completed, in claim
+order, and its failing claim if one stopped it. -/
+private structure FallibleTrace {n : Nat} (ck : Chunking n) where
+  oks : Array ck.Ordinal
+  failed? : Option ck.Ordinal
+
+/-- All of a trace's claims, the failing one last. -/
+private noncomputable def FallibleTrace.claims {n : Nat} {ck : Chunking n}
+    (tr : FallibleTrace ck) : Array ck.Ordinal :=
+  match tr.failed? with
+  | some o => tr.oks.push o
+  | none => tr.oks
+
+/-- A trace's stopping claim occurs in its claim sequence. -/
+private theorem FallibleTrace.failed_mem_claims {n : Nat} {ck : Chunking n}
+    {tr : FallibleTrace ck} {o : ck.Ordinal} (h : tr.failed? = some o) :
+    o ∈ tr.claims := by
+  grind only [FallibleTrace.claims, = Array.mem_push]
+
+/-- A trace is faithful to a worker run: completed chunks did not fail,
+and the stopping claim did. -/
+private structure WFFallible {n : Nat} {ck : Chunking n}
+    (outcome : Fin n → Except ε β) (tr : FallibleTrace ck) : Prop where
+  oks_ok : ∀ o ∈ tr.oks, chunkFailure outcome ck o = none
+  failed_fails : ∀ o, tr.failed? = some o →
+    ∃ p, chunkFailure outcome ck o = some p
+
+/-- A claimed chunk that fails must be the trace's stopping claim. -/
+private theorem WFFallible.failed_eq_of_mem_claims {n : Nat}
+    {ck : Chunking n} {outcome : Fin n → Except ε β}
+    {tr : FallibleTrace ck} {o : ck.Ordinal}
+    (hwf : WFFallible outcome tr) (hmem : o ∈ tr.claims)
+    (hfail : chunkFailure outcome ck o ≠ none) :
+    tr.failed? = some o := by
+  grind only [WFFallible, FallibleTrace.claims, = Array.mem_push]
+
+/-- Whether an ordinal occurs anywhere in a schedule. Selection needs
+only this semantic view; worker positions matter only for uniqueness. -/
+private def Schedule.Claimed {n : Nat} {ck : Chunking n}
+    (sched : Schedule ck) (o : ck.Ordinal) : Prop :=
+  ∃ claims ∈ sched, o ∈ claims
+
+/-- Claimed ordinals in a mapped schedule, expressed at the source. -/
+private theorem Schedule.claimed_map {n : Nat} {ck : Chunking n}
+    {traces : Array α} {claims : α → Array ck.Ordinal} {o : ck.Ordinal} :
+    Schedule.Claimed (traces.map claims) o ↔
+      ∃ tr ∈ traces, o ∈ claims tr := by
+  grind only [Schedule.Claimed, = Array.mem_map]
+
+/-- Claims cover a prefix of the ordinals: with an ascending claim
+cursor, whatever point poisoning stops the claims at, everything below
+it was claimed. Error selection needs no worker/position uniqueness. -/
+private structure Schedule.Prefix {n : Nat} {ck : Chunking n}
+    (sched : Schedule ck) (m : Nat) : Prop where
+  limit : m ≤ ck.count
+  cover : ∀ o : ck.Ordinal, o.1 < m → sched.Claimed o
+  bound : ∀ o : ck.Ordinal, sched.Claimed o → o.1 < m
+
+/-- The failure reports of all traces. -/
+private noncomputable def failureReports {n : Nat} {ck : Chunking n}
+    (outcome : Fin n → Except ε β) (traces : Array (FallibleTrace ck)) :
+    List (Fin n × ε) :=
+  traces.toList.filterMap fun tr =>
+    tr.failed?.bind (chunkFailure outcome ck)
+
+/-- Membership in `failureReports`, without exposing its collection
+encoding to consumers. -/
+private theorem mem_failureReports {n : Nat} {ck : Chunking n}
+    {outcome : Fin n → Except ε β} {traces : Array (FallibleTrace ck)}
+    {p : Fin n × ε} :
+    p ∈ failureReports outcome traces ↔
+      ∃ tr ∈ traces, ∃ o,
+        tr.failed? = some o ∧ chunkFailure outcome ck o = some p := by
+  simp only [failureReports, List.mem_filterMap, Array.mem_toList_iff,
+    Option.bind_eq_some_iff]
+
+/-- High-level model of a failed parallel region. Claimed chunks form
+`[0, claimed)`; every report is an actual failure in that prefix, and
+every failing claimed chunk is reported. Report order, multiplicity, and
+worker placement are deliberately absent from the invariants. -/
+private structure FailedRun {n : Nat}
+    (outcome : Fin n → Except ε β) (ck : Chunking n) where
+  claimed : Fin (ck.count + 1)
+  reports : List (Fin n × ε)
+  report_sound : ∀ p ∈ reports,
+    outcome p.1 = .error p.2 ∧ (ck.ordinalOf p.1).1 < claimed.1
+  report_complete : ∀ o : ck.Ordinal, o.1 < claimed.1 →
+    ∀ p, chunkFailure outcome ck o = some p → p ∈ reports
+  hasReport : ∃ p, p ∈ reports
+
+/-- A failed run selects the globally least callback failure, independent
+of report order. -/
+private theorem FailedRun.selectsLeast {n : Nat} {ck : Chunking n}
+    {outcome : Fin n → Except ε β} (run : FailedRun outcome ck)
+    (j₀ : Fin n) (e₀ : ε) (hfail : outcome j₀ = .error e₀)
+    (hleast : ∀ (j : Fin n) (e : ε), outcome j = .error e → j₀ ≤ j) :
+    run.reports.foldl keepLower none = some (j₀, e₀) := by
+  obtain ⟨p, hp⟩ := run.hasReport
+  have hs := run.report_sound p hp
+  have hmono := ck.ordinalOf_mono (hleast p.1 p.2 hs.1)
+  have hj : (ck.ordinalOf j₀).1 < run.claimed.1 := by
+    grind only
+  have hmem := run.report_complete (ck.ordinalOf j₀) hj (j₀, e₀)
+    (chunkFailure_least outcome ck j₀ e₀ hfail hleast)
+  exact foldl_keepLower_min _ j₀ e₀ hmem
+    (fun q hq => hleast q.1 q.2 (run.report_sound q hq).1)
+    (fun q hq hjq => by
+      have hq' := (run.report_sound q hq).1
+      grind only)
+
+/-- Faithful traces over a prefix schedule refine to the high-level
+failed-run model. -/
+private noncomputable def FailedRun.ofTraces {n : Nat} {ck : Chunking n}
+    (outcome : Fin n → Except ε β) (traces : Array (FallibleTrace ck))
+    (m : Nat) (hwf : ∀ tr ∈ traces, WFFallible outcome tr)
+    (hprefix : Schedule.Prefix (traces.map (·.claims)) m)
+    (hpoison : ∃ tr ∈ traces, ∃ o, tr.failed? = some o) :
+    FailedRun outcome ck where
+  claimed := ⟨m, Nat.lt_succ_iff.mpr hprefix.limit⟩
+  reports := failureReports outcome traces
+  report_sound := by
+    intro p hp
+    obtain ⟨tr, htr, o, hfailed, hchunk⟩ := mem_failureReports.mp hp
+    have hs := chunkFailure_some outcome ck o p hchunk
+    have hclaim : Schedule.Claimed (traces.map (·.claims)) o :=
+      Schedule.claimed_map.mpr ⟨tr, htr, tr.failed_mem_claims hfailed⟩
+    exact ⟨hs.1, hs.2 ▸ hprefix.bound o hclaim⟩
+  report_complete := by
+    intro o ho p hchunk
+    obtain ⟨tr, htr, hmem⟩ := Schedule.claimed_map.mp (hprefix.cover o ho)
+    have hfailed := (hwf tr htr).failed_eq_of_mem_claims hmem
+      (by simp [hchunk])
+    exact mem_failureReports.mpr ⟨tr, htr, o, hfailed, hchunk⟩
+  hasReport := by
+    obtain ⟨tr, htr, o, hfailed⟩ := hpoison
+    obtain ⟨p, hchunk⟩ := (hwf tr htr).failed_fails o hfailed
+    exact ⟨p, mem_failureReports.mpr ⟨tr, htr, o, hfailed, hchunk⟩⟩
+
+/-- The fallible replay selects the least failing input index: under a
+prefix cover of the claims with faithful traces and at least one failing
+claim, the register ends at the least failing index's error, whatever
+order reports arrive in. -/
+private theorem failureReports_least {n : Nat} {ck : Chunking n}
+    (outcome : Fin n → Except ε β) (traces : Array (FallibleTrace ck))
+    (m : Nat)
+    (hwf : ∀ tr ∈ traces, WFFallible outcome tr)
+    (hprefix : Schedule.Prefix (traces.map (·.claims)) m)
+    (hpoison : ∃ tr ∈ traces, ∃ o, tr.failed? = some o)
+    (j₀ : Fin n) (e₀ : ε) (hfail : outcome j₀ = .error e₀)
+    (hleast : ∀ (j : Fin n) (e : ε), outcome j = .error e → j₀ ≤ j) :
+    (failureReports outcome traces).foldl keepLower none
+      = some (j₀, e₀) :=
+  (FailedRun.ofTraces outcome traces m hwf hprefix hpoison).selectsLeast
+    j₀ e₀ hfail hleast
+
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
 def activeSlots : BaseIO Nat :=

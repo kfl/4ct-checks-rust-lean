@@ -156,20 +156,19 @@ loops compute the pure chunk loops (`tabulateChunkM_pure`,
 `foldlM_reduceChunkPure`), so the replay theorems give `tabulateM` and
 `mapM` their result order; a fallible chunk yields the tabulated prefix
 below its least failing index together with that failure
-(`runChunk_pure`, `runChunkSpec_ok`, `runChunkSpec_err`); and the
+(`runChunk_pure`, `runChunkSpec_ok`, `runChunkSpec_least_failure`); and the
 failure register -- the runtime's own `keepLower` -- ends at the least
 reported index whatever the arrival order (`foldl_keepLower_min`).
 Failure indices are carried as `Fin n`, so a selected error's position
-is a valid input position by construction. With claims in ascending
-order, the least failing index's chunk is always claimed before the
-cursor is poisoned, so the rethrown error is the one at the least
-failing input index.
+is a valid input position by construction. Faithful worker traces
+(`FallibleTrace`, `Schedule.Prefix`) refine to a worker-independent
+`FailedRun`: its reports are actual failures in the claimed prefix, and every
+failing claimed chunk is reported. `FailedRun.selectsLeast` and
+`failureReports_least` then prove in kernel that the register ends at the
+least failing input index's error, whatever order reports arrive in.
 
 The following proof work remains:
 
-- a fallible-schedule replay (per-worker traces with poison truncation)
-  formalising that the least failing index is always encountered under
-  ascending-order claims, moving that argument from prose to kernel; and
 - the worker-budget, release, and liveness invariants of nested growth and
   joins.
 
@@ -256,10 +255,10 @@ journal rather than this document.
       outcomes in any lawful monad, the fallible chunk and the
       `keepLower` register have proved least-index selection, and result
       order reduces to the schedule replay.
-- [ ] Fallible-schedule replay: model per-worker traces with poison
-      truncation and prove the least failing index is always encountered
-      under ascending-order claims, moving that argument from prose to
-      kernel.
+- [x] Fallible-schedule replay: per-worker traces with a stopping claim
+      (`FallibleTrace`), a prefix cover of the claims
+      (`Schedule.Prefix`), and their refinement to `FailedRun`
+      prove that the register ends at the least failing input index's error.
 - [ ] Prove the slot-budget and release invariants and liveness of nested region
       growth and joins. Start with bounded counter types (`activeRef` at
       `{a // a ≤ config.workers}`, `Region.spawned` at `s ≤ slots`) for
