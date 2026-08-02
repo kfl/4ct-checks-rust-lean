@@ -593,7 +593,10 @@ def tabulateM (n : Nat) (g : Fin n → BaseIO β) (chunkSize : Nat := 1) :
 
 /-- Parallel monadic map: tabulation reading the input at each index, with
 the scheduling and effect-order behaviour of `tabulateM`. The serial fast
-path folds the array directly. -/
+path folds the array directly. Inlined so the caller's mapper is
+beta-reduced into the worker-callback factory before closure conversion
+(see `tabulateWithWorkerFn`). -/
+@[inline]
 def mapM (xs : Array α) (f : α → BaseIO β) (chunkSize : Nat := 1) :
     BaseIO (Array β) := do
   let chunkSize := chunkSize.max 1
@@ -784,7 +787,10 @@ def tabulateIO (n : Nat) (g : Fin n → IO β) (chunkSize : Nat := 1) :
 
 /-- Parallel `IO` map: tabulation reading the input at each index, with the
 fail-fast, lowest-index error and effect-order behaviour of `tabulateIO`.
-The serial fast path traverses the array directly. -/
+The serial fast path traverses the array directly. Inlined so the
+caller's mapper is beta-reduced into the worker-callback factory before
+closure conversion (see `tabulateWithWorkerFn`). -/
+@[inline]
 def mapIO (xs : Array α) (f : α → IO β) (chunkSize : Nat := 1) :
     IO (Array β) := do
   let chunkSize := chunkSize.max 1

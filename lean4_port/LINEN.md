@@ -79,8 +79,10 @@ supply array-specific reducing folders, and the monadic maps' serial fast
 paths traverse their array directly. The tabulation engine chain is
 specialised per instantiation (`@[specialize]`), which lets a specialised
 inner loop receive its instantiation's inputs directly instead of calling
-through a composed indexed closure -- the pure paths achieve this, while
-the `mapIO` numbers show the monadic reading path does not yet. The worker-callback factory boundary
+through a composed indexed closure; pure `map` reaches it through
+`mapImpl`'s literal factory, and `mapM`/`mapIO` through their `@[inline]`
+wrappers, so the pure and monadic paths both achieve it (the
+`tabulate-io-cheap` matched controls agree at every chunk size). The worker-callback factory boundary
 sits on the implemented functions behind `@[inline]` public wrappers, so
 a lambda at an ordinary call site is beta-reduced into the factory before
 closure conversion and the callback is constructed inside each worker's
@@ -315,14 +317,14 @@ two efficiency cores, so the ten-worker results include the slower cores.
       geometry and opposite profitability, so a fix requires an explicit
       granularity hint or an online work-first policy. Deliberately
       deferred.
-- [ ] Isolate the `mapIO` success-path overhead. A trivial `IO` mapper
-      remains slower than its serial control at every measured width. The
-      `tabulate-io-cheap` control has excluded most of the previously
-      proposed causes: direct `tabulateIO` runs the same monadic worker,
-      error bookkeeping, and ordered merging at a fraction of `mapIO`'s
-      cost on the same index function. The remaining suspect is how
-      `mapIO`'s composed reading callback is constructed and
-      specialised.
+- [x] `mapIO` success-path overhead: resolved. The `tabulate-io-cheap`
+      control excluded the monadic worker, error bookkeeping, and ordered
+      merging as causes; what remained was the construction of `mapIO`'s
+      composed reading callback outside the inline factory boundary. With
+      `mapM` and `mapIO` inlined like `tabulate`, the matched controls
+      agree at every chunk size and a trivial mapper beats its serial
+      control at onewave granularity. What remains against serial at fine
+      chunks is ordinary claim overhead, not a success-path anomaly.
 - [ ] Add deterministically shuffled or replayed cost distributions to the
       benchmark (the clustered case covers the adversarial-for-static
       extreme; shuffled covers the no-spatial-structure one).
