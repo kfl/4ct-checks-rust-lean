@@ -140,15 +140,36 @@ The following parts are proved in `Linen.lean`:
 to the pieces consumed by replay. The remaining runtime-to-replay
 correspondence assumes that:
 
-- successful claims collectively partition the chunk ordinals;
+- successful claims collectively partition the chunk ordinals, in
+  ascending ordinal order;
 - each worker processes and records its claims as replay specifies;
 - `joinRegion` returns the inline output and every spawned worker's output; and
 - `unsafeCast`/`unsafeBaseIO` preserve the pure callbacks and values.
 
+The effectful combinators' contracts follow the same split. Their proved
+pure content assumes schedule-independent outcomes -- each callback
+invocation returns a value determined by its index alone -- and lawful
+monad operations (core provides no `LawfulMonad` for `BaseIO`, so the
+laws are stated over any lawful monad; joining them to `BaseIO` is part
+of the trusted execution). Under that assumption, the monadic chunk
+loops compute the pure chunk loops (`tabulateChunkM_pure`,
+`foldlM_reduceChunkPure`), so the replay theorems give `tabulateM` and
+`mapM` their result order; a fallible chunk yields the tabulated prefix
+below its least failing index together with that failure
+(`runChunk_pure`, `runChunkSpec_ok`, `runChunkSpec_err`); and the
+failure register -- the runtime's own `keepLower` -- ends at the least
+reported index whatever the arrival order (`foldl_keepLower_min`).
+Failure indices are carried as `Fin n`, so a selected error's position
+is a valid input position by construction. With claims in ascending
+order, the least failing index's chunk is always claimed before the
+cursor is poisoned, so the rethrown error is the one at the least
+failing input index.
+
 The following proof work remains:
 
-- formal result-order and error specifications for the effectful combinators,
-  with explicit assumptions about observable effects; and
+- a fallible-schedule replay (per-worker traces with poison truncation)
+  formalising that the least failing index is always encountered under
+  ascending-order claims, moving that argument from prose to kernel; and
 - the worker-budget, release, and liveness invariants of nested growth and
   joins.
 
@@ -230,10 +251,15 @@ journal rather than this document.
       trace yields the serial results. The four-point trusted statement
       in the verification-status section is the residual boundary without
       semantics for refs, tasks, and `unsafeBaseIO`.
-- [ ] Give `tabulateM`, `tabulateIO`, `mapM`, `mapReduceM`, and `mapIO` formal
-      specifications for result order and error selection. Carry failure
-      indices as `Fin n` first: `runChunk` already holds the proof it
-      passes to the callback, making valid-position structural.
+- [x] Effectful specifications: failure indices are `Fin n`, the monadic
+      chunk loops equal the pure chunk loops for schedule-independent
+      outcomes in any lawful monad, the fallible chunk and the
+      `keepLower` register have proved least-index selection, and result
+      order reduces to the schedule replay.
+- [ ] Fallible-schedule replay: model per-worker traces with poison
+      truncation and prove the least failing index is always encountered
+      under ascending-order claims, moving that argument from prose to
+      kernel.
 - [ ] Prove the slot-budget and release invariants and liveness of nested region
       growth and joins. Start with bounded counter types (`activeRef` at
       `{a // a ≤ config.workers}`, `Region.spawned` at `s ≤ slots`) for

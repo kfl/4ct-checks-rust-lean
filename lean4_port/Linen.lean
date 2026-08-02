@@ -141,9 +141,10 @@ private def GrowResult.retryable : GrowResult → Bool
 /-- Monadic chunk loop for `tabulateM`: append `(← g i)` for every index in
 `[i, stop)`, with effects in index order within the chunk. The bound
 `stop ≤ n` supplies each index's `Fin` proof, erased at compile time. -/
-@[specialize] private def tabulateChunkM (n : Nat) (g : Fin n → BaseIO β) (stop : Nat)
+@[specialize] private def tabulateChunkM {m : Type → Type} [Monad m]
+    (n : Nat) (g : Fin n → m β) (stop : Nat)
     (hstop : stop ≤ n) (i : Nat) (values : Array β) :
-    BaseIO (Array β) := do
+    m (Array β) := do
   if h : i < stop then
     tabulateChunkM n g stop hstop (i + 1)
       (values.push (← g ⟨i, Nat.lt_of_lt_of_le h hstop⟩))
@@ -213,16 +214,26 @@ private def workerMapReduceM (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
 Explicit recursion keeps early-exit bookkeeping out of the success loop;
 the index bound makes each call total, so there is no missing-element
 case. -/
-@[specialize] private def runChunk (n : Nat) (g : Fin n → BaseIO (Except ε β))
+@[specialize] private def runChunk {m : Type → Type} [Monad m]
+    (n : Nat) (g : Fin n → m (Except ε β))
     (stop : Nat) (hstop : stop ≤ n) (i : Nat) (values : Array β) :
-    BaseIO (Array β × Option (Nat × ε)) := do
+    m (Array β × Option (Fin n × ε)) := do
   if h : i < stop then
     match ← g ⟨i, Nat.lt_of_lt_of_le h hstop⟩ with
     | .ok value => runChunk n g stop hstop (i + 1) (values.push value)
-    | .error e => return (values, some (i, e))
+    | .error e => return (values, some (⟨i, Nat.lt_of_lt_of_le h hstop⟩, e))
   else
     return (values, none)
 termination_by stop - i
+
+/-- Merge one reported failure into the register, keeping the lower input
+index. Shared with the specification proofs, so the runtime's selection
+is the proved selection. -/
+private def keepLower {n : Nat} (current : Option (Fin n × ε))
+    (incoming : Fin n × ε) : Option (Fin n × ε) :=
+  match current with
+  | some (j, e) => if incoming.1 < j then some incoming else some (j, e)
+  | none => some incoming
 
 /-- Fallible `tabulateIO` worker. On failure it poisons the cursor,
 preventing new claims while current chunks run to completion, and retains
@@ -231,8 +242,9 @@ indices have run when the workers join. Failed chunks are omitted; results
 are merged only when every worker succeeds. Grown siblings exit at their
 next claim after the cursor is poisoned. -/
 @[specialize] private partial def workerTabulateIOLoop (growth : BaseIO GrowResult)
-    (cursor : IO.Ref Nat) (failure : IO.Ref (Option (Nat × ε)))
-    (n : Nat) (ck : Chunking n) (g : Fin n → BaseIO (Except ε β))
+    (cursor : IO.Ref Nat) (n : Nat)
+    (failure : IO.Ref (Option (Fin n × ε))) (ck : Chunking n)
+    (g : Fin n → BaseIO (Except ε β))
     (growing : Bool) (values : Array β)
     (ordinals : Array ck.Ordinal) : BaseIO (WorkerOut ck β) := do
   let raw ← claim cursor ck.count
@@ -243,14 +255,11 @@ next claim after the cursor is poisoned. -/
     let growing ← if growing then (·.retryable) <$> growth else pure false
     match ← runChunk n g stop (ck.stop_le o start rfl) start values with
     | (values, none) =>
-      workerTabulateIOLoop growth cursor failure n ck g growing values
+      workerTabulateIOLoop growth cursor n failure ck g growing values
         (ordinals.push o)
-    | (values, some (i, e)) =>
+    | (values, some failed) =>
       cursor.set ck.count
-      failure.modify fun current =>
-        match current with
-        | some (j, _) => if i < j then some (i, e) else current
-        | none => some (i, e)
+      failure.modify (keepLower · failed)
       return ⟨values, ordinals⟩
   else
     return ⟨values, ordinals⟩
@@ -258,10 +267,10 @@ next claim after the cursor is poisoned. -/
 /-- Allocate worker-local buffers and construct the callback inside the
 worker. -/
 @[specialize] private def workerTabulateIO (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
-    (failure : IO.Ref (Option (Nat × ε))) (n : Nat) (ck : Chunking n)
+    (n : Nat) (failure : IO.Ref (Option (Fin n × ε))) (ck : Chunking n)
     (makeWorkerFn : Unit → Fin n → BaseIO (Except ε β))
     (valuesCap ordinalsCap : Nat) : BaseIO (WorkerOut ck β) :=
-  workerTabulateIOLoop growth cursor failure n ck (makeWorkerFn ()) true
+  workerTabulateIOLoop growth cursor n failure ck (makeWorkerFn ()) true
     (Array.mkEmpty valuesCap) (Array.mkEmpty ordinalsCap)
 
 private def workerCount {n : Nat} (ck : Chunking n) : Nat :=
@@ -807,9 +816,9 @@ and `n > chunkSize`. -/
     IO (Array β) := do
   let count := workerCount ck
   let cursor ← IO.mkRef 0
-  let failure ← IO.mkRef (none : Option (Nat × IO.Error))
+  let failure ← IO.mkRef (none : Option (Fin n × IO.Error))
   let outs ← runGrowingRegion (count - 1) fun growth =>
-    workerTabulateIO growth cursor failure n ck makeWorkerFn
+    workerTabulateIO growth cursor n failure ck makeWorkerFn
       (valuesCapacity n count) (ordinalsCapacity ck.count count)
   match ← failure.get with
   | some (_, e) => throw e
@@ -1641,7 +1650,8 @@ ordered claim trace of every worker -- is modelled as pure data, and a
 pure replay of any partitioned schedule is proved to produce well-formed
 output. The assembly theorems then finish the job. What stays trusted is:
 
-- successful claims collectively form a partition of all ordinals;
+- successful claims collectively form a partition of all ordinals, made
+  in ascending ordinal order;
 - each worker processes and records its successful claims as the replay
   model specifies (per-claim content is the proved `tabulateChunk_piece`
   and `reduceChunkPure_partial`);
@@ -1747,6 +1757,132 @@ private theorem replay_reduce (xs : Array α) (f : α → β)
         (fun o => #[reducePartial xs f op ck o]) sched)).foldl op init
       = (xs.map f).foldl op init :=
   orderedPartials_foldl_wf xs f op ck _ init (replaySchedule_wf _ sched h)
+
+/-! ## Effectful specifications
+
+The monadic combinators run real effects, so their contracts split into
+proved pure content and an explicit assumption: outcomes are
+schedule-independent -- the callback at `i` returns the value
+`outcome i` (modelled as a pure callback below) regardless of worker
+count, claim order, or chunk boundaries. Within a chunk, effects run in
+index order; cross-chunk effect order is unspecified. Under that
+assumption the monadic chunk loops compute the pure chunk loops, so a
+monadic worker records the same `WorkerOut` the schedule replay models,
+and the replay theorems give result order for `tabulateM` and `mapM`.
+For the fallible path, a chunk yields the prefix before its least
+failing index together with that failure, and the failure register
+selects the least reported index whatever the arrival order; with claims
+made in ascending ordinal order (part of the trusted schedule
+statement), the rethrown error is therefore the one at the least failing
+input index. -/
+
+/-- With a pure callback in a lawful monad, the monadic tabulation chunk
+is the pure chunk. -/
+private theorem tabulateChunkM_pure {m : Type → Type} [Monad m]
+    [LawfulMonad m] (n : Nat) (f : Fin n → β)
+    (stop : Nat) (hstop : stop ≤ n) (i : Nat) (values : Array β) :
+    tabulateChunkM (m := m) n (fun j => pure (f j)) stop hstop i values
+      = pure (tabulateChunk n f stop hstop i values) := by
+  fun_induction tabulateChunkM <;>
+    (rw [tabulateChunk]; simp only [bind_pure_comp, map_pure, ↓reduceDIte, *])
+
+/-- With a pure callback in a lawful monad, the monadic reduce chunk is
+the pure chunk. -/
+private theorem foldlM_reduceChunkPure {m : Type → Type} [Monad m]
+    [LawfulMonad m] (xs : Array α) (f : α → β)
+    (op : β → β → β) (stop i : Nat) (acc : β) :
+    xs.foldlM (fun acc x => pure (op acc (f x))) acc i stop
+      = (pure (reduceChunkPure xs f op stop i acc) : m β) :=
+  Array.foldlM_pure
+
+/-- Pure specification of one fallible chunk: the values of the
+successes before the chunk's least failing index, and that failure if
+any. -/
+private noncomputable def runChunkSpec (n : Nat) (outcome : Fin n → Except ε β)
+    (stop : Nat) (hstop : stop ≤ n) (i : Nat) (values : Array β) :
+    Array β × Option (Fin n × ε) :=
+  if h : i < stop then
+    match outcome ⟨i, Nat.lt_of_lt_of_le h hstop⟩ with
+    | .ok value => runChunkSpec n outcome stop hstop (i + 1)
+        (values.push value)
+    | .error e => (values, some (⟨i, Nat.lt_of_lt_of_le h hstop⟩, e))
+  else (values, none)
+termination_by stop - i
+
+/-- With a pure callback in a lawful monad, the fallible chunk runner
+computes its specification. -/
+private theorem runChunk_pure {m : Type → Type} [Monad m] [LawfulMonad m]
+    (n : Nat) (outcome : Fin n → Except ε β)
+    (stop : Nat) (hstop : stop ≤ n) (i : Nat) (values : Array β) :
+    runChunk (m := m) n (fun j => pure (outcome j)) stop hstop i values
+      = pure (runChunkSpec n outcome stop hstop i values) := by
+  fun_induction runChunkSpec <;>
+    (rw [runChunk]; simp only [↓reduceDIte, pure_bind, *])
+
+/-- A chunk with no failing index tabulates its successes. -/
+private theorem runChunkSpec_ok (n : Nat) (outcome : Fin n → Except ε β)
+    (f : Fin n → β) (stop : Nat) (hstop : stop ≤ n) (i : Nat)
+    (values : Array β)
+    (hok : ∀ j : Fin n, i ≤ j.1 → j.1 < stop → outcome j = .ok (f j)) :
+    runChunkSpec n outcome stop hstop i values
+      = (tabulateChunk n f stop hstop i values, none) := by
+  fun_induction runChunkSpec <;> rw [tabulateChunk] <;>
+    grind only
+
+/-- A chunk whose least failing index is `j₀` yields the tabulated
+prefix below `j₀` and that failure. -/
+private theorem runChunkSpec_err (n : Nat) (outcome : Fin n → Except ε β)
+    (f : Fin n → β) (stop : Nat) (hstop : stop ≤ n) (i : Nat)
+    (values : Array β) (j₀ : Fin n) (e : ε)
+    (hij : i ≤ j₀.1) (hjs : j₀.1 < stop)
+    (hfail : outcome j₀ = .error e)
+    (hbelow : ∀ j : Fin n, i ≤ j.1 → j.1 < j₀.1 → outcome j = .ok (f j)) :
+    runChunkSpec n outcome stop hstop i values
+      = (tabulateChunk n f j₀.1 (Nat.le_of_lt j₀.2) i values,
+          some (j₀, e)) := by
+  revert hij hbelow
+  fun_induction runChunkSpec <;> rw [tabulateChunk] <;>
+    grind only [= Lean.Grind.toInt_fin]
+
+/-- On a nonempty register, `keepLower` is the standard first-minimum
+operation on indices. -/
+private theorem keepLower_some {n : Nat} (q p : Fin n × ε) :
+    keepLower (some q) p = some (minOn Prod.fst q p) := by
+  rcases q with ⟨j, e⟩
+  by_cases h : p.1 < j
+  · simp only [keepLower, h, ↓reduceIte, minOn, Fin.not_le.mpr h]
+  · simp only [keepLower, h, ↓reduceIte, minOn, Fin.not_lt.mp h]
+
+/-- Folding reported failures with `keepLower` is the standard
+first-minimum fold on their indices. -/
+private theorem foldl_keepLower_eq_minOn? {n : Nat}
+    (l : List (Fin n × ε)) :
+    l.foldl keepLower none = l.minOn? Prod.fst := by
+  have fold_some : ∀ (l : List (Fin n × ε)) (q : Fin n × ε),
+      l.foldl keepLower (some q) =
+        some (l.foldl (minOn Prod.fst) q) := by
+    intro l q
+    induction l generalizing q <;>
+      simp_all only [List.foldl_nil, Prod.forall, List.foldl_cons,
+        keepLower_some]
+  cases l <;>
+    simp only [List.foldl_nil, List.foldl_cons, keepLower, fold_some,
+      List.minOn?]
+
+/-- Whatever order failures reach the register, it ends at the least
+reported index; with each index reported at most once, at that index's
+entry. -/
+private theorem foldl_keepLower_min {n : Nat} (l : List (Fin n × ε))
+    (j₀ : Fin n) (e₀ : ε)
+    (hmem : (j₀, e₀) ∈ l)
+    (hmin : ∀ p ∈ l, j₀ ≤ p.1)
+    (huniq : ∀ p ∈ l, p.1 = j₀ → p = (j₀, e₀)) :
+    l.foldl keepLower none = some (j₀, e₀) := by
+  rw [foldl_keepLower_eq_minOn?, List.minOn?_eq_some_minOn
+    (List.ne_nil_of_mem hmem)]
+  congr 1
+  exact huniq _ List.minOn_mem <| Fin.le_antisymm
+    (List.apply_minOn_le_of_mem hmem) (hmin _ List.minOn_mem)
 
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
