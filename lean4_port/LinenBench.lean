@@ -163,6 +163,60 @@ private def benchCase (reps : Nat) (label : String) (xs : Array α)
     unless serial == linen do
       throw (IO.userError s!"{label}: map implementations disagree")
 
+/-- Compare `Array.ofFn`, indexed `Linen.map`, and `Linen.tabulate` on the
+same index function: the serial specification, the map instantiation of
+the engine reading an index array, and direct tabulation with no input
+array. -/
+private def benchCaseTabulate (reps : Nat) (label : String) (n : Nat)
+    (f : Nat → Nat) : IO Unit := do
+  let idx := Array.range n
+  let serial ← timed reps s!"{label}, tabulate ofFn serial"
+    (blackBox fun _ => Array.ofFn (fun i : Fin n => f i.1))
+  for (tag, chunk) in sweeps n do
+    let viaMap ← timed reps s!"{label}, via prebuilt range map {tag}"
+      (blackBox fun _ => Linen.map idx f (chunkSize := chunk))
+    let linen ← timed reps s!"{label}, tabulate Linen {tag}"
+      (blackBox fun _ => Linen.tabulate n (fun i => f i.1) (chunkSize := chunk))
+    unless serial == viaMap && serial == linen do
+      throw (IO.userError s!"{label}: tabulate implementations disagree")
+
+/-- Direct fallible tabulation on a cheap index function, against `mapIO`
+over a prebuilt range. The factory boundary builds `tabulateIO`'s
+immediate callback per worker, so a gap between these controls isolates
+how `mapIO`'s composed reading callback is constructed and specialised
+rather than any shared machinery. -/
+private def benchCaseTabulateIO (reps : Nat) (label : String) (n : Nat)
+    (f : Nat → Nat) : IO Unit := do
+  let idx := Array.range n
+  let serial ← timed reps s!"{label}, mapIO serial over range"
+    (idx.mapM (fun i => pure (f i)))
+  for (tag, chunk) in sweeps n do
+    let viaMap ← timed reps s!"{label}, via prebuilt range mapIO {tag}"
+      (Linen.mapIO idx (fun i => pure (f i)) (chunkSize := chunk))
+    let linen ← timed reps s!"{label}, tabulateIO Linen {tag}"
+      (Linen.tabulateIO n (fun i => pure (f i.1)) (chunkSize := chunk))
+    unless serial == viaMap && serial == linen do
+      throw (IO.userError s!"{label}: tabulateIO implementations disagree")
+
+/-- Nested tabulation: an outer tabulation whose entries each fold an inner
+tabulation, with no input arrays at either level. -/
+private def benchCaseTabulateNested (reps : Nat) (groups inner : Nat) :
+    IO Unit := do
+  let serialAll ← timed reps "tabulate-nested, all serial"
+    (blackBox fun _ => Array.ofFn fun g : Fin groups =>
+      (Array.ofFn fun i : Fin inner =>
+        unevenWork (g.1 * inner + i.1)).foldl (· + ·) 0)
+  let outerLinen ← timed reps "tabulate-nested, outer Linen"
+    (blackBox fun _ => Linen.tabulate groups fun g =>
+      (Array.ofFn fun i : Fin inner =>
+        unevenWork (g.1 * inner + i.1)).foldl (· + ·) 0)
+  let bothLinen ← timed reps "tabulate-nested, outer + inner Linen"
+    (blackBox fun _ => Linen.tabulate groups fun g =>
+      (Linen.tabulate inner fun i =>
+        unevenWork (g.1 * inner + i.1)).foldl (· + ·) 0)
+  unless serialAll == outerLinen && serialAll == bothLinen do
+    throw (IO.userError "tabulate-nested: implementations disagree")
+
 /-- Compare serial, eager, and Linen map-then-flatten. With an allocating
 mapper, allocation occurs during the mapped phase; every implementation
 flattens the boxed results serially. -/
@@ -439,6 +493,11 @@ def main (args : List String) : IO UInt32 := do
   -- refcount cache line.
   let benches : List (String × IO Unit) := [
     ("scheduler-map", benchCase reps "scheduler" (Array.range 200000) (· + 1)),
+    ("tabulate-cheap", benchCaseTabulate reps "tabulate-cheap" 200000 (· * 2 + 1)),
+    ("tabulate-uneven", benchCaseTabulate reps "tabulate-uneven" 50000 unevenWork),
+    ("tabulate-nested", benchCaseTabulateNested reps 300 300),
+    ("tabulate-io-cheap",
+      benchCaseTabulateIO reps "tabulate-io-cheap" 200000 (· * 2 + 1)),
     ("uneven-map", benchCase reps "uneven" (Array.range 50000) unevenWork),
     ("clustered-map", benchCase reps "clustered" (Array.range 50000) (clusteredWork 50000)),
     ("nested-wide", benchCaseNested reps "nested-wide" 300 300),

@@ -41,6 +41,24 @@ def combinatorTests (c : Counter) : IO Unit := do
       (Linen.map #[1, 2, 3] (· + 10) (chunkSize := chunk) == #[11, 12, 13])
   expect c "map serial (chunk beyond size)"
     (Linen.map inputs (· * 7) (chunkSize := 1000) == inputs.map (· * 7))
+  expect c "tabulate ordered"
+    (Linen.tabulate 257 (fun i => i.1 * i.1 + 3)
+      == Array.ofFn (fun i : Fin 257 => i.1 * i.1 + 3))
+  expect c "tabulate empty" (Linen.tabulate 0 (fun i => i.1) == #[])
+  expect c "tabulate singleton" (Linen.tabulate 1 (fun i => i.1 + 9) == #[9])
+  for chunk in [1, 3, 300] do
+    expect c s!"tabulate small c={chunk}"
+      (Linen.tabulate 3 (fun i => i.1 + 10) (chunkSize := chunk)
+        == #[10, 11, 12])
+  expect c "tabulateM empty" ((← Linen.tabulateM 0 (fun i => pure i.1)) == #[])
+  expect c "tabulateIO empty" ((← Linen.tabulateIO 0 (fun i => pure i.1)) == #[])
+  for chunk in [1, 3, 300] do
+    let tabM ← Linen.tabulateM 257 (fun i => pure (i.1 * 3)) (chunkSize := chunk)
+    expect c s!"tabulateM ordered c={chunk}"
+      (tabM == Array.ofFn (fun i : Fin 257 => i.1 * 3))
+    let tabIO ← Linen.tabulateIO 257 (fun i => pure (i.1 + 1)) (chunkSize := chunk)
+    expect c s!"tabulateIO ordered c={chunk}"
+      (tabIO == Array.ofFn (fun i : Fin 257 => i.1 + 1))
 
 def reduceTests (c : Counter) : IO Unit := do
   let inputs := Array.range 257
@@ -69,6 +87,20 @@ def errorTests (c : Counter) : IO Unit := do
   let firstError ← captureFirstError
   expect c "mapIO first error in index order"
     (firstError.contains "first-index-error" && !firstError.contains "later-index-error")
+  let captureTabError (chunk : Nat) : IO String := do
+    try
+      discard <| Linen.tabulateIO 4 (fun i => do
+        if i.1 == 1 then throw (IO.userError "first-index-error")
+        if i.1 == 3 then throw (IO.userError "later-index-error")
+        pure i.1) (chunkSize := chunk)
+      pure "no error"
+    catch e =>
+      pure (toString e)
+  for chunk in [1, 2, 8] do
+    let tabError ← captureTabError chunk
+    expect c s!"tabulateIO first error in index order c={chunk}"
+      (tabError.contains "first-index-error"
+        && !tabError.contains "later-index-error")
 
 def budgetTests (c : Counter) : IO Unit := do
   expect c "worker budget drained" ((← Linen.activeSlots) == 0)

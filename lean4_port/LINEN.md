@@ -58,6 +58,34 @@ The per-call `chunkSize` controls claim granularity and is clamped to at least
 one. Small chunks improve balancing when element costs vary; large chunks
 amortise claim overhead. The default is one.
 
+The public semantic primitive is indexed tabulation: `Linen.tabulate n g`
+builds the array whose entry at `i` is `g i`, with the pure specification
+`Array.ofFn g` installed through `implemented_by`. The semantic object is a
+value at a stable index; workers, claims, offsets, and chunk boundaries
+are scheduling details that `g` cannot observe, so for pure tabulation
+`chunkSize` is a performance hint that cannot change the result. For the
+effectful variants (`tabulateM`, `tabulateIO`), result positions and the
+selected error are deterministic, but effects can reveal scheduling:
+within a chunk, effects run in index order; cross-chunk effect order is
+unspecified.
+
+The internal runtime primitive is narrower: schedule chunks and invoke a
+chunk folder once per claim, so abstraction costs are amortised over the
+chunk rather than paid per element. `tabulate` supplies a `Fin`-iteration
+chunk loop; pure `map` (and with it `filterMap` and `flatMap`) and the
+parallel paths of `mapM` and `mapIO` instantiate the tabulation engine
+with an indexed reader of their input; `mapReduce` and `mapReduceM`
+supply array-specific reducing folders, and the monadic maps' serial fast
+paths traverse their array directly. The tabulation engine chain is
+specialised per instantiation (`@[specialize]`), which lets a specialised
+inner loop receive its instantiation's inputs directly instead of calling
+through a composed indexed closure -- the pure paths achieve this, while
+the `mapIO` numbers show the monadic reading path does not yet. The worker-callback factory boundary
+sits on the implemented functions behind `@[inline]` public wrappers, so
+a lambda at an ordinary call site is beta-reduced into the factory before
+closure conversion and the callback is constructed inside each worker's
+task (`makeWorkerFn`).
+
 Pure `Linen.map` is defined as `xs.map f` and installs the parallel executor
 through `implemented_by`. Proofs therefore see the serial specification while
 compiled programs use the parallel implementation. The serial fast paths (one
@@ -95,16 +123,20 @@ not be an identity.
 The compiled parallel implementations replace the serial definitions through
 `implemented_by` and cross an `unsafeBaseIO`/`unsafeCast` boundary. Their
 equivalence to the serial specifications has not been proved in Lean. The
-pure worker loops contain local proofs for their array bounds, and the
-serial chunk loops are proved equal to their specification slices in
-`Linen.lean`'s verified-properties section -- so the serial fast paths are
-verified outright, and the associative regrouping core for `mapReduce` is
-proved -- but the parallel path's correctness remains unproved.
+chunk loops carry their index-bound proofs (`Fin` construction erases at
+compile time), and the serial chunk loops are proved equal to their
+specification slices in `Linen.lean`'s verified-properties section: the
+tabulation loop over the full range is exactly `Array.ofFn g`, tabulating
+the indexed reads of `xs` is `xs.map f`, and the reduce chunk loop is the
+fused left fold of the mapped slice -- so the serial fast paths of
+`tabulate`, `map`, and `mapReduce` are verified outright, and the
+associative regrouping core for `mapReduce` is proved -- but the parallel
+path's correctness remains unproved.
 
 The following remain to be proved:
 
-- the equivalence of `mapImpl` and `mapReduceImpl` to their serial
-  specifications;
+- the equivalence of `tabulateWithWorkerFnImpl`, `mapImpl`, and
+  `mapReduceImpl` to their serial specifications;
 - formal result-order and error specifications for `mapM`, `mapReduceM`, and
   `mapIO`, including any required assumptions about effects; and
 - the worker-budget, release, and liveness invariants of nested regions.
@@ -186,12 +218,14 @@ two efficiency cores, so the ten-worker results include the slower cores.
 
 ## TODO
 
-- [ ] Close the `mapImpl`/`mapReduceImpl` correspondence along the ladder
-      split at the `unsafeBaseIO` trust boundary. Done, in `Linen.lean`:
-      `mapChunkPure` computes the mapped slice appended to its accumulator
-      and `reduceChunkPure` the left fold of the mapped slice (verifying the
-      serial fast paths as the specifications), and `foldl_seeded_partials`
-      is the associative regrouping core. Also done: the well-formedness
+- [ ] Close the `tabulateWithWorkerFnImpl`/`mapReduceImpl` correspondence
+      along the ladder split at the `unsafeBaseIO` trust boundary. Done, in
+      `Linen.lean`: `tabulateChunk` computes the `Array.ofFn` slice
+      appended to its accumulator (with `ofFn_read_eq_map` carrying it to
+      the `map` instantiation) and `reduceChunkPure` the left fold of the
+      mapped slice, verifying the serial fast paths as the
+      specifications, and `foldl_seeded_partials` is the associative
+      regrouping core. Also done: the well-formedness
       predicates (`WFWorkerOut`, `WFOuts` -- aligned in-range starts, buffers
       exactly the folded chunk slices of their runs, each ordinal claimed
       exactly once) and the pure assembly layer (`foldl_chunkSlice_range`:
@@ -221,13 +255,41 @@ two efficiency cores, so the ten-worker results include the slower cores.
       order-invariance that the trusted concurrent bridge will lean on:
       any schedule producing the same set of aligned, uniquely-claimed
       runs produces identical tables. Open: the reduce-side
-      instantiation via the regrouping lemma. The final bridge, that the
+      instantiation via the regrouping lemma. Tabulation assembly needs
+      no separately restated proof: `merge_wf` instantiated with
+      `xs := Array.ofFn g` and `f := id` covers it, and only the
+      worker-output instantiation is new. The final bridge, that the
       concurrent runtime always produces well-formed output, requires
       reasoning about atomic claims and tasks; it stays an explicitly
       trusted step.
-- [ ] Give `mapM`, `mapReduceM`, and `mapIO` formal specifications covering
-      result order and error selection, with explicit assumptions about
-      effects where needed.
+- [ ] Give `tabulateM`, `tabulateIO`, and the monadic map family formal
+      specifications covering result order and error selection, with
+      explicit assumptions about effects where needed.
+- [ ] Callback-closure contention, to validate on MODI. Contention on a
+      closure shared across workers is real: before the factory boundary,
+      `tabulate` called with a runtime closure paid per-element
+      reference-count traffic on that shared closure. Placing the
+      factory boundary on the implemented functions behind `@[inline]`
+      public wrappers restored the `tabulate-cheap` rows to parity with
+      the specialised map instantiation, and the fix should now be
+      validated at MODI worker counts, where contention grows with the
+      team. Residual exposure: a preconstructed runtime callback passed
+      as `g` may still contain a shared nested closure; an eventual
+      advanced `tabulateWith` API exposing the worker factory could
+      address that case explicitly, in the spirit of worker-local
+      initialisation combinators.
+- [ ] Candidate, measure-first: `usize` inner chunk loops. The tabulation
+      chunk loops step a boxed `Nat` counter where the array-backed map
+      loops step a `usize`; the remaining comparison is cheap direct
+      tabulation against the array-backed `usize` map loop (reduction is
+      array-backed again and no longer affected). A `usize`
+      implementation behind the proof-carrying `Nat` definition (the
+      `Array.foldlMUnsafe` pattern) would remove the difference.
+- [ ] Combinators to build on `tabulate`: `zip`/`zipWith` (tabulate over
+      the minimum size), `mapIdx`, gather/permute (read at a computed
+      index), and eventually a producer interface in the style of Rayon's
+      indexed parallel iterators -- all without exposing chunk boundaries
+      to callbacks.
 - [ ] Prove the slot-budget and release invariants, and liveness of nested
       region growth and joins.
 - [ ] Deferred design note -- fair slot handoff. The attempt-frequency bias
@@ -253,10 +315,14 @@ two efficiency cores, so the ten-worker results include the slower cores.
       geometry and opposite profitability, so a fix requires an explicit
       granularity hint or an online work-first policy. Deliberately
       deferred.
-- [ ] Isolate the `mapIO` success-path overhead. A trivial `IO` mapper remains
-      slower than its serial control at every measured width; separate the
-      costs of the generic monadic worker, error bookkeeping, and ordered
-      merging before changing the failure semantics.
+- [ ] Isolate the `mapIO` success-path overhead. A trivial `IO` mapper
+      remains slower than its serial control at every measured width. The
+      `tabulate-io-cheap` control has excluded most of the previously
+      proposed causes: direct `tabulateIO` runs the same monadic worker,
+      error bookkeeping, and ordered merging at a fraction of `mapIO`'s
+      cost on the same index function. The remaining suspect is how
+      `mapIO`'s composed reading callback is constructed and
+      specialised.
 - [ ] Add deterministically shuffled or replayed cost distributions to the
       benchmark (the clustered case covers the adversarial-for-static
       extreme; shuffled covers the no-spatial-structure one).

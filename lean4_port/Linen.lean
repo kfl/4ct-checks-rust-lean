@@ -80,28 +80,45 @@ private def GrowResult.retryable : GrowResult → Bool
   | .teamFull => false
   | _ => true
 
-/-- Monadic `mapM` worker. It appends values in claim order and records
+/-- Monadic chunk loop for `tabulateM`: append `(← g i)` for every index in
+`[i, stop)`, with effects in index order within the chunk. The bound
+`stop ≤ n` supplies each index's `Fin` proof, erased at compile time. -/
+@[specialize] private def tabulateChunkM (n : Nat) (g : Fin n → BaseIO β) (stop : Nat)
+    (hstop : stop ≤ n) (i : Nat) (values : Array β) :
+    BaseIO (Array β) := do
+  if h : i < stop then
+    tabulateChunkM n g stop hstop (i + 1)
+      (values.push (← g ⟨i, Nat.lt_of_lt_of_le h hstop⟩))
+  else
+    return values
+termination_by stop - i
+
+/-- Monadic tabulation worker. It appends values in claim order and records
 each chunk's start; the merge derives chunk lengths from those starts. One
 team-growth attempt runs per successful claim; `growing` caches the verdict,
 so a full team costs nothing per claim. -/
-private partial def workerMapMLoop (growth : BaseIO GrowResult)
-    (cursor : IO.Ref Nat) (xs : Array α) (f : α → BaseIO β)
+@[specialize] private partial def workerTabulateMLoop (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (n : Nat) (g : Fin n → BaseIO β)
     (chunkSize : Nat) (growing : Bool) (values : Array β)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
-  let start ← claim cursor xs.size chunkSize
-  if start ≥ xs.size then return (values, starts)
-  let stop := (start + chunkSize).min xs.size
+  let start ← claim cursor n chunkSize
+  if start ≥ n then return (values, starts)
+  let stop := (start + chunkSize).min n
   let growing ← if growing then (·.retryable) <$> growth else pure false
-  let values ← xs.foldlM (fun values x => return values.push (← f x))
-    values start stop
-  workerMapMLoop growth cursor xs f chunkSize growing values
+  let values ← tabulateChunkM n g stop (Nat.min_le_right _ _) start values
+  workerTabulateMLoop growth cursor n g chunkSize growing values
     (starts.push start)
 
-/-- Allocate worker-local buffers inside the task. -/
-private def workerMapM (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
-    (xs : Array α) (f : α → BaseIO β) (chunkSize valuesCap startsCap : Nat) :
+/-- Allocate worker-local buffers and build the worker's callback inside
+the task. The factory keeps the callback's construction inside the
+specialised worker code, so each instantiation receives its captured
+inputs directly rather than through one composed closure built at the
+call site. -/
+@[specialize] private def workerTabulateM (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
+    (n : Nat) (makeWorkerFn : Unit → Fin n → BaseIO β)
+    (chunkSize valuesCap startsCap : Nat) :
     BaseIO (Array β × Array Nat) :=
-  workerMapMLoop growth cursor xs f chunkSize true
+  workerTabulateMLoop growth cursor n (makeWorkerFn ()) chunkSize true
     (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
 
 /-- Monadic `mapReduceM` worker. Each chunk is folded left-to-right into
@@ -130,54 +147,56 @@ private def workerMapReduceM (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
     (Array.mkEmpty startsCap) (Array.mkEmpty startsCap)
 
 /-- Run one fallible chunk and return its first failing index and error.
-Explicit recursion keeps early-exit bookkeeping out of the success loop. -/
-private partial def runChunk (xs : Array α) (f : α → BaseIO (Except ε β))
-    (stop : Nat) (i : Nat) (values : Array β) :
+Explicit recursion keeps early-exit bookkeeping out of the success loop;
+the index bound makes each call total, so there is no missing-element
+case. -/
+@[specialize] private def runChunk (n : Nat) (g : Fin n → BaseIO (Except ε β))
+    (stop : Nat) (hstop : stop ≤ n) (i : Nat) (values : Array β) :
     BaseIO (Array β × Option (Nat × ε)) := do
-  if i < stop then
-    match xs[i]? with
-    | none => return (values, none)
-    | some x =>
-      match ← f x with
-      | .ok value => runChunk xs f stop (i + 1) (values.push value)
-      | .error e => return (values, some (i, e))
+  if h : i < stop then
+    match ← g ⟨i, Nat.lt_of_lt_of_le h hstop⟩ with
+    | .ok value => runChunk n g stop hstop (i + 1) (values.push value)
+    | .error e => return (values, some (i, e))
   else
     return (values, none)
+termination_by stop - i
 
-/-- Fallible `mapIO` worker. On failure it sets the cursor to `size`,
+/-- Fallible `tabulateIO` worker. On failure it sets the cursor to `n`,
 preventing new claims while current chunks run to completion, and retains
 the lowest-index failure; because chunks are claimed in order, all earlier
-elements have run when the workers join. Failed chunks are omitted; results
+indices have run when the workers join. Failed chunks are omitted; results
 are merged only when every worker succeeds. Grown siblings exit at their
 next claim after the cursor is poisoned. -/
-private partial def workerMapIOLoop (growth : BaseIO GrowResult)
+@[specialize] private partial def workerTabulateIOLoop (growth : BaseIO GrowResult)
     (cursor : IO.Ref Nat) (failure : IO.Ref (Option (Nat × ε)))
-    (xs : Array α) (f : α → BaseIO (Except ε β)) (chunkSize : Nat)
+    (n : Nat) (g : Fin n → BaseIO (Except ε β)) (chunkSize : Nat)
     (growing : Bool) (values : Array β) (starts : Array Nat) :
     BaseIO (Array β × Array Nat) := do
-  let start ← claim cursor xs.size chunkSize
-  if start ≥ xs.size then return (values, starts)
-  let stop := (start + chunkSize).min xs.size
+  let start ← claim cursor n chunkSize
+  if start ≥ n then return (values, starts)
+  let stop := (start + chunkSize).min n
   let growing ← if growing then (·.retryable) <$> growth else pure false
-  match ← runChunk xs f stop start values with
+  match ← runChunk n g stop (Nat.min_le_right _ _) start values with
   | (values, none) =>
-    workerMapIOLoop growth cursor failure xs f chunkSize growing values
+    workerTabulateIOLoop growth cursor failure n g chunkSize growing values
       (starts.push start)
   | (values, some (i, e)) =>
-    cursor.set xs.size
+    cursor.set n
     failure.modify fun current =>
       match current with
       | some (j, _) => if i < j then some (i, e) else current
       | none => some (i, e)
     return (values, starts)
 
-/-- Allocate worker-local buffers inside the task. -/
-private def workerMapIO (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
-    (failure : IO.Ref (Option (Nat × ε))) (xs : Array α)
-    (f : α → BaseIO (Except ε β)) (chunkSize valuesCap startsCap : Nat) :
+/-- Allocate worker-local buffers and build the worker's callback inside
+the task (see `workerTabulateM`). -/
+@[specialize] private def workerTabulateIO (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
+    (failure : IO.Ref (Option (Nat × ε))) (n : Nat)
+    (makeWorkerFn : Unit → Fin n → BaseIO (Except ε β))
+    (chunkSize valuesCap startsCap : Nat) :
     BaseIO (Array β × Array Nat) :=
-  workerMapIOLoop growth cursor failure xs f chunkSize true
-    (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
+  workerTabulateIOLoop growth cursor failure n (makeWorkerFn ()) chunkSize
+    true (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
 
 private def workerCount (size chunkSize : Nat) : Nat :=
   let chunks := (size + chunkSize - 1) / chunkSize
@@ -343,35 +362,47 @@ private def runGrowingRegion (slots : Nat)
   if inlineSlot then releaseSlot
   joinRegion region #[mine]
 
-/-! Workers for the pure runtimes (`mapImpl` and `mapReduceImpl`). Their inner
-loops call `f` and `op` without `BaseIO`. Bounds derived from `claim` justify
-the array reads; the proofs are erased at compile time. Task setup, claiming,
-bookkeeping, and ordered merging remain outside the inner loops. -/
+/-! Workers for the pure runtimes (`tabulateWithWorkerFnImpl` and
+`mapReduceImpl`).
+Their inner loops call `g`, `f`, and `op` without `BaseIO`. Bounds derived
+from `claim` justify the indexed calls and array reads; the proofs are
+erased at compile time. Task setup, claiming, bookkeeping, and ordered
+merging remain outside the inner loops. -/
 
-private def mapChunkPure (xs : Array α) (f : α → β) (stop : Nat)
-    (i : Nat) (values : Array β) : Array β :=
-  xs.foldl (fun values x => values.push (f x)) values i stop
+/-- Chunk loop for the pure tabulation runtime: append `g i` for every
+index in `[i, stop)`. An index loop with no underlying collection (compare
+`mergeLoop`); the bound `stop ≤ n` supplies each index's `Fin` proof,
+erased at compile time. -/
+@[specialize] private def tabulateChunk (n : Nat) (g : Fin n → β) (stop : Nat)
+    (hstop : stop ≤ n) (i : Nat) (values : Array β) : Array β :=
+  if h : i < stop then
+    tabulateChunk n g stop hstop (i + 1)
+      (values.push (g ⟨i, Nat.lt_of_lt_of_le h hstop⟩))
+  else values
+termination_by stop - i
 
-/-- Pure `map` worker with one team-growth attempt per successful claim.
-`growing` caches `growth`'s verdict: once the team is full the loop stops
-attempting, leaving no per-claim cost. -/
-private partial def workerMapPureLoop (growth : BaseIO GrowResult)
-    (cursor : IO.Ref Nat) (xs : Array α) (f : α → β) (chunkSize : Nat)
+/-- Pure tabulation worker with one team-growth attempt per successful
+claim. `growing` caches `growth`'s verdict: once the team is full the loop
+stops attempting, leaving no per-claim cost. -/
+@[specialize] private partial def workerTabulatePureLoop (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (n : Nat) (g : Fin n → β) (chunkSize : Nat)
     (growing : Bool) (values : Array β) (starts : Array Nat) :
     BaseIO (Array β × Array Nat) := do
-  let start ← claim cursor xs.size chunkSize
-  if start ≥ xs.size then return (values, starts)
-  let stop := (start + chunkSize).min xs.size
+  let start ← claim cursor n chunkSize
+  if start ≥ n then return (values, starts)
+  let stop := (start + chunkSize).min n
   let growing ← if growing then (·.retryable) <$> growth else pure false
-  workerMapPureLoop growth cursor xs f chunkSize growing
-    (mapChunkPure xs f stop start values)
+  workerTabulatePureLoop growth cursor n g chunkSize growing
+    (tabulateChunk n g stop (Nat.min_le_right _ _) start values)
     (starts.push start)
 
-/-- Allocate worker-local buffers inside the task. -/
-private def workerMapPure (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
-    (xs : Array α) (f : α → β) (chunkSize valuesCap startsCap : Nat) :
+/-- Allocate worker-local buffers and build the worker's callback inside
+the task (see `workerTabulateM`). -/
+@[specialize] private def workerTabulatePure (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (n : Nat) (makeWorkerFn : Unit → Fin n → β)
+    (chunkSize valuesCap startsCap : Nat) :
     BaseIO (Array β × Array Nat) :=
-  workerMapPureLoop growth cursor xs f chunkSize true
+  workerTabulatePureLoop growth cursor n (makeWorkerFn ()) chunkSize true
     (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
 
 private def reduceChunkPure (xs : Array α) (f : α → β) (op : β → β → β)
@@ -522,22 +553,54 @@ private def mergeReduce (outs : Array (Array β × Array Nat))
         (startsCapacity ps.size count levelChunk)
     return (orderedPartials levelOuts ps.size levelChunk).foldl op init
 
-/-- Parallel map using at most one task per configured worker. Workers claim
-chunks dynamically, and the results are restored to input order. `chunkSize`
-is clamped to at least one. -/
+/-- Parallel engine for monadic tabulation; preconditions (more than one
+worker, `n > chunkSize`) are checked by callers. `makeWorkerFn` builds
+each worker's callback inside its task (see `workerTabulateM`). -/
+@[specialize] private def tabulateMCore (n : Nat)
+    (makeWorkerFn : Unit → Fin n → BaseIO β) (chunkSize : Nat) :
+    BaseIO (Array β) := do
+  let count := workerCount n chunkSize
+  let cursor ← IO.mkRef 0
+  let outs ← runGrowingRegion (count - 1) fun growth =>
+    workerTabulateM growth cursor n makeWorkerFn chunkSize
+      (valuesCapacity n count)
+      (startsCapacity n count chunkSize)
+  return merge outs n chunkSize
+
+/-- Monadic tabulation taking the worker-callback factory itself (see
+`tabulateWithWorkerFn` for the boundary's purpose). -/
+@[specialize] private def tabulateMWithWorkerFn (n : Nat)
+    (makeWorkerFn : Unit → Fin n → BaseIO β) (chunkSize : Nat := 1) :
+    BaseIO (Array β) := do
+  let chunkSize := chunkSize.max 1
+  if config.workers == 1 || n ≤ chunkSize then
+    tabulateChunkM n (makeWorkerFn ()) n (Nat.le_refl n) 0
+      (Array.mkEmpty n)
+  else
+    tabulateMCore n makeWorkerFn chunkSize
+
+/-- Parallel monadic tabulation using at most one task per configured
+worker: build the array whose entry at `i` is the result of `g i`. Workers
+claim chunks dynamically, and the results are restored to index order.
+Result positions are deterministic, but `g`'s externally observable
+effects can reveal scheduling: effects within a chunk run in index order,
+while cross-chunk effect order is unspecified and depends on `chunkSize`
+and the worker count. `chunkSize` is clamped to at least one. -/
+@[inline]
+def tabulateM (n : Nat) (g : Fin n → BaseIO β) (chunkSize : Nat := 1) :
+    BaseIO (Array β) :=
+  tabulateMWithWorkerFn n (fun _ i => g i) chunkSize
+
+/-- Parallel monadic map: tabulation reading the input at each index, with
+the scheduling and effect-order behaviour of `tabulateM`. The serial fast
+path folds the array directly. -/
 def mapM (xs : Array α) (f : α → BaseIO β) (chunkSize : Nat := 1) :
     BaseIO (Array β) := do
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
     xs.mapM f
   else
-    let count := workerCount xs.size chunkSize
-    let cursor ← IO.mkRef 0
-    let outs ← runGrowingRegion (count - 1) fun growth =>
-      workerMapM growth cursor xs f chunkSize
-        (valuesCapacity xs.size count)
-        (startsCapacity xs.size count chunkSize)
-    return merge outs xs.size chunkSize
+    tabulateMCore xs.size (fun _ => fun i => f xs[i]) chunkSize
 
 /-- Monadic map-reduce using dynamically claimed chunks. Each chunk produces
 one partial; `mergeReduce` combines them in input order. `op` must be
@@ -555,21 +618,23 @@ def mapReduceM (xs : Array α) (f : α → BaseIO β) (op : β → β → β)
         (startsCapacity xs.size count chunkSize)
     mergeReduce outs xs.size chunkSize op init
 
-/-- Parallel engine for the pure `map` runtime; preconditions (more than one
-worker, `size > chunkSize`) are checked by `mapImpl`. -/
-private def mapCoreIO (xs : Array α) (f : α → β) (chunkSize : Nat) :
+/-- Parallel engine for the pure tabulation runtime; preconditions (more
+than one worker, `n > chunkSize`) are checked by
+`tabulateWithWorkerFnImpl`. -/
+@[specialize] private def tabulateCoreIO (n : Nat)
+    (makeWorkerFn : Unit → Fin n → β) (chunkSize : Nat) :
     BaseIO (Array β) := do
-  let base := workerCount xs.size chunkSize
+  let base := workerCount n chunkSize
   let cursor ← IO.mkRef 0
   -- The caller runs one worker inline, so the spawn cap is `base - 1`.
   let outs ← runGrowingRegion (base - 1) fun growth =>
-    workerMapPure growth cursor xs f chunkSize
-      (valuesCapacity xs.size base)
-      (startsCapacity xs.size base chunkSize)
-  return merge outs xs.size chunkSize
+    workerTabulatePure growth cursor n makeWorkerFn chunkSize
+      (valuesCapacity n base)
+      (startsCapacity n base chunkSize)
+  return merge outs n chunkSize
 
 /-- Parallel engine for the pure `mapReduce` runtime; preconditions as for
-`mapCoreIO`. -/
+`tabulateCoreIO`. -/
 private def reduceCoreIO (xs : Array α) (f : α → β) (op : β → β → β)
     (init : β) (chunkSize : Nat) : BaseIO β := do
   let count := workerCount xs.size chunkSize
@@ -579,22 +644,51 @@ private def reduceCoreIO (xs : Array α) (f : α → β) (op : β → β → β)
       (startsCapacity xs.size count chunkSize)
   mergeReduce outs xs.size chunkSize op init
 
-/-- Runtime implementation of `map`. Its public specification is `xs.map f`,
-so tasks and scheduling are absent from proofs. -/
+/-- Runtime implementation of `tabulateWithWorkerFn`. Specialised so a
+literal factory at a call site (as in `mapImpl`) reaches the engine chain
+intact. -/
+@[specialize] private unsafe def tabulateWithWorkerFnImpl.{u} {α : Type u} (n : Nat)
+    (makeWorkerFn : Unit → Fin n → α) (chunkSize : Nat := 1) : Array α :=
+  let chunkSize := chunkSize.max 1
+  if config.workers == 1 || n ≤ chunkSize then
+    -- Serial fast path through the chunk loop: no task setup, unchecked
+    -- indexed calls, and with `stop = n` the loop is exactly the
+    -- specification.
+    tabulateChunk n (makeWorkerFn ()) n (Nat.le_refl n) 0 (Array.mkEmpty n)
+  else
+    -- `unsafeBaseIO` is justified because the callback is pure and the
+    -- result does not depend on scheduling. The `NonScalar` cast bridges
+    -- `BaseIO`'s `Type 0` boundary using the boxed erasure pattern from
+    -- `Array.mapMUnsafe`.
+    unsafeCast (unsafeBaseIO (tabulateCoreIO n
+      (unsafeCast makeWorkerFn : Unit → Fin n → NonScalar) chunkSize))
+
+/-- Tabulation taking the worker-callback factory itself: the runtime runs
+the factory once per worker inside its task (see `workerTabulateM`), and
+the specification applies it once. Receiving the factory here, behind the
+public `@[inline]` wrappers, lets a lambda at an ordinary call site be
+beta-reduced into the factory before closure conversion, so the callback
+is constructed inside each worker's specialised code. -/
+@[implemented_by tabulateWithWorkerFnImpl]
+private def tabulateWithWorkerFn.{u} {α : Type u} (n : Nat)
+    (makeWorkerFn : Unit → Fin n → α) (chunkSize : Nat := 1) : Array α :=
+  Array.ofFn (makeWorkerFn ())
+
+/-- Parallel indexed tabulation, the primitive under `map`: build the array
+whose entry at `i` is `g i`. Its specification is `Array.ofFn g` for every
+`chunkSize`; chunk size affects runtime scheduling, not the result, and
+`g` observes only its index, never workers, claims, or chunk boundaries. -/
+@[inline]
+def tabulate.{u} {α : Type u} (n : Nat) (g : Fin n → α)
+    (chunkSize : Nat := 1) : Array α :=
+  tabulateWithWorkerFn n (fun _ i => g i) chunkSize
+
+/-- Runtime implementation of `map`: tabulation reading the input at each
+index; `i.isLt` justifies the unchecked read. Its public specification is
+`xs.map f`, so tasks and scheduling are absent from proofs. -/
 private unsafe def mapImpl.{u, v} {α : Type u} {β : Type v}
     (xs : Array α) (f : α → β) (chunkSize : Nat := 1) : Array β :=
-  let chunkSize := chunkSize.max 1
-  if config.workers == 1 || xs.size ≤ chunkSize then
-    -- Serial fast path through the bounded chunk fold: the bound is
-    -- clamped once and the inner reads are unchecked, and with
-    -- `stop = xs.size` the fold is exactly `xs.map f`.
-    mapChunkPure xs f xs.size 0 (Array.mkEmpty xs.size)
-  else
-    -- `unsafeBaseIO` is justified because `f` is pure and the result does not
-    -- depend on scheduling. The `NonScalar` casts bridge `BaseIO`'s `Type 0`
-    -- boundary using the boxed erasure pattern from `Array.mapMUnsafe`.
-    unsafeCast (unsafeBaseIO (mapCoreIO (unsafeCast xs : Array NonScalar)
-      (unsafeCast f : NonScalar → NonScalar) chunkSize))
+  tabulateWithWorkerFnImpl xs.size (fun _ i => f xs[i]) chunkSize
 
 /-- Parallel `Array.map`, preserving input order. Its specification is
 `xs.map f` for every `chunkSize`; chunk size affects runtime scheduling, not
@@ -625,8 +719,9 @@ private unsafe def mapReduceImpl.{u, v} {α : Type u} {β : Type v}
     -- fold of the specification.
     reduceChunkPure xs f op xs.size 0 init
   else
-    -- The same trust boundary as `mapImpl`; `op` and `init` are also cast
-    -- through `NonScalar`.
+    -- The same trust boundary as `tabulateWithWorkerFnImpl`; `op` and
+    -- `init` are also
+    -- cast through `NonScalar`.
     unsafeCast (unsafeBaseIO (reduceCoreIO (unsafeCast xs : Array NonScalar)
       (unsafeCast f : NonScalar → NonScalar)
       (unsafeCast op) (unsafeCast init) chunkSize))
@@ -643,25 +738,60 @@ def mapReduce.{u, v} {α : Type u} {β : Type v}
     (chunkSize : Nat := 1) [Std.Associative op] : β :=
   (xs.map f).foldl op init
 
-/-- Parallel `IO` map. A failure stops new claims; after current chunks finish,
-the failure with the lowest input index is rethrown deterministically (see
-`workerMapIOLoop`). `chunkSize` is clamped to at least one. -/
+/-- Parallel engine for fallible tabulation; preconditions (more than one
+worker, `n > chunkSize`) are checked by callers. `makeWorkerFn` builds
+each worker's callback inside its task (see `workerTabulateM`). -/
+@[specialize] private def tabulateIOCore (n : Nat)
+    (makeWorkerFn : Unit → Fin n → BaseIO (Except IO.Error β))
+    (chunkSize : Nat) : IO (Array β) := do
+  let count := workerCount n chunkSize
+  let cursor ← IO.mkRef 0
+  let failure ← IO.mkRef (none : Option (Nat × IO.Error))
+  let outs ← runGrowingRegion (count - 1) fun growth =>
+    workerTabulateIO growth cursor failure n makeWorkerFn
+      chunkSize (valuesCapacity n count)
+      (startsCapacity n count chunkSize)
+  match ← failure.get with
+  | some (_, e) => throw e
+  | none => return merge outs n chunkSize
+
+/-- Fallible tabulation taking the worker-callback factory itself (see
+`tabulateWithWorkerFn` for the boundary's purpose). -/
+@[specialize] private def tabulateIOWithWorkerFn (n : Nat)
+    (makeWorkerFn : Unit → Fin n → BaseIO (Except IO.Error β))
+    (chunkSize : Nat := 1) : IO (Array β) := do
+  let chunkSize := chunkSize.max 1
+  if config.workers == 1 || n ≤ chunkSize then
+    match ← (runChunk n (makeWorkerFn ()) n (Nat.le_refl n) 0
+        (Array.mkEmpty n) : BaseIO _) with
+    | (values, none) => return values
+    | (_, some (_, e)) => throw e
+  else
+    tabulateIOCore n makeWorkerFn chunkSize
+
+/-- Parallel fallible tabulation: build the array whose entry at `i` is
+the result of `g i`. A failure stops new claims; after current chunks
+finish, the failure with the lowest index is rethrown deterministically
+(see `workerTabulateIOLoop`). The selected error and all result positions
+are deterministic, but `g`'s externally observable effects can reveal
+scheduling: effects within a chunk run in index order, while cross-chunk
+effect order is unspecified and depends on `chunkSize` and the worker
+count. `chunkSize` is clamped to at least one. -/
+@[inline]
+def tabulateIO (n : Nat) (g : Fin n → IO β) (chunkSize : Nat := 1) :
+    IO (Array β) :=
+  tabulateIOWithWorkerFn n (fun _ i => (g i).toBaseIO) chunkSize
+
+/-- Parallel `IO` map: tabulation reading the input at each index, with the
+fail-fast, lowest-index error and effect-order behaviour of `tabulateIO`.
+The serial fast path traverses the array directly. -/
 def mapIO (xs : Array α) (f : α → IO β) (chunkSize : Nat := 1) :
     IO (Array β) := do
   let chunkSize := chunkSize.max 1
   if config.workers == 1 || xs.size ≤ chunkSize then
     xs.mapM f
   else
-    let count := workerCount xs.size chunkSize
-    let cursor ← IO.mkRef 0
-    let failure ← IO.mkRef (none : Option (Nat × IO.Error))
-    let outs ← runGrowingRegion (count - 1) fun growth =>
-      workerMapIO growth cursor failure xs (fun x => (f x).toBaseIO) chunkSize
-        (valuesCapacity xs.size count)
-        (startsCapacity xs.size count chunkSize)
-    match ← failure.get with
-    | some (_, e) => throw e
-    | none => return merge outs xs.size chunkSize
+    tabulateIOCore xs.size (fun _ => fun i => (f xs[i]).toBaseIO) chunkSize
 
 /-- Parallel `IO` traversal, fail-fast with the same deterministic
 smallest-index error reporting as `mapIO`. -/
@@ -682,15 +812,25 @@ the optional second reduction level -- and the bridge asserting that the
 concurrent runtime always yields well-formed worker output remain open (see
 LINEN.md). -/
 
-/-- The pure map chunk loop computes exactly the mapped slice, appended to
-the accumulator. -/
-private theorem mapChunkPure_eq (xs : Array α) (f : α → β) (stop : Nat)
-    (i : Nat) (values : Array β) :
-    mapChunkPure xs f stop i values
-      = values ++ (xs.extract i stop).map f := by
-  unfold mapChunkPure
-  rw [Array.foldl_eq_foldl_extract]
-  grind
+/-- The tabulation chunk loop computes exactly the specification slice,
+appended to the accumulator. -/
+private theorem tabulateChunk_eq (n : Nat) (g : Fin n → β) (stop : Nat)
+    (hstop : stop ≤ n) (i : Nat) (values : Array β) :
+    tabulateChunk n g stop hstop i values
+      = values ++ (Array.ofFn g).extract i stop := by
+  fun_induction tabulateChunk with
+  | case1 i values h ih =>
+    have hi : i < (Array.ofFn g).size := by
+      simpa using Nat.lt_of_lt_of_le h hstop
+    have hsingle : (Array.ofFn g).extract i (i + 1)
+        = #[g ⟨i, Nat.lt_of_lt_of_le h hstop⟩] := by
+      rw [show (Array.ofFn g).extract i (i + 1)
+          = #[(Array.ofFn g)[i]] from by grind]
+      simp
+    rw [ih, Array.push_eq_append, Array.append_assoc, ← hsingle,
+      Array.extract_append_extract]
+    grind
+  | case2 i values h => grind
 
 /-- The pure reduce chunk loop is the left fold of the mapped slice. -/
 private theorem reduceChunkPure_eq (xs : Array α) (f : α → β)
@@ -701,11 +841,28 @@ private theorem reduceChunkPure_eq (xs : Array α) (f : α → β)
   rw [Array.foldl_eq_foldl_extract]
   grind [Array.foldl_map]
 
+/-- The serial fast path of `tabulateWithWorkerFnImpl` is the
+specification. -/
+private theorem tabulateChunk_full (n : Nat) (g : Fin n → β) :
+    tabulateChunk n g n (Nat.le_refl n) 0 (Array.mkEmpty n)
+      = Array.ofFn g := by
+  simp [tabulateChunk_eq]
+
+/-- Tabulating the indexed reads of `xs` through `f` is the map
+specification: `map`'s instantiation of the tabulation engine is exact. -/
+private theorem ofFn_read_eq_map (xs : Array α) (f : α → β) :
+    (Array.ofFn fun i : Fin xs.size => f xs[i]) = xs.map f := by
+  calc (Array.ofFn fun i : Fin xs.size => f xs[i])
+      = (Array.ofFn fun i : Fin xs.size => xs[(i : Nat)]).map f := by
+        rw [Array.map_ofFn]
+        rfl
+    _ = xs.map f := by rw [Array.ofFn_getElem]
+
 /-- The serial fast path of `mapImpl` is the specification. -/
-private theorem mapChunkPure_full (xs : Array α) (f : α → β) :
-    mapChunkPure xs f xs.size 0 (Array.mkEmpty xs.size)
-      = xs.map f := by
-  simp [mapChunkPure_eq]
+private theorem tabulateChunk_map_full (xs : Array α) (f : α → β) :
+    tabulateChunk xs.size (fun i => f xs[i]) xs.size (Nat.le_refl xs.size)
+      0 (Array.mkEmpty xs.size) = xs.map f := by
+  rw [tabulateChunk_full, ofFn_read_eq_map]
 
 /-- The serial fast path of `mapReduceImpl` is the specification's fused
 left fold. -/
