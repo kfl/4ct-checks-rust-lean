@@ -110,8 +110,9 @@ values are ignored; failure to query the core count falls back to one worker.
 ## Verification status
 
 The pure compiled implementations cross an `unsafeBaseIO`/`unsafeCast`
-boundary. Their complete equivalence to the serial specifications has not yet
-been proved in Lean.
+boundary. Lean provides no semantics for refs or tasks against which their
+execution could be proved, so the development minimises rather than hides or
+eliminates this trusted boundary.
 
 The following parts are proved in `Linen.lean`:
 
@@ -130,15 +131,22 @@ The following parts are proved in `Linen.lean`:
 - Placement tables depend only on the logical runs, not their order.
 - Given `WFOuts`, `merge_wf` reconstructs `xs.map f`; its `Array.ofFn`
   instantiation, `merge_wf_ofFn`, reconstructs a tabulation result.
+- Replaying any partitioned per-worker claim schedule produces `WFOuts`.
+  Consequently, `replay_merge`, `replay_merge_ofFn`, and `replay_reduce`
+  establish the serial map, tabulation, and reduction results for every such
+  schedule.
 
-`tabulateChunk_piece` connects one tabulation claim to the piece expected by
-that assembly proof. It does not prove that concurrent runtime workers produce
-`WFOuts`.
+`tabulateChunk_piece` and `reduceChunkPure_partial` connect individual claims
+to the pieces consumed by replay. The remaining runtime-to-replay
+correspondence assumes that:
 
-The following remain open:
+- successful claims collectively partition the chunk ordinals;
+- each worker processes and records its claims as replay specifies;
+- `joinRegion` returns the inline output and every spawned worker's output; and
+- `unsafeCast`/`unsafeBaseIO` preserve the pure callbacks and values.
 
-- proving that atomic claims and task execution always produce `WFOuts`, which
-  would close the pure parallel correspondence across the unsafe boundary;
+The following proof work remains:
+
 - formal result-order and error specifications for the effectful combinators,
   with explicit assumptions about observable effects; and
 - the worker-budget, release, and liveness invariants of nested growth and
@@ -216,11 +224,12 @@ journal rather than this document.
 
 ## TODO
 
-- [ ] Prove that concurrent tabulation, map, and reduce workers establish
-      `WFOuts`, then close their correspondence with the serial
-      specifications across the `unsafeBaseIO` boundary. The proof-carrying
-      carriers reduce the obligation to value correspondence and exactly-once
-      coverage: alignment and range hold by construction.
+- [x] Concurrent bridge, reduced to a small trusted boundary: the schedule-replay
+      model (`Schedule`, `replaySchedule_wf`, `replay_merge`,
+      `replay_merge_ofFn`, `replay_reduce`) proves any partitioned claim
+      trace yields the serial results. The four-point trusted statement
+      in the verification-status section is the residual boundary without
+      semantics for refs, tasks, and `unsafeBaseIO`.
 - [ ] Give `tabulateM`, `tabulateIO`, `mapM`, `mapReduceM`, and `mapIO` formal
       specifications for result order and error selection. Carry failure
       indices as `Fin n` first: `runChunk` already holds the proof it

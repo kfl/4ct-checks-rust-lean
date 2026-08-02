@@ -1633,6 +1633,121 @@ private theorem orderedPartials_foldl_wf_id (ps : Array β)
     (orderedPartials outs).foldl op init = ps.foldl op init := by
   rw [orderedPartials_foldl_wf ps id op ck outs init h, Array.map_id]
 
+/-! ## Schedule replay
+
+Lean exposes no semantics for refs, tasks, or `unsafeBaseIO` against
+which the workers' execution can be proved. Instead, a schedule -- the
+ordered claim trace of every worker -- is modelled as pure data, and a
+pure replay of any partitioned schedule is proved to produce well-formed
+output. The assembly theorems then finish the job. What stays trusted is:
+
+- successful claims collectively form a partition of all ordinals;
+- each worker processes and records its successful claims as the replay
+  model specifies (per-claim content is the proved `tabulateChunk_piece`
+  and `reduceChunkPure_partial`);
+- `joinRegion` returns the inline output and every spawned worker's
+  output; and
+- the `unsafeCast`/`unsafeBaseIO` bridge preserves the pure callback and
+  values.
+
+The scheduler is trusted only to produce a partitioned trace and execute
+it faithfully; all content, ordering, placement, and reduction reasoning
+is kernel-checked. -/
+
+/-- A schedule: each worker's successfully claimed ordinals, in claim
+order. Order matters because buffer offsets depend on it; the carrier
+matches the runtime workers' own recording. -/
+private abbrev Schedule {n : Nat} (ck : Chunking n) :=
+  Array (Array ck.Ordinal)
+
+/-- A worker/position pair whose claimed ordinal is `o`, mirroring
+`RunAt` on the schedule side. -/
+private structure ClaimAt {n : Nat} {ck : Chunking n}
+    (sched : Schedule ck) (o : ck.Ordinal) where
+  worker : Nat
+  position : Nat
+  claims : Array ck.Ordinal
+  worker_eq : sched[worker]? = some claims
+  claim_eq : claims[position]? = some o
+
+/-- A schedule partitions the ordinals: every ordinal is claimed at
+exactly one worker and position. -/
+private def Schedule.Partition {n : Nat} {ck : Chunking n}
+    (sched : Schedule ck) : Prop :=
+  ∀ o : ck.Ordinal,
+    ∃ c : ClaimAt sched o, ∀ other : ClaimAt sched o,
+      other.worker = c.worker ∧ other.position = c.position
+
+/-- Pure replay of one worker: append each claim's piece and record its
+ordinal, in claim order -- per claim, exactly what the runtime workers do. -/
+@[reducible] private noncomputable def replayWorker {n : Nat} {ck : Chunking n}
+    (piece : ck.Ordinal → Array β) (claims : Array ck.Ordinal) :
+    WorkerOut ck β where
+  values := claims.foldl (fun acc o => acc ++ piece o) #[]
+  ordinals := claims
+
+/-- A replayed worker is well formed, definitionally: its buffer is the
+fold `WFWorkerOut` asks for. -/
+private theorem replayWorker_wf {n : Nat} {ck : Chunking n}
+    (piece : ck.Ordinal → Array β) (claims : Array ck.Ordinal) :
+    WFWorkerOut piece (replayWorker piece claims) :=
+  ⟨rfl⟩
+
+/-- Pure replay of a whole schedule: one worker output per trace. -/
+private noncomputable def replaySchedule {n : Nat} {ck : Chunking n}
+    (piece : ck.Ordinal → Array β) (sched : Schedule ck) :
+    Array (WorkerOut ck β) :=
+  sched.map (replayWorker piece)
+
+/-- A partitioned schedule replays to well-formed collective output: the
+pure content of the concurrent bridge. -/
+private theorem replaySchedule_wf {n : Nat} {ck : Chunking n}
+    (piece : ck.Ordinal → Array β) (sched : Schedule ck)
+    (h : sched.Partition) :
+    WFOuts piece (replaySchedule piece sched) := by
+  refine ⟨by grind only [replaySchedule, = Array.mem_toList_iff,
+    = Array.mem_map, replayWorker_wf], ?_⟩
+  intro o
+  obtain ⟨c, huniq⟩ := h o
+  refine ⟨⟨c.worker, c.position, replayWorker piece c.claims,
+    by
+      rw [Array.getElem?_toList, replaySchedule, Array.getElem?_map,
+        c.worker_eq, Option.map_some],
+    c.claim_eq⟩, ?_⟩
+  intro other
+  obtain ⟨w, k, out, hw, hk⟩ := other
+  obtain ⟨claims, hclaims, rfl⟩ := Option.map_eq_some_iff.mp
+    (by simpa [replaySchedule, Array.getElem?_toList,
+      Array.getElem?_map] using hw)
+  exact huniq ⟨w, k, claims, hclaims, hk⟩
+
+/-- Any partitioned schedule replays to the serial map result. -/
+private theorem replay_merge (xs : Array α) (f : α → β)
+    (ck : Chunking xs.size) (sched : Schedule ck) (h : sched.Partition) :
+    merge ck (replaySchedule
+      (fun o => chunkSlice xs f ck.chunkSize (ck.start o)) sched)
+      = xs.map f :=
+  merge_wf xs f ck _ (replaySchedule_wf _ sched h)
+
+/-- Any partitioned schedule replays to the tabulation result. -/
+private theorem replay_merge_ofFn (n : Nat) (g : Fin n → β)
+    (ck : Chunking (Array.ofFn g).size) (sched : Schedule ck)
+    (h : sched.Partition) :
+    merge ck (replaySchedule
+      (fun o => chunkSlice (Array.ofFn g) id ck.chunkSize (ck.start o))
+      sched)
+      = Array.ofFn g :=
+  merge_wf_ofFn n g ck _ (replaySchedule_wf _ sched h)
+
+/-- Any partitioned schedule replays to the serial reduction. -/
+private theorem replay_reduce (xs : Array α) (f : α → β)
+    (op : β → β → β) [Std.Associative op] (ck : Chunking xs.size)
+    (sched : Schedule ck) (h : sched.Partition) (init : β) :
+    (orderedPartials (replaySchedule
+        (fun o => #[reducePartial xs f op ck o]) sched)).foldl op init
+      = (xs.map f).foldl op init :=
+  orderedPartials_foldl_wf xs f op ck _ init (replaySchedule_wf _ sched h)
+
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
 def activeSlots : BaseIO Nat :=
