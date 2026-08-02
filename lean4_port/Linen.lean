@@ -109,11 +109,8 @@ so a full team costs nothing per claim. -/
   workerTabulateMLoop growth cursor n g chunkSize growing values
     (starts.push start)
 
-/-- Allocate worker-local buffers and build the worker's callback inside
-the task. The factory keeps the callback's construction inside the
-specialised worker code, so each instantiation receives its captured
-inputs directly rather than through one composed closure built at the
-call site. -/
+/-- Allocate worker-local buffers and construct the callback inside the
+worker. -/
 @[specialize] private def workerTabulateM (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
     (n : Nat) (makeWorkerFn : Unit → Fin n → BaseIO β)
     (chunkSize valuesCap startsCap : Nat) :
@@ -188,8 +185,8 @@ next claim after the cursor is poisoned. -/
       | none => some (i, e)
     return (values, starts)
 
-/-- Allocate worker-local buffers and build the worker's callback inside
-the task (see `workerTabulateM`). -/
+/-- Allocate worker-local buffers and construct the callback inside the
+worker. -/
 @[specialize] private def workerTabulateIO (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
     (failure : IO.Ref (Option (Nat × ε))) (n : Nat)
     (makeWorkerFn : Unit → Fin n → BaseIO (Except ε β))
@@ -204,16 +201,12 @@ private def workerCount (size chunkSize : Nat) : Nat :=
 
 /-! ## Occupancy-based team sizing
 
-Sizing a team from the chunk count alone would let concurrently running
-regions oversubscribe the machine: each nested region would start its own
-full team. Instead the process holds a single worker-slot budget of
-`config.workers`. A region spawns a worker task only while it can reserve a
-slot, and always runs one worker inline on its caller (holding a slot when
-one is free, proceeding without one otherwise), so at most `config.workers`
-Linen worker tasks are live or queued at any time and nested work without a
-slot runs on its caller. The budget covers Linen-created workers only, not other tasks
-in the process. Workers retry reservation on each claim, so a team that
-started small grows as other regions retire and release slots. -/
+All regions share `config.workers` slots. A region spawns only after reserving
+a slot and always runs one worker inline, with or without a slot, so nested
+work cannot lose progress when the budget is full. At most `config.workers`
+Linen-created worker tasks are live or queued; the budget does not cover other
+tasks in the process. Workers retry reservations after claims, letting a team
+grow as other regions release slots. -/
 
 /-- Live count of reserved worker slots. Kept scalar in a ref of its own so
 the per-claim growth gate reads it without touching a shared boxed object; a
@@ -287,19 +280,13 @@ private structure Region (β : Type) where
   spawned : IO.Ref Nat
   registry : IO.Ref (Array (Task (Array β × Array Nat)))
 
-/-- One team-growth attempt: reserve a global slot, then a team position, and
-spawn a sibling worker holding both. The slot is released again if another
-worker took the region's last position first; the atomic position counter is
-what bounds the team, since concurrent workers could all pass a plain read of
-it. Two plain reads of scalar counters gate the reservation, so a saturated
-pool costs no read-modify-write per claim (budget denials under the read
-gate therefore go unrecorded; `deniedBudget` counts lost races only). The
-team-position gate comes first: a full team is permanent for the region --
-`spawned` never decreases -- so `teamFull` lets callers stop attempting for
-the rest of the region, while `budgetFull` is transient and worth retrying.
-A spawned child is registered before its spawner can finish, which
-`joinRegion` relies on. `fromWorker` distinguishes per-claim growth from
-entry seeding in the statistics. -/
+/-- Reserve a global slot and a region team position, then spawn a sibling.
+Plain reads gate the atomic reservations, avoiding read-modify-write traffic
+while the pool or team is full. The team counter resolves races for the last
+position; a loser releases its slot. `teamFull` is permanent because
+`spawned` never decreases, while `budgetFull` is worth retrying. The child is
+registered before its spawner can finish, as required by `joinRegion`.
+`fromWorker` distinguishes growth from entry seeding in the statistics. -/
 private partial def growTeam (region : Region β) (fromWorker : Bool)
     (mkWork : BaseIO GrowResult → BaseIO (Array β × Array Nat)) :
     BaseIO GrowResult := do
@@ -336,18 +323,12 @@ private def joinRegion (region : Region β)
       outs := outs.push (← IO.wait task)
   return outs
 
-/-- Run one region under the occupancy policy: seed the team from the free
-budget, run one worker inline on the caller (the region's progress guarantee;
-it proceeds with or without a slot), and join. Per-claim growth attempts let
-the team approach `slots` as the budget frees up, so a region that started
-small is not stuck small. The inline worker holds a slot when one is free: a
-fully used budget is then visible to the growth read gates, which would
-otherwise chase a permanently free slot with a reservation per claim. A
-caller that is itself a slotted worker thereby reserves a second slot for
-its inline role, conservatively under-provisioning some nested teams by one;
-tracking execution context to avoid this is deliberately out of scope.
-Seeding stops at the first denial, so on a saturated pool a nested region
-costs a few counter reads rather than `slots` growth attempts. -/
+/-- Seed a region from the free budget, run one worker inline, then join all
+spawned workers. The inline worker reserves a slot when possible so the growth
+gates see the occupied capacity; a nested caller may therefore hold one slot
+for its outer role and another for its inline inner role. Growth after each
+claim lets a region expand when slots become free. Seeding stops at the first
+denial. -/
 private def runGrowingRegion (slots : Nat)
     (mkWork : BaseIO GrowResult → BaseIO (Array β × Array Nat)) :
     BaseIO (Array (Array β × Array Nat)) := do
@@ -396,8 +377,8 @@ stops attempting, leaving no per-claim cost. -/
     (tabulateChunk n g stop (Nat.min_le_right _ _) start values)
     (starts.push start)
 
-/-- Allocate worker-local buffers and build the worker's callback inside
-the task (see `workerTabulateM`). -/
+/-- Allocate worker-local buffers and construct the callback inside the
+worker. -/
 @[specialize] private def workerTabulatePure (growth : BaseIO GrowResult)
     (cursor : IO.Ref Nat) (n : Nat) (makeWorkerFn : Unit → Fin n → β)
     (chunkSize valuesCap startsCap : Nat) :
@@ -553,9 +534,8 @@ private def mergeReduce (outs : Array (Array β × Array Nat))
         (startsCapacity ps.size count levelChunk)
     return (orderedPartials levelOuts ps.size levelChunk).foldl op init
 
-/-- Parallel engine for monadic tabulation; preconditions (more than one
-worker, `n > chunkSize`) are checked by callers. `makeWorkerFn` builds
-each worker's callback inside its task (see `workerTabulateM`). -/
+/-- Parallel monadic-tabulation engine; callers ensure `config.workers > 1`
+and `n > chunkSize`. -/
 @[specialize] private def tabulateMCore (n : Nat)
     (makeWorkerFn : Unit → Fin n → BaseIO β) (chunkSize : Nat) :
     BaseIO (Array β) := do
@@ -567,8 +547,7 @@ each worker's callback inside its task (see `workerTabulateM`). -/
       (startsCapacity n count chunkSize)
   return merge outs n chunkSize
 
-/-- Monadic tabulation taking the worker-callback factory itself (see
-`tabulateWithWorkerFn` for the boundary's purpose). -/
+/-- Monadic tabulation behind the worker-callback factory boundary. -/
 @[specialize] private def tabulateMWithWorkerFn (n : Nat)
     (makeWorkerFn : Unit → Fin n → BaseIO β) (chunkSize : Nat := 1) :
     BaseIO (Array β) := do
@@ -591,11 +570,9 @@ def tabulateM (n : Nat) (g : Fin n → BaseIO β) (chunkSize : Nat := 1) :
     BaseIO (Array β) :=
   tabulateMWithWorkerFn n (fun _ i => g i) chunkSize
 
-/-- Parallel monadic map: tabulation reading the input at each index, with
-the scheduling and effect-order behaviour of `tabulateM`. The serial fast
-path folds the array directly. Inlined so the caller's mapper is
-beta-reduced into the worker-callback factory before closure conversion
-(see `tabulateWithWorkerFn`). -/
+/-- Parallel monadic map with the scheduling and effect-order behaviour of
+`tabulateM`. The serial fast path traverses the array directly. -/
+-- Inlining exposes the caller's mapper to the worker-callback factory.
 @[inline]
 def mapM (xs : Array α) (f : α → BaseIO β) (chunkSize : Nat := 1) :
     BaseIO (Array β) := do
@@ -621,9 +598,8 @@ def mapReduceM (xs : Array α) (f : α → BaseIO β) (op : β → β → β)
         (startsCapacity xs.size count chunkSize)
     mergeReduce outs xs.size chunkSize op init
 
-/-- Parallel engine for the pure tabulation runtime; preconditions (more
-than one worker, `n > chunkSize`) are checked by
-`tabulateWithWorkerFnImpl`. -/
+/-- Parallel pure-tabulation engine; its caller ensures `config.workers > 1`
+and `n > chunkSize`. -/
 @[specialize] private def tabulateCoreIO (n : Nat)
     (makeWorkerFn : Unit → Fin n → β) (chunkSize : Nat) :
     BaseIO (Array β) := do
@@ -647,9 +623,8 @@ private def reduceCoreIO (xs : Array α) (f : α → β) (op : β → β → β)
       (startsCapacity xs.size count chunkSize)
   mergeReduce outs xs.size chunkSize op init
 
-/-- Runtime implementation of `tabulateWithWorkerFn`. Specialised so a
-literal factory at a call site (as in `mapImpl`) reaches the engine chain
-intact. -/
+/-- Runtime implementation of `tabulateWithWorkerFn`, specialised so a
+literal factory reaches the worker loop intact. -/
 @[specialize] private unsafe def tabulateWithWorkerFnImpl.{u} {α : Type u} (n : Nat)
     (makeWorkerFn : Unit → Fin n → α) (chunkSize : Nat := 1) : Array α :=
   let chunkSize := chunkSize.max 1
@@ -666,12 +641,9 @@ intact. -/
     unsafeCast (unsafeBaseIO (tabulateCoreIO n
       (unsafeCast makeWorkerFn : Unit → Fin n → NonScalar) chunkSize))
 
-/-- Tabulation taking the worker-callback factory itself: the runtime runs
-the factory once per worker inside its task (see `workerTabulateM`), and
-the specification applies it once. Receiving the factory here, behind the
-public `@[inline]` wrappers, lets a lambda at an ordinary call site be
-beta-reduced into the factory before closure conversion, so the callback
-is constructed inside each worker's specialised code. -/
+/-- Specification boundary for worker-local callback construction. The
+runtime invokes the factory once per worker. Public `@[inline]` wrappers let
+ordinary lambdas enter the factory before closure conversion. -/
 @[implemented_by tabulateWithWorkerFnImpl]
 private def tabulateWithWorkerFn.{u} {α : Type u} (n : Nat)
     (makeWorkerFn : Unit → Fin n → α) (chunkSize : Nat := 1) : Array α :=
@@ -723,8 +695,7 @@ private unsafe def mapReduceImpl.{u, v} {α : Type u} {β : Type v}
     reduceChunkPure xs f op xs.size 0 init
   else
     -- The same trust boundary as `tabulateWithWorkerFnImpl`; `op` and
-    -- `init` are also
-    -- cast through `NonScalar`.
+    -- `init` are also cast through `NonScalar`.
     unsafeCast (unsafeBaseIO (reduceCoreIO (unsafeCast xs : Array NonScalar)
       (unsafeCast f : NonScalar → NonScalar)
       (unsafeCast op) (unsafeCast init) chunkSize))
@@ -741,9 +712,8 @@ def mapReduce.{u, v} {α : Type u} {β : Type v}
     (chunkSize : Nat := 1) [Std.Associative op] : β :=
   (xs.map f).foldl op init
 
-/-- Parallel engine for fallible tabulation; preconditions (more than one
-worker, `n > chunkSize`) are checked by callers. `makeWorkerFn` builds
-each worker's callback inside its task (see `workerTabulateM`). -/
+/-- Parallel fallible-tabulation engine; callers ensure `config.workers > 1`
+and `n > chunkSize`. -/
 @[specialize] private def tabulateIOCore (n : Nat)
     (makeWorkerFn : Unit → Fin n → BaseIO (Except IO.Error β))
     (chunkSize : Nat) : IO (Array β) := do
@@ -758,8 +728,7 @@ each worker's callback inside its task (see `workerTabulateM`). -/
   | some (_, e) => throw e
   | none => return merge outs n chunkSize
 
-/-- Fallible tabulation taking the worker-callback factory itself (see
-`tabulateWithWorkerFn` for the boundary's purpose). -/
+/-- Fallible tabulation behind the worker-callback factory boundary. -/
 @[specialize] private def tabulateIOWithWorkerFn (n : Nat)
     (makeWorkerFn : Unit → Fin n → BaseIO (Except IO.Error β))
     (chunkSize : Nat := 1) : IO (Array β) := do
@@ -785,11 +754,9 @@ def tabulateIO (n : Nat) (g : Fin n → IO β) (chunkSize : Nat := 1) :
     IO (Array β) :=
   tabulateIOWithWorkerFn n (fun _ i => (g i).toBaseIO) chunkSize
 
-/-- Parallel `IO` map: tabulation reading the input at each index, with the
-fail-fast, lowest-index error and effect-order behaviour of `tabulateIO`.
-The serial fast path traverses the array directly. Inlined so the
-caller's mapper is beta-reduced into the worker-callback factory before
-closure conversion (see `tabulateWithWorkerFn`). -/
+/-- Parallel `IO` map with the fail-fast, lowest-index error, and effect-order
+behaviour of `tabulateIO`. The serial fast path traverses the array directly. -/
+-- Inlining exposes the caller's mapper to the worker-callback factory.
 @[inline]
 def mapIO (xs : Array α) (f : α → IO β) (chunkSize : Nat := 1) :
     IO (Array β) := do
@@ -807,16 +774,10 @@ def forEach (xs : Array α) (f : α → IO Unit) (chunkSize : Nat := 1) :
 
 /-! ## Verified properties
 
-The runtime implementations' trust boundary sits at `unsafeBaseIO`: Lean
-cannot directly state kernel theorems about this unsafe task execution, so the
-correspondence between the parallel engine and the serial specifications is
-split into pure lemmas about the engine's pieces. Below, the serial chunk loops
-equal their specification slices, which verifies the serial fast paths
-outright; the associative regrouping core and `map`'s ordered-merge
-reconstruction are also proved. The reduce-side instantiation -- including
-the optional second reduction level -- and the bridge asserting that the
-concurrent runtime always yields well-formed worker output remain open (see
-LINEN.md). -/
+The runtime crosses an `unsafeBaseIO` boundary, so the correspondence is split
+into pure lemmas about its data path. The serial chunk loops, associative
+regrouping, and ordered assembly are proved below. The concurrent bridge and
+reduce-side assembly remain open; see LINEN.md. -/
 
 /-- The tabulation chunk loop computes exactly the specification slice,
 appended to the accumulator. -/
@@ -824,19 +785,8 @@ private theorem tabulateChunk_eq (n : Nat) (g : Fin n → β) (stop : Nat)
     (hstop : stop ≤ n) (i : Nat) (values : Array β) :
     tabulateChunk n g stop hstop i values
       = values ++ (Array.ofFn g).extract i stop := by
-  fun_induction tabulateChunk with
-  | case1 i values h ih =>
-    have hi : i < (Array.ofFn g).size := by
-      simpa using Nat.lt_of_lt_of_le h hstop
-    have hsingle : (Array.ofFn g).extract i (i + 1)
-        = #[g ⟨i, Nat.lt_of_lt_of_le h hstop⟩] := by
-      rw [show (Array.ofFn g).extract i (i + 1)
-          = #[(Array.ofFn g)[i]] from by grind]
-      simp
-    rw [ih, Array.push_eq_append, Array.append_assoc, ← hsingle,
-      Array.extract_append_extract]
-    grind
-  | case2 i values h => grind
+  fun_induction tabulateChunk <;>
+    grind [Array.getElem_ofFn, Array.push_eq_append, Array.size_ofFn]
 
 /-- The pure reduce chunk loop is the left fold of the mapped slice. -/
 private theorem reduceChunkPure_eq (xs : Array α) (f : α → β)
@@ -858,11 +808,7 @@ private theorem tabulateChunk_full (n : Nat) (g : Fin n → β) :
 specification: `map`'s instantiation of the tabulation engine is exact. -/
 private theorem ofFn_read_eq_map (xs : Array α) (f : α → β) :
     (Array.ofFn fun i : Fin xs.size => f xs[i]) = xs.map f := by
-  calc (Array.ofFn fun i : Fin xs.size => f xs[i])
-      = (Array.ofFn fun i : Fin xs.size => xs[(i : Nat)]).map f := by
-        rw [Array.map_ofFn]
-        rfl
-    _ = xs.map f := by rw [Array.ofFn_getElem]
+  grind [Array.getElem_ofFn, Array.size_ofFn]
 
 /-- The serial fast path of `mapImpl` is the specification. -/
 private theorem tabulateChunk_map_full (xs : Array α) (f : α → β) :
@@ -894,9 +840,7 @@ private theorem foldl_seeded_partials (op : β → β → β) [Std.Associative o
     rw [← List.foldl_assoc (op := op) (l := c.2) (a₁ := init) (a₂ := c.1)]
     exact ih _
 
-/-! Rungs 3-4 of the correspondence ladder: well-formed worker output, and
-the pure assembly lemmas showing ordered chunk slices reconstruct the
-specification. -/
+/-! ## Ordered assembly -/
 
 /-- The mapped slice of the chunk starting at `s`. -/
 private def chunkSlice (xs : Array α) (f : α → β) (chunkSize s : Nat) :
@@ -1416,9 +1360,8 @@ private theorem mergeStep_owned (xs : Array α) (f : α → β) (c : Nat)
   simpa only [prefixLen, Array.size_empty, Nat.zero_add, hKtl,
     ← chunkSlice_size_eq xs f c (o * c) hstart_lt] using hpieces
 
-/-- Rung 4 closed for `map`: from any well-formed worker output, `merge`
-reconstructs the specification, so worker count and claim order cannot
-affect the result. -/
+/-- Given well-formed worker output, `merge` reconstructs `xs.map f`
+independently of worker count and claim order. -/
 private theorem merge_wf (xs : Array α) (f : α → β) (chunkSize : Nat)
     (outs : Array (Array β × Array Nat))
     (h : WFOuts (chunkSlice xs f chunkSize) chunkSize xs.size outs) :
@@ -1431,6 +1374,30 @@ private theorem merge_wf (xs : Array α) (f : α → β) (chunkSize : Nat)
     List.mem_range.mp ho
   obtain ⟨target, huniq⟩ := h.once o hocc
   exact mergeStep_owned xs f chunkSize outs o target h hocc huniq r
+
+/-- A tabulation chunk is the assembly piece at `start` in `Array.ofFn g`. -/
+private theorem tabulateChunk_piece (n : Nat) (g : Fin n → β)
+    (chunkSize start : Nat) (values : Array β) :
+    tabulateChunk n g ((start + chunkSize).min n) (Nat.min_le_right _ _)
+      start values
+      = values ++ chunkSlice (Array.ofFn g) id chunkSize start := by
+  simp [tabulateChunk_eq, chunkSlice]
+
+/-- Slicing a mapped array equals mapping the corresponding input slice. -/
+private theorem chunkSlice_map_id (xs : Array α) (f : α → β)
+    (chunkSize s : Nat) :
+    chunkSlice (xs.map f) id chunkSize s = chunkSlice xs f chunkSize s := by
+  simp [chunkSlice, ← Array.map_extract]
+
+/-- Given well-formed tabulation output, `merge` reconstructs `Array.ofFn g`.
+This instantiates `merge_wf` with the identity mapper;
+`tabulateChunk_piece` supplies the tabulation-specific chunk content. -/
+private theorem merge_wf_ofFn (n : Nat) (g : Fin n → β) (chunkSize : Nat)
+    (outs : Array (Array β × Array Nat))
+    (h : WFOuts (chunkSlice (Array.ofFn g) id chunkSize) chunkSize
+      (Array.ofFn g).size outs) :
+    merge outs (Array.ofFn g).size chunkSize = Array.ofFn g :=
+  (merge_wf (Array.ofFn g) id chunkSize outs h).trans (Array.map_id _)
 
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/

@@ -1,34 +1,35 @@
 # Linen
 
 Linen is a small data-parallel executor for Lean inspired by the Rust library
-Rayon. Its name continues the textile lineage from Cilk through Rayon. The
-implementation is independent of `NearLinear4ct` and intended for extraction
-into a standalone package.
+Rayon, though it is not a Rayon clone. Its name continues the textile lineage
+from Cilk through Rayon. The implementation is intended for extraction into a
+standalone package.
 
 ## Goal
 
 The check drivers from `NearLinear4ct` need fine-grained load balancing because
 individual cartwheel candidates vary greatly in cost. The original `parMap`
 achieved that by eagerly creating one Lean `Task` per candidate. At 32 workers
-on the 128-thread benchmark host, queue operations and futex transitions put 69%
-of CPU time in the kernel.
+on the 128-thread benchmark host, queue operations and futex transitions put
+69% of CPU time in the kernel.
 
 Linen keeps candidate-level dynamic balancing without representing every
-candidate as a runtime task.
+candidate as a runtime task. The same design applies to other irregular
+workloads whose element costs vary substantially.
 
 ## Design
 
-A parallel region is one invocation of a Linen operation over an input array.
-The function applied to an element may itself invoke Linen, creating nested
+A parallel region is one invocation of a Linen operation over an input. The
+function applied to an element may itself invoke Linen, creating nested
 regions.
 
-Linen divides each region's input into chunks: contiguous ranges of indices
+Linen divides each region into chunks: contiguous, half-open ranges of indices
 written as `[start, stop)`, including `start` but not `stop`.
 
-Each region has its own claim cursor, a counter shared by its workers. It
-points to the first index not yet assigned. A worker claims a chunk by moving
-the cursor past it. This update is atomic, so workers cannot claim overlapping
-chunks. Every worker repeatedly:
+Each region has a claim cursor, a counter shared by its workers that points to
+the first unclaimed index. A worker claims a chunk by atomically advancing the
+cursor past it. Because that read-and-update is indivisible, two workers cannot
+claim overlapping chunks. Every worker repeatedly:
 
 1. claims the next chunk by atomically advancing the cursor;
 2. computes the chunk outside the atomic operation;
@@ -36,112 +37,104 @@ chunks. Every worker repeatedly:
 4. returns to claim another chunk.
 
 After the workers join, Linen uses the recorded start indices to merge their
-chunk runs into input order. The result path requires no synchronisation while
-workers run.
+chunk runs into input order. Workers never synchronise on the result path.
 
 All regions, including nested ones, share a process-wide budget of
 `config.workers` slots. A region runs one worker inline and spawns another only
 after reserving a slot, so no more than `config.workers` Linen worker tasks are
 live or queued. A region that cannot reserve a slot still makes progress
-inline. Workers retry reservations once per successful claim, before
-computing the claimed chunk, so a new sibling starts working while the
-claimer computes; surviving regions thereby grow as other regions finish.
+inline.
 
-The implementation follows a functional-data-path, imperative-scheduler
-split: chunk computation, copying, placement, and assembly are bounded
-`Array.foldl`/`foldlM` definitions or pure step functions (fused loops, no
-intermediate collections), while the scheduler -- claiming, reservation,
-growth, joining -- uses explicit control flow where atomic sequencing and
-retries are the point.
+Workers retry reservations once per successful claim, before computing the
+claimed chunk. A new sibling can therefore begin while the claimant computes,
+and surviving regions can grow as other regions finish and release slots.
+
+The implementation separates a functional data path from an imperative
+scheduler. Chunk computation, copying, placement, and assembly use bounded
+`Array.foldl`/`foldlM` definitions or pure step functions. Claiming,
+reservation, growth, and joining use explicit control flow because atomic
+sequencing and retries are their purpose.
 
 The per-call `chunkSize` controls claim granularity and is clamped to at least
 one. Small chunks improve balancing when element costs vary; large chunks
 amortise claim overhead. The default is one.
 
-The public semantic primitive is indexed tabulation: `Linen.tabulate n g`
-builds the array whose entry at `i` is `g i`, with the pure specification
-`Array.ofFn g` installed through `implemented_by`. The semantic object is a
-value at a stable index; workers, claims, offsets, and chunk boundaries
-are scheduling details that `g` cannot observe, so for pure tabulation
-`chunkSize` is a performance hint that cannot change the result. For the
-effectful variants (`tabulateM`, `tabulateIO`), result positions and the
-selected error are deterministic, but effects can reveal scheduling:
-within a chunk, effects run in index order; cross-chunk effect order is
-unspecified.
+### Operations
 
-The internal runtime primitive is narrower: schedule chunks and invoke a
-chunk folder once per claim, so abstraction costs are amortised over the
-chunk rather than paid per element. `tabulate` supplies a `Fin`-iteration
-chunk loop; pure `map` (and with it `filterMap` and `flatMap`) and the
-parallel paths of `mapM` and `mapIO` instantiate the tabulation engine
-with an indexed reader of their input; `mapReduce` and `mapReduceM`
-supply array-specific reducing folders, and the monadic maps' serial fast
-paths traverse their array directly. The tabulation engine chain is
-specialised per instantiation (`@[specialize]`), which lets a specialised
-inner loop receive its instantiation's inputs directly instead of calling
-through a composed indexed closure; pure `map` reaches it through
-`mapImpl`'s literal factory, and `mapM`/`mapIO` through their `@[inline]`
-wrappers, so the pure and monadic paths both achieve it (the
-`tabulate-io-cheap` matched controls agree at every chunk size). The worker-callback factory boundary
-sits on the implemented functions behind `@[inline]` public wrappers, so
-a lambda at an ordinary call site is beta-reduced into the factory before
-closure conversion and the callback is constructed inside each worker's
-task (`makeWorkerFn`).
+The semantic primitive is indexed tabulation. `Linen.tabulate n g` builds the
+array whose entry at `i` is `g i`; its pure specification is `Array.ofFn g`.
+The callback observes only its index, not workers, claims, or chunk boundaries,
+so `chunkSize` cannot change a pure result.
 
-Pure `Linen.map` is defined as `xs.map f` and installs the parallel executor
-through `implemented_by`. Proofs therefore see the serial specification while
-compiled programs use the parallel implementation. The serial fast paths (one
-worker configured, or the whole input within one chunk) run the same
-unchecked chunk loops as the parallel workers, so single-threaded and
-small-array calls avoid both task setup and per-element bounds checks.
+For `tabulateM` and `tabulateIO`, result positions remain deterministic, but
+effects can reveal scheduling. Effects within a chunk run in index order;
+effect order across chunks is unspecified. `tabulateIO` and `mapIO` stop new
+claims after a failure and rethrow the failure with the lowest input index
+after already claimed chunks finish.
 
-`Linen.mapIO` stops its failing chunk and further claims in that region, lets
-other claimed chunks finish, and rethrows the failure with the lowest input
-index.
+`map`, `mapM`, and `mapIO` instantiate the tabulation engine with an indexed
+reader of their input. `filterMap` and `flatMap` build on pure `map`.
+`mapReduce` and `mapReduceM` use array-specific reducing loops so each chunk
+produces one partial rather than an intermediate mapped array.
 
-`Linen.mapReduce` takes a `[Std.Associative op]` instance, which supplies a
-proof that `op` is associative. Its runtime folds each chunk to one partial and
-combines the partials in input order, using one bounded parallel combine pass
-when necessary. The operation need not be commutative, and `init` need not be
-an identity.
+The compiled engine receives a factory that constructs the callback separately
+for each worker. Specialisation and the public `@[inline]` monadic wrappers let
+ordinary callback lambdas reach that factory before closure conversion,
+avoiding reference-count contention on one shared callback closure. A
+preconstructed callback may still contain shared nested closures.
+
+Pure `map` is defined as `xs.map f` and installs its parallel executor through
+`implemented_by`. Proofs therefore see the serial specification while compiled
+programs use the parallel implementation. Pure `tabulate` uses the same
+arrangement with `Array.ofFn` as its specification.
+
+The pure serial fast paths -- one configured worker, or the whole input
+contained in one chunk -- use the same unchecked chunk loops as parallel
+workers without task setup.
+
+`mapReduce` requires `[Std.Associative op]`. The runtime folds each chunk to one
+partial and combines partials in input order, with one bounded parallel combine
+pass when needed. `op` need not be commutative, and `init` need not be an
+identity.
 
 At startup, Linen reads the worker count from `LINEN_WORKERS`, then
 `LEAN_NUM_THREADS`, then the machine's logical core count. Invalid and zero
-values are ignored; a failed core-count query falls back to one worker.
+values are ignored; failure to query the core count falls back to one worker.
 
 ## Verification status
 
-Lean reasons about serial specifications for the pure combinators. In
-particular, `Linen.map` is defined as `xs.map f`, and `Linen.mapReduce` as
-`(xs.map f).foldl op init`. `filterMap` and `flatMap` are built from this serial
-`map`. Consequently, proofs using these functions see no tasks, cursors, or
-scheduling decisions.
+The pure compiled implementations cross an `unsafeBaseIO`/`unsafeCast`
+boundary. Their complete equivalence to the serial specifications has not yet
+been proved in Lean.
 
-The `[Std.Associative op]` instance required by `Linen.mapReduce` proves that
-`op` is associative, which permits the runtime to regroup contiguous values
-without changing the result. Commutativity is not required, and `init` need
-not be an identity.
+The following parts are proved in `Linen.lean`:
 
-The compiled parallel implementations replace the serial definitions through
-`implemented_by` and cross an `unsafeBaseIO`/`unsafeCast` boundary. Their
-equivalence to the serial specifications has not been proved in Lean. The
-chunk loops carry their index-bound proofs (`Fin` construction erases at
-compile time), and the serial chunk loops are proved equal to their
-specification slices in `Linen.lean`'s verified-properties section: the
-tabulation loop over the full range is exactly `Array.ofFn g`, tabulating
-the indexed reads of `xs` is `xs.map f`, and the reduce chunk loop is the
-fused left fold of the mapped slice -- so the serial fast paths of
-`tabulate`, `map`, and `mapReduce` are verified outright, and the
-associative regrouping core for `mapReduce` is proved -- but the parallel
-path's correctness remains unproved.
+- The tabulation chunk loop computes the corresponding `Array.ofFn` slice.
+- Tabulating indexed reads gives `xs.map f`, and the serial map fast path is
+  therefore exact.
+- The reduce chunk loop is the fused left fold of the mapped slice.
+- Associativity permits the chunk partials to be regrouped without changing
+  their ordered fold.
+- `WFWorkerOut` and `WFOuts` describe aligned, in-range, uniquely claimed
+  chunks and their worker-local buffers.
+- Placement tables depend only on the logical runs, not their order.
+- Given `WFOuts`, `merge_wf` reconstructs `xs.map f`; its `Array.ofFn`
+  instantiation, `merge_wf_ofFn`, reconstructs a tabulation result.
 
-The following remain to be proved:
+`tabulateChunk_piece` connects one tabulation claim to the piece expected by
+that assembly proof. It does not prove that concurrent runtime workers produce
+`WFOuts`.
 
-- the equivalence of `tabulateWithWorkerFnImpl`, `mapImpl`, and
-  `mapReduceImpl` to their serial specifications;
-- formal result-order and error specifications for `mapM`, `mapReduceM`, and
-  `mapIO`, including any required assumptions about effects; and
-- the worker-budget, release, and liveness invariants of nested regions.
+The following remain open:
+
+- proving that atomic claims and task execution always produce `WFOuts`, which
+  would close the pure parallel correspondence across the unsafe boundary;
+- instantiating the assembly theory for reduction, including the optional
+  second reduction level;
+- formal result-order and error specifications for the effectful combinators,
+  with explicit assumptions about observable effects; and
+- the worker-budget, release, and liveness invariants of nested growth and
+  joins.
 
 The contract tests exercise these properties across worker counts and
 scheduling shapes, but tests are evidence rather than proofs.
@@ -149,47 +142,42 @@ scheduling shapes, but tests are evidence rather than proofs.
 ## Diagnostics
 
 Linen keeps always-on counters for reservation attempts, releases, and worker
-creation. Per-claim read gates do not update them, and the benchmarks include
-their cost. `Linen.activeSlots` reports current occupancy;
-`Linen.budgetStats` returns the cumulative counters.
+creation. Per-claim read gates do not update them. `Linen.activeSlots` reports
+current occupancy; `Linen.budgetStats` returns the cumulative counters.
 
-At quiescence, `underflows` and `active` must be zero, granted reservations
-must equal `releases`, and `peak` must not exceed `config.workers`. The test
-suite checks these invariants.
+At quiescence, `underflows` and `active` must be zero, granted reservations must
+equal `releases`, and `peak` must not exceed `config.workers`. The test suite
+checks these invariants.
 
 ## Scope and limitations
 
-Linen is inspired by Rayon but is not a Rayon clone. It has no per-worker
-deques, cross-region work stealing, persistent worker pool, or help-join
-protocol. The shared slot budget bounds live or queued worker tasks across
-nested and concurrent regions, while Lean's task runtime prevents nested joins
-from starving the pool.
+Linen has no per-worker deques, cross-region work stealing, persistent worker
+pool, or help-join protocol. The shared slot budget bounds live or queued Linen
+workers across nested and concurrent regions; Lean's task runtime supplies the
+underlying scheduler.
 
 Two conservative accounting choices avoid oversubscription but can
 under-provision nested work: an outer worker retains its slot while waiting for
 an inner region, and a slotted worker reserves another slot for the nested
 region's inline worker.
 
-The budget bounds concurrent workers but does not make team growth profitable.
-On cheap, short nested regions, per-claim growth can create nearly one worker
-per claim before the region drains. Repeating that ramp across many regions
-pays task creation and joining costs without enough work to amortise them.
-Released slots are also biased by attempt frequency: growth attempts are
-per-claim, so concurrent regions with cheap claims outcompete a region with
-expensive claims for freed capacity, which can leave an expensive surviving
-region effectively serial while short-lived teams churn around it.
+The budget bounds concurrency but cannot decide whether team growth is
+profitable. Cheap, short nested regions may create and join workers too quickly
+to amortise their lifetime cost. Per-claim growth also favours regions with
+cheap claims when several regions compete for newly released slots. Addressing
+either limitation likely requires scheduler-level mechanisms such as work-first
+execution, a persistent pool, or fair handoff.
 
 ## Validation and benchmark
 
-Run the normal correctness gate:
+Run the Linen contract tests:
 
 ```sh
-lake exe test
 lake exe linenTest
 ```
 
-Run the microbenchmark suite (the first argument sets the repetition count,
-defaulting to three):
+Run the benchmark suite with its default repetition count, or select a worker
+count explicitly:
 
 ```sh
 lake exe linenBench
@@ -197,137 +185,54 @@ LEAN_NUM_THREADS=1 lake exe linenBench
 LEAN_NUM_THREADS=4 lake exe linenBench
 ```
 
-The suite sweeps claim sizes and covers pure maps, `IO` maps, reductions,
-reference-counting, allocation, and nested composition. Nested cases include
-wide and narrow steady states, a draining outer tail, repeated short regions,
-allocating fan-out, three parallel levels, a contention-free team-ramp probe
-crossing claim count with per-claim cost, and a matched draining-tail probe
-crossing light-claim frequency with heavy-region runway. Two-level cases run all four
-serial/parallel splits, with worker-budget traffic reported for
-every composition containing Linen.
+`LinenBench` compares serial, eager-task, static-partition, and Linen execution.
+It covers cheap and uneven work, allocation, reference counting, reductions,
+effectful callbacks, matched tabulation/map controls, nested composition, team
+growth, and draining regions. It verifies results and reports raw samples and
+worker-budget traffic.
 
-The table reports medians of three pure-map runs on a 10-core M1 Pro on
-2026-07-26, in milliseconds. `Scheduler` maps `(· + 1)` over 200,000 elements;
-`Uneven` maps `unevenWork` over 50,000. The machine has eight performance and
-two efficiency cores, so the ten-worker results include the slower cores.
+Stable conclusions from the current benchmark evidence are:
 
-| Threads | Scheduler: eager | Scheduler: Linen c=1 | Scheduler: Linen c=64 | Uneven: eager | Uneven: Linen c=1 | Uneven: Linen c=64 |
-|--------:|-----------------:|---------------------:|----------------------:|--------------:|------------------:|-------------------:|
-|       1 |               36 |                  1.3 |                   1.2 |           104 |                76 |                 76 |
-|       4 |              139 |                   48 |                   3.7 |            63 |                23 |                 21 |
-|       8 |              241 |                  124 |                   4.7 |            98 |                13 |                 11 |
-|      10 |              339 |                  209 |                   5.8 |           120 |                21 |                 10 |
+- claim size must reflect work granularity; no fixed size is portable;
+- dynamic claiming helps uneven and clustered costs but adds overhead to cheap
+  work;
+- the process-wide slot budget bounds nested execution, but parallelising cheap
+  inner regions can still be substantially slower than leaving them serial;
+- worker-local callback construction avoids a shared-closure contention floor;
+  and
+- scheduler changes need evidence from representative workloads, not only
+  synthetic microbenchmarks.
+
+Raw machine-specific results and rejected experiments belong in the runs
+journal rather than this document.
 
 ## TODO
 
-- [ ] Close the `tabulateWithWorkerFnImpl`/`mapReduceImpl` correspondence
-      along the ladder split at the `unsafeBaseIO` trust boundary. Done, in
-      `Linen.lean`: `tabulateChunk` computes the `Array.ofFn` slice
-      appended to its accumulator (with `ofFn_read_eq_map` carrying it to
-      the `map` instantiation) and `reduceChunkPure` the left fold of the
-      mapped slice, verifying the serial fast paths as the
-      specifications, and `foldl_seeded_partials` is the associative
-      regrouping core. Also done: the well-formedness
-      predicates (`WFWorkerOut`, `WFOuts` -- aligned in-range starts, buffers
-      exactly the folded chunk slices of their runs, each ordinal claimed
-      exactly once) and the pure assembly layer (`foldl_chunkSlice_range`:
-      ordered chunk slices reconstruct `xs.map f`; `extract_foldl_pieces`:
-      block extraction at prefix-sum offsets yields each run's slice).
-      Also done: `merge` is proved equal to a pure fold of `mergeStep` over
-      chunk ordinals (`merge_eq_foldl`), and the data path now follows the
-      functional-data-path/imperative-scheduler split: the chunk loops,
-      copy loop, and monadic per-chunk iterations are bounded
-      `Array.foldl`/`foldlM` definitions (their theorems collapse to core
-      fold lemmas), and `placeChunks` is a pure nested fold over named
-      state structures -- no loop-to-fold characterisation is needed there
-      at all. The well-formedness and extraction theory is parameterised by
-      a per-start `piece : Nat → Array β`, shared between the map
-      instantiation (chunk slices) and the reduce instantiation (singleton
-      partials). Also done, closing the map side: the `placeChunks`
-      table-correctness proof (`placeWorker_foldl_spec` /
-      `placeChunks_spec`: a proof-carrying run witness identifies an
-      ordinal's unique owner, worker index, and prefix-sum offset) and the
-      final assembly `merge_wf`: for any `WFOuts`-well-formed worker output,
-      `merge outs xs.size chunkSize = xs.map f`, so worker count and
-      claim order cannot affect the result. The table-correctness proof
-      factors `placeChunks` through a flat trace of logical writes
-      (`placementTrace`) and shows the tables depend only on the set of
-      writes, not their order (`foldl_set_constant` needs agreement among
-      the writes hitting an ordinal, not a unique writer) -- the
-      order-invariance that the trusted concurrent bridge will lean on:
-      any schedule producing the same set of aligned, uniquely-claimed
-      runs produces identical tables. Open: the reduce-side
-      instantiation via the regrouping lemma. Tabulation assembly needs
-      no separately restated proof: `merge_wf` instantiated with
-      `xs := Array.ofFn g` and `f := id` covers it, and only the
-      worker-output instantiation is new. The final bridge, that the
-      concurrent runtime always produces well-formed output, requires
-      reasoning about atomic claims and tasks; it stays an explicitly
-      trusted step.
-- [ ] Give `tabulateM`, `tabulateIO`, and the monadic map family formal
-      specifications covering result order and error selection, with
-      explicit assumptions about effects where needed.
-- [ ] Callback-closure contention, to validate on MODI. Contention on a
-      closure shared across workers is real: before the factory boundary,
-      `tabulate` called with a runtime closure paid per-element
-      reference-count traffic on that shared closure. Placing the
-      factory boundary on the implemented functions behind `@[inline]`
-      public wrappers restored the `tabulate-cheap` rows to parity with
-      the specialised map instantiation, and the fix should now be
-      validated at MODI worker counts, where contention grows with the
-      team. Residual exposure: a preconstructed runtime callback passed
-      as `g` may still contain a shared nested closure; an eventual
-      advanced `tabulateWith` API exposing the worker factory could
-      address that case explicitly, in the spirit of worker-local
-      initialisation combinators.
-- [ ] Candidate, measure-first: `usize` inner chunk loops. The tabulation
-      chunk loops step a boxed `Nat` counter where the array-backed map
-      loops step a `usize`; the remaining comparison is cheap direct
-      tabulation against the array-backed `usize` map loop (reduction is
-      array-backed again and no longer affected). A `usize`
-      implementation behind the proof-carrying `Nat` definition (the
-      `Array.foldlMUnsafe` pattern) would remove the difference.
-- [ ] Combinators to build on `tabulate`: `zip`/`zipWith` (tabulate over
-      the minimum size), `mapIdx`, gather/permute (read at a computed
-      index), and eventually a producer interface in the style of Rayon's
-      indexed parallel iterators -- all without exposing chunk boundaries
-      to callbacks.
-- [ ] Prove the slot-budget and release invariants, and liveness of nested
-      region growth and joins.
-- [ ] Deferred design note -- fair slot handoff. The attempt-frequency bias
-      is real (draining-matched), but the v1 FIFO-queue handoff collapsed
-      Linen's slot-turnover loop and was reverted; the runs journal records
-      the failure. Any future handoff must maintain only live waiters,
-      support O(1) cancellation on region completion, return slots directly
-      to the pool when no live waiter exists, and atomically coordinate
-      completion with handoff -- a real concurrent waiter structure, i.e. a
-      scheduler mechanism. Do not build it without evidence from a real
-      workload beyond the synthetic fine/coarse case.
-- [ ] Short-region fixed cost: three mechanisms tested and rejected
-      (growth-only startup, the remaining-work growth gate, lazy region-state
-      allocation -- the runs journal records each). The ~13-15 microsecond
-      worker-lifetime cost (task creation, scheduling, join) remains the
-      leading explanation, though not proved by elimination. Meaningful
-      further reduction most plausibly requires avoiding or amortising worker
-      lifetimes -- through work-first spawning or a persistent pool -- which
-      is scheduler-class work under the same real-workload evidence bar as
-      the deferred fair-handoff note.
-- [ ] Idle-budget over-ramping stays open and is outside any claim-count
-      rule: 32-claim cheap and 32-claim medium regions have identical
-      geometry and opposite profitability, so a fix requires an explicit
-      granularity hint or an online work-first policy. Deliberately
-      deferred.
-- [x] `mapIO` success-path overhead: resolved. The `tabulate-io-cheap`
-      control excluded the monadic worker, error bookkeeping, and ordered
-      merging as causes; what remained was the construction of `mapIO`'s
-      composed reading callback outside the inline factory boundary. With
-      `mapM` and `mapIO` inlined like `tabulate`, the matched controls
-      agree at every chunk size and a trivial mapper beats its serial
-      control at onewave granularity. What remains against serial at fine
-      chunks is ordinary claim overhead, not a success-path anomaly.
-- [ ] Add deterministically shuffled or replayed cost distributions to the
-      benchmark (the clustered case covers the adversarial-for-static
-      extreme; shuffled covers the no-spatial-structure one).
-- [ ] Rotate configuration order between repetition rounds: execution order
-      is fixed within a process, so slow thermal and allocator drift stays
-      correlated with configuration.
+- [ ] Prove that concurrent tabulation and map workers establish `WFOuts`, then
+      close their correspondence with the serial specifications across the
+      `unsafeBaseIO` boundary.
+- [ ] Instantiate the assembly and regrouping theory for `mapReduce`, including
+      its optional second reduction level.
+- [ ] Give `tabulateM`, `tabulateIO`, `mapM`, `mapReduceM`, and `mapIO` formal
+      specifications for result order and error selection.
+- [ ] Prove the slot-budget and release invariants and liveness of nested region
+      growth and joins.
+- [ ] Candidate, measure-first: count claim ordinals instead of starts, so
+      alignment holds by construction. The `% c` obligations, the division
+      reasoning behind `RunAt.exists_ofOrdinal`, and the `halign` plumbing
+      leave the table proofs; `placeRun` drops a division per run; the
+      future `WFOuts` bridge has one less invariant to establish.
+- [ ] Carry ordinal bounds through `mergeLoop` as `tabulateChunk` carries
+      its stop bound, turning the merge tables' panicking accesses into
+      proved accesses and removing the `getElem!` conversions from the
+      ownership proof. Runtime-neutral; carried proofs erase.
+- [ ] Add general combinators built on indexed tabulation: `zip`/`zipWith`,
+      `mapIdx`, and gather/permute; investigate an indexed producer interface
+      without exposing chunk boundaries to callbacks.
+- [ ] Revisit short-region scheduling only with evidence from a representative
+      workload. Likely directions are work-first execution, a persistent pool,
+      or a live-waiter fair-handoff mechanism.
+- [ ] Add deterministically shuffled or replayed cost distributions to
+      `LinenBench`.
+- [ ] Rotate benchmark configuration order between repetition rounds so slow
+      thermal and allocator drift is not correlated with configuration.

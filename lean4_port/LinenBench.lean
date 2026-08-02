@@ -2,20 +2,17 @@ import Linen
 
 /-!
 Microbenchmark suite for Linen. It compares serial execution, one task per
-element, static partitions, and Linen's bounded dynamic workers across cheap,
-uneven, clustered, allocating, and refcount workloads. The suite covers pure
-maps, `IO` maps, reductions, and nested workloads with stable widths, a
-draining outer tail, repeated short regions, allocating fan-out, and three
-parallel levels.
+element, static partitions, and Linen's bounded dynamic workers. Cases cover
+tabulation, maps, reductions, allocation, reference counting, uneven costs,
+and nested composition.
 
 Run with `lake exe linenBench [reps] [filters]`, where `filters` is a
-comma-separated list of case-name substrings selecting a subset of the suite
-(for the focused growth-policy A/B). `LINEN_WORKERS` overrides
-`LEAN_NUM_THREADS`; unset it when using `LEAN_NUM_THREADS` to measure scaling.
-Most cases sweep fixed `chunkSize` values plus `onewave`, which produces at
-most one chunk per configured worker. Each configuration has one untimed
-warmup followed by back-to-back samples in microseconds. The first argument is
-the repetition count and defaults to three.
+comma-separated list of case-name substrings selecting a subset of the suite.
+`LINEN_WORKERS` overrides `LEAN_NUM_THREADS`; unset it when using
+`LEAN_NUM_THREADS` to measure scaling. Most cases sweep fixed `chunkSize`
+values plus `onewave`, which produces at most one chunk per configured worker.
+Each configuration has one untimed warmup followed by samples in microseconds.
+The first argument is the repetition count and defaults to three.
 -/
 
 /-! ## Timing harness
@@ -180,11 +177,9 @@ private def benchCaseTabulate (reps : Nat) (label : String) (n : Nat)
     unless serial == viaMap && serial == linen do
       throw (IO.userError s!"{label}: tabulate implementations disagree")
 
-/-- Direct fallible tabulation on a cheap index function, against `mapIO`
-over a prebuilt range. The factory boundary builds `tabulateIO`'s
-immediate callback per worker, so a gap between these controls isolates
-how `mapIO`'s composed reading callback is constructed and specialised
-rather than any shared machinery. -/
+/-- Compare fallible tabulation with `mapIO` over a prebuilt range. The matched
+controls share scheduling, failure handling, and ordered assembly; a persistent
+width-dependent separation can reveal a callback-specialisation regression. -/
 private def benchCaseTabulateIO (reps : Nat) (label : String) (n : Nat)
     (f : Nat → Nat) : IO Unit := do
   let idx := Array.range n
@@ -217,11 +212,9 @@ private def benchCaseTabulateNested (reps : Nat) (groups inner : Nat) :
   unless serialAll == outerLinen && serialAll == bothLinen do
     throw (IO.userError "tabulate-nested: implementations disagree")
 
-/-- Direct monadic tabulation on a cheap index function, against `mapM`
-over a prebuilt range: regression coverage for the inline factory
-boundary, which is compiler-sensitive. A gap opening between these
-controls means a boundary stopped delivering the caller's literal to the
-specialised engine. -/
+/-- Compare monadic tabulation with `mapM` over a prebuilt range. This guards
+the compiler-sensitive inline factory boundary; a persistent width-dependent
+separation can reveal a specialisation regression. -/
 private def benchCaseTabulateM (reps : Nat) (label : String) (n : Nat)
     (f : Nat → Nat) : IO Unit := do
   let idx := Array.range n
@@ -418,14 +411,9 @@ private def benchCaseNestedDepth3 (reps : Nat) : IO Unit := do
     throw (IO.userError "nested-depth3: compositions disagree")
 
 /-- Contention-free team ramp: a serial outer loop opens one inner region at
-a time, so no other region competes for the budget. Crossing claim count
-with per-claim cost separates how large the team ramp grows from whether it
-pays. Total element count is held approximately constant within each cost
-tier (Nat division truncates the group count for claim counts that do not
-divide it), so rows in a tier do near-identical work in differently shaped
-regions. The claim counts bracket typical worker counts, so the rows where
-claims approximate the team cap -- where the remaining-work gate is most
-active during formation -- are observable directly. -/
+a time. Crossing claim count with per-claim cost separates team growth from
+its profitability. Each cost tier holds total element count approximately
+constant while changing region shape. -/
 private def benchCaseTeamRamp (reps : Nat) : IO Unit := do
   let total := 16384
   for (claims, fuel, tag) in
@@ -443,12 +431,10 @@ private def benchCaseTeamRamp (reps : Nat) : IO Unit := do
     unless serial == linen do
       throw (IO.userError s!"team-ramp {claims}x{tag}: implementations disagree")
 
-/-- Draining tail matched on both axes: the light groups perform the same
-total work as many cheap claims or as few expensive claims, and the heavy
-first group performs approximately the same total work as 128 or 512 claims.
-Crossing the two separates competition for released slots (light-claim
-attempt frequency) from ramp runway (the heavy region's remaining
-opportunities to grow). -/
+/-- Draining tail matched on both axes: light groups do equal work through
+many cheap or few expensive claims, while the heavy group does equal work over
+128 or 512 claims. This separates competition for released slots from the
+heavy region's remaining opportunities to grow. -/
 private def benchCaseDrainingMatched (reps : Nat) : IO Unit := do
   let groups := 512
   for (heavyClaims, heavyFuel) in [(128, 50000), (512, 12500)] do
