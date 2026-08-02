@@ -118,9 +118,13 @@ The following parts are proved in `Linen.lean`:
 - The tabulation chunk loop computes the corresponding `Array.ofFn` slice.
 - Tabulating indexed reads gives `xs.map f`, and the serial map fast path is
   therefore exact.
-- The reduce chunk loop is the fused left fold of the mapped slice.
-- Associativity permits the chunk partials to be regrouped without changing
-  their ordered fold.
+- The pure reduce chunk loop computes the seeded mapped fold
+  `reducePartial` for one claimed chunk.
+- `orderedPartials` reconstructs every chunk's partial in ordinal order
+  from well-formed reduce output (`orderedPartials_wf`), and by
+  associativity their ordered fold is the serial fold
+  (`orderedPartials_foldl_wf`); the optional second reduction level is the
+  same theorem at the identity mapper (`orderedPartials_foldl_wf_id`).
 - `WFWorkerOut` and `WFOuts` describe aligned, in-range, uniquely claimed
   chunks and their worker-local buffers.
 - Placement tables depend only on the logical runs, not their order.
@@ -135,8 +139,6 @@ The following remain open:
 
 - proving that atomic claims and task execution always produce `WFOuts`, which
   would close the pure parallel correspondence across the unsafe boundary;
-- instantiating the assembly theory for reduction, including the optional
-  second reduction level;
 - formal result-order and error specifications for the effectful combinators,
   with explicit assumptions about observable effects; and
 - the worker-budget, release, and liveness invariants of nested growth and
@@ -214,13 +216,11 @@ journal rather than this document.
 
 ## TODO
 
-- [ ] Prove that concurrent tabulation and map workers establish `WFOuts`,
-      then close their correspondence with the serial specifications across
-      the `unsafeBaseIO` boundary. The proof-carrying carriers reduce the
-      obligation to value correspondence and exactly-once coverage:
-      alignment and range hold by construction.
-- [ ] Instantiate the assembly and regrouping theory for `mapReduce`, including
-      its optional second reduction level.
+- [ ] Prove that concurrent tabulation, map, and reduce workers establish
+      `WFOuts`, then close their correspondence with the serial
+      specifications across the `unsafeBaseIO` boundary. The proof-carrying
+      carriers reduce the obligation to value correspondence and exactly-once
+      coverage: alignment and range hold by construction.
 - [ ] Give `tabulateM`, `tabulateIO`, `mapM`, `mapReduceM`, and `mapIO` formal
       specifications for result order and error selection. Carry failure
       indices as `Fin n` first: `runChunk` already holds the proof it

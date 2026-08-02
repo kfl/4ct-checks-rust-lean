@@ -537,7 +537,7 @@ buffer segment, or nothing for an unclaimed ordinal. A pure function so
 `merge`'s loop body is a single state update, which the correspondence
 proofs convert to a fold directly; the ordinal bound proves the table
 reads in range. -/
-private def mergeStep {n : Nat} (ck : Chunking n)
+@[inline] private def mergeStep {n : Nat} (ck : Chunking n)
     (outs : Array (WorkerOut ck β)) (tables : Placement ck)
     (o : ck.Ordinal) (result : Array β) : Array β :=
   let w := tables.slotWorker[o.1]
@@ -568,23 +568,30 @@ private def merge {n : Nat} (ck : Chunking n)
   let tables := placeChunks outs fun o => ck.chunkSize.min (n - ck.start o)
   mergeLoop ck outs tables 0 (Array.mkEmpty n)
 
+/-- One ordinal's contribution to the ordered partials: push the owning
+worker's recorded partial, or nothing for an unclaimed ordinal. A pure
+function so the loop body is a single state update, mirroring
+`mergeStep`. -/
+@[inline] private def orderedStep {n : Nat} {ck : Chunking n}
+    (outs : Array (WorkerOut ck β)) (tables : Placement ck)
+    (o : ck.Ordinal) (ps : Array β) : Array β :=
+  let w := tables.slotWorker[o.1]
+  if w == 0 then ps
+  else
+    match outs[w - 1]? with
+    | some out =>
+      match out.values[tables.slotOffset[o.1]]? with
+      | some p => ps.push p
+      | none => ps
+    | none => ps
+
 /-- Range loop collecting per-chunk partials into chunk-ordinal order. -/
 private def orderedPartialsLoop {n : Nat} {ck : Chunking n}
     (outs : Array (WorkerOut ck β)) (tables : Placement ck)
     (ordinal : Nat) (ps : Array β) : Array β :=
   if h : ordinal < ck.count then
-    let o : ck.Ordinal := ⟨ordinal, h⟩
-    let ps :=
-      let w := tables.slotWorker[o.1]
-      if w == 0 then ps
-      else
-        match outs[w - 1]? with
-        | some out =>
-          match out.values[tables.slotOffset[o.1]]? with
-          | some p => ps.push p
-          | none => ps
-        | none => ps
-    orderedPartialsLoop outs tables (ordinal + 1) ps
+    orderedPartialsLoop outs tables (ordinal + 1)
+      (orderedStep outs tables ⟨ordinal, h⟩ ps)
   else ps
 termination_by ck.count - ordinal
 
@@ -858,7 +865,7 @@ def forEach (xs : Array α) (f : α → IO Unit) (chunkSize : Nat := 1) :
 The runtime crosses an `unsafeBaseIO` boundary, so the correspondence is split
 into pure lemmas about its data path. The serial chunk loops, associative
 regrouping, and ordered assembly are proved below. The concurrent bridge and
-reduce-side assembly remain open; see LINEN.md. -/
+effectful specifications remain open; see LINEN.md. -/
 
 /-- The tabulation chunk loop computes exactly the specification slice,
 appended to the accumulator. -/
@@ -904,22 +911,6 @@ private theorem reduceChunkPure_full (xs : Array α) (f : α → β)
     reduceChunkPure xs f op xs.size 0 init
       = (xs.map f).foldl op init := by
   simp [reduceChunkPure_eq]
-
-/-- Regrouping lemma for `mapReduce`: folding seeded chunk partials in input
-order equals folding all elements, given associativity. Each chunk is
-represented as its seed and remaining elements, matching how
-`workerReducePureLoop` folds a claimed chunk from its first element. -/
-private theorem foldl_seeded_partials (op : β → β → β) [Std.Associative op]
-    (chunks : List (β × List β)) (init : β) :
-    (chunks.map fun c => c.2.foldl op c.1).foldl op init
-      = (chunks.map fun c => c.1 :: c.2).flatten.foldl op init := by
-  induction chunks generalizing init with
-  | nil => rfl
-  | cons c cs ih =>
-    simp only [List.map_cons, List.foldl_cons, List.flatten_cons,
-      List.foldl_append]
-    rw [← List.foldl_assoc (op := op) (l := c.2) (a₁ := init) (a₂ := c.1)]
-    exact ih _
 
 /-! ## Ordered assembly -/
 
@@ -1444,6 +1435,203 @@ private theorem merge_wf_ofFn (n : Nat) (g : Fin n → β)
       (ck.start o)) outs) :
     merge ck outs = Array.ofFn g :=
   (merge_wf (Array.ofFn g) id ck outs h).trans (Array.map_id _)
+
+/-! ## Reduce assembly -/
+
+/-- A slice splits off its first element. -/
+private theorem extract_cons (a : Array α) (i j : Nat) (hij : i < j)
+    (hi : i < a.size) :
+    a.extract i j = #[a[i]] ++ a.extract (i + 1) j := by
+  rw [show (#[a[i]] : Array α) = a.extract i (i + 1) from by grind,
+    Array.extract_append_extract]
+  congr 1 <;> omega
+
+/-- The partial for chunk `o`: the fold of its mapped slice, seeded by the
+slice's first element, matching how `workerReducePureLoop` computes it. -/
+private def reducePartial (xs : Array α) (f : α → β) (op : β → β → β)
+    (ck : Chunking xs.size) (o : ck.Ordinal) : β :=
+  ((xs.extract (ck.start o + 1) (ck.stop o (ck.start o) rfl)).map f).foldl
+    op (f (xs[ck.start o]'(ck.start_lt o)))
+
+/-- What the reduce worker records for the claim at `o` is exactly the
+chunk's seeded fold. -/
+private theorem reduceChunkPure_partial (xs : Array α) (f : α → β)
+    (op : β → β → β) (ck : Chunking xs.size) (o : ck.Ordinal) :
+    reduceChunkPure xs f op (ck.stop o (ck.start o) rfl) (ck.start o + 1)
+      (f (xs[ck.start o]'(ck.start_lt o)))
+      = reducePartial xs f op ck o := by
+  rw [reduceChunkPure_eq, reducePartial]
+
+/-- Under singleton pieces, a well-formed buffer is the map of its
+ordinals. -/
+private theorem WFWorkerOut.values_singleton {n : Nat} {ck : Chunking n}
+    {out : WorkerOut ck β} {p : ck.Ordinal → β}
+    (h : WFWorkerOut (fun o => #[p o]) out) :
+    out.values = out.ordinals.map p := by
+  rw [h.values]
+  simp
+
+/-- Under unit run lengths, run `k`'s prefix offset is `k` itself. -/
+private theorem prefixLen_one {σ : Type _} (l : List σ) (k : Nat)
+    (hk : k ≤ l.length) :
+    prefixLen (fun _ => 1) l k = k := by
+  simp [prefixLen]
+  omega
+
+/-- At an ordinal carried by `target`, the ordered-partials step pushes
+exactly that run's recorded partial. -/
+private theorem orderedStep_owned {n : Nat} {ck : Chunking n}
+    (outs : Array (WorkerOut ck β)) (p : ck.Ordinal → β)
+    (o : ck.Ordinal) (target : RunAt outs.toList o)
+    (h : WFOuts (fun o' => #[p o']) outs)
+    (huniq : ∀ other : RunAt outs.toList o,
+      other.worker = target.worker ∧ other.runIdx = target.runIdx)
+    (ps : Array β) :
+    orderedStep outs (placeChunks outs fun _ => 1) o ps
+      = ps.push (p o) := by
+  have hownA : outs[target.worker]? = some target.out := by
+    simpa using target.worker_eq
+  have hwf := h.workers target.out
+    (List.mem_of_getElem? target.worker_eq)
+  have hspec := placeChunks_spec outs (fun _ => 1) o target huniq
+  obtain ⟨hKlt, hKeq⟩ := Array.getElem?_eq_some_iff.mp target.run_eq
+  have hoff := (hspec.2).trans
+    (prefixLen_one target.out.ordinals.toList target.runIdx
+      (by simpa using Nat.le_of_lt hKlt))
+  unfold orderedStep
+  rw [hspec.1, hoff]
+  simp only [Nat.add_sub_cancel, hownA,
+    show (target.worker + 1 == 0) = false from rfl,
+    Bool.false_eq_true, if_false]
+  rw [hwf.values_singleton]
+  simp [Array.getElem?_map, target.run_eq]
+
+/-- With well-formed singleton pieces, the ordinal loop appends the
+corresponding suffix of `Array.ofFn p`. -/
+private theorem orderedPartialsLoop_wf {n : Nat} {ck : Chunking n}
+    (outs : Array (WorkerOut ck β)) (p : ck.Ordinal → β)
+    (h : WFOuts (fun o => #[p o]) outs) (ordinal : Nat) (ps : Array β) :
+    orderedPartialsLoop outs (placeChunks outs fun _ => 1) ordinal ps
+      = ps ++ (Array.ofFn p).extract ordinal ck.count := by
+  unfold orderedPartialsLoop
+  split
+  next hocc =>
+    obtain ⟨target, huniq⟩ := h.once ⟨ordinal, hocc⟩
+    rw [orderedPartialsLoop_wf outs p h (ordinal + 1),
+      orderedStep_owned outs p ⟨ordinal, hocc⟩ target h huniq,
+      Array.push_eq_append,
+      extract_cons (Array.ofFn p) ordinal ck.count hocc (by simpa)]
+    simp [Array.getElem_ofFn]
+  next hdone =>
+    rw [Array.extract_empty_of_stop_le_start (Nat.le_of_not_gt hdone)]
+    simp
+termination_by ck.count - ordinal
+
+/-- From well-formed reduce output with singleton pieces,
+`orderedPartials` reconstructs every chunk's partial in ordinal order. -/
+private theorem orderedPartials_wf {n : Nat} {ck : Chunking n}
+    (outs : Array (WorkerOut ck β)) (p : ck.Ordinal → β)
+    (h : WFOuts (fun o => #[p o]) outs) :
+    orderedPartials outs = Array.ofFn p := by
+  rw [orderedPartials, orderedPartialsLoop_wf outs p h]
+  simp
+
+/-- A seeded fold merges into a running fold, given associativity. -/
+private theorem foldl_op_seeded (op : β → β → β) [Std.Associative op]
+    (a : Array β) (x acc : β) :
+    a.foldl op (op acc x) = op acc (a.foldl op x) := by
+  rw [← Array.foldl_toList, ← Array.foldl_toList, List.foldl_assoc]
+
+/-- Folding one seeded partial into an accumulator is folding its whole
+mapped chunk into that accumulator. -/
+private theorem reducePartial_foldl (xs : Array α) (f : α → β)
+    (op : β → β → β) [Std.Associative op] (ck : Chunking xs.size)
+    (o : ck.Ordinal) (acc : β) :
+    op acc (reducePartial xs f op ck o)
+      = (chunkSlice xs f ck.chunkSize (ck.start o)).foldl op acc := by
+  unfold reducePartial chunkSlice Chunking.stop
+  rw [extract_cons xs (ck.start o)
+      ((ck.start o + ck.chunkSize).min xs.size)
+      (by
+        have hs := ck.start_lt o
+        grind [Chunking])
+      (ck.start_lt o),
+    Array.map_append, Array.foldl_append]
+  simp only [Array.map_singleton]
+  rw [show (#[f (xs[ck.start o]'(ck.start_lt o))] : Array β).foldl op acc =
+      op acc (f (xs[ck.start o]'(ck.start_lt o))) by simp]
+  rw [foldl_op_seeded]
+
+/-- Folding arrays one by one is folding their concatenation. -/
+private theorem foldl_pieces {σ : Type _} (piece : σ → Array β)
+    (items : List σ) (op : β → β → β) (out : Array β) (acc : β) :
+    items.foldl (fun acc x => (piece x).foldl op acc) (out.foldl op acc)
+      = (items.foldl (fun out x => out ++ piece x) out).foldl op acc := by
+  induction items generalizing out acc with
+  | nil => rfl
+  | cons x xs ih =>
+    rw [List.foldl_cons, ← Array.foldl_append, ih, List.foldl_cons]
+
+/-- The `Fin` ordinals enumerate the same chunk slices as the natural-number
+range used by ordered assembly. -/
+private theorem foldl_chunkSlice_finRange (xs : Array α) (f : α → β)
+    (ck : Chunking xs.size) :
+    (List.finRange ck.count).foldl
+        (fun acc o => acc ++ chunkSlice xs f ck.chunkSize (ck.start o)) #[]
+      = xs.map f := by
+  simp only [Chunking.start]
+  rw [← List.foldl_map
+    (f := fun o : ck.Ordinal => o.1)
+    (g := fun acc o => acc ++
+      chunkSlice xs f ck.chunkSize (o * ck.chunkSize))]
+  rw [show (List.finRange ck.count).map (fun o => o.1) =
+      List.range ck.count from by apply List.ext_getElem <;> simp]
+  simpa [Chunking.start, ck.count_eq] using
+    foldl_chunkSlice_range xs f ck.chunkSize ck.pos
+
+/-- Folding the chunk partials in ordinal order is the serial fold:
+associativity merges each seeded chunk fold into the running fold. -/
+private theorem foldl_reducePartials (xs : Array α) (f : α → β)
+    (op : β → β → β) [Std.Associative op] (ck : Chunking xs.size)
+    (init : β) :
+    (Array.ofFn (reducePartial xs f op ck)).foldl op init
+      = (xs.map f).foldl op init := by
+  rw [← Array.foldl_toList, Array.toList_ofFn,
+    show List.ofFn (reducePartial xs f op ck) =
+        (List.finRange ck.count).map (reducePartial xs f op ck) from by
+      simp [List.finRange, Function.comp_def],
+    List.foldl_map]
+  calc
+    _ = (List.finRange ck.count).foldl
+        (fun acc o =>
+          (chunkSlice xs f ck.chunkSize (ck.start o)).foldl op acc) init :=
+      foldl_congr_mem _ _ _
+        (fun o _ acc => reducePartial_foldl xs f op ck o acc) init
+    _ = ((List.finRange ck.count).foldl
+          (fun out o => out ++ chunkSlice xs f ck.chunkSize (ck.start o))
+          #[]).foldl op init := by
+      simpa using foldl_pieces
+        (fun o : ck.Ordinal => chunkSlice xs f ck.chunkSize (ck.start o))
+        (List.finRange ck.count) op #[] init
+    _ = (xs.map f).foldl op init := by rw [foldl_chunkSlice_finRange]
+
+/-- From well-formed reduce output with singleton pieces, the ordered
+partials fold to the serial specification. -/
+private theorem orderedPartials_foldl_wf (xs : Array α) (f : α → β)
+    (op : β → β → β) [Std.Associative op] (ck : Chunking xs.size)
+    (outs : Array (WorkerOut ck β)) (init : β)
+    (h : WFOuts (fun o => #[reducePartial xs f op ck o]) outs) :
+    (orderedPartials outs).foldl op init = (xs.map f).foldl op init := by
+  rw [orderedPartials_wf outs _ h, foldl_reducePartials]
+
+/-- The second reduction level is the same result at the identity mapper:
+ordered partials of partials fold to the fold of the partials. -/
+private theorem orderedPartials_foldl_wf_id (ps : Array β)
+    (op : β → β → β) [Std.Associative op] (ck : Chunking ps.size)
+    (outs : Array (WorkerOut ck β)) (init : β)
+    (h : WFOuts (fun o => #[reducePartial ps id op ck o]) outs) :
+    (orderedPartials outs).foldl op init = ps.foldl op init := by
+  rw [orderedPartials_foldl_wf ps id op ck outs init h, Array.map_id]
 
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
