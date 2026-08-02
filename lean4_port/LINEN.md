@@ -26,18 +26,24 @@ regions.
 Linen divides each region into chunks: contiguous, half-open ranges of indices
 written as `[start, stop)`, including `start` but not `stop`.
 
-Each region has a claim cursor, a counter shared by its workers that points to
-the first unclaimed index. A worker claims a chunk by atomically advancing the
-cursor past it. Because that read-and-update is indivisible, two workers cannot
-claim overlapping chunks. Every worker repeatedly:
+Each region has a claim cursor, a counter shared by its workers that counts
+chunk ordinals. A worker claims a chunk by atomically incrementing the
+cursor. Because that read-and-update is indivisible, two workers cannot claim
+the same chunk. Every worker repeatedly:
 
-1. claims the next chunk by atomically advancing the cursor;
-2. computes the chunk outside the atomic operation;
-3. appends its results and `start` to worker-local buffers; and
+1. claims the next chunk ordinal by atomically advancing the cursor;
+2. computes the chunk `[start, stop)` outside the atomic operation;
+3. appends its results and the ordinal to worker-local buffers; and
 4. returns to claim another chunk.
 
-After the workers join, Linen uses the recorded start indices to merge their
+After the workers join, Linen uses the recorded ordinals to merge their
 chunk runs into input order. Workers never synchronise on the result path.
+
+Internally, `Chunking` stores a positive chunk size and its proved, cached
+chunk count. Worker outputs are indexed by that exact chunking and record
+`Fin` ordinals; placement tables are vectors of the same length. Alignment,
+range, plan consistency, and table bounds therefore hold by construction.
+Proof fields erase, while the count is computed once per region.
 
 All regions, including nested ones, share a process-wide budget of
 `config.workers` slots. A region runs one worker inline and spawns another only
@@ -208,24 +214,22 @@ journal rather than this document.
 
 ## TODO
 
-- [ ] Prove that concurrent tabulation and map workers establish `WFOuts`, then
-      close their correspondence with the serial specifications across the
-      `unsafeBaseIO` boundary.
+- [ ] Prove that concurrent tabulation and map workers establish `WFOuts`,
+      then close their correspondence with the serial specifications across
+      the `unsafeBaseIO` boundary. The proof-carrying carriers reduce the
+      obligation to value correspondence and exactly-once coverage:
+      alignment and range hold by construction.
 - [ ] Instantiate the assembly and regrouping theory for `mapReduce`, including
       its optional second reduction level.
 - [ ] Give `tabulateM`, `tabulateIO`, `mapM`, `mapReduceM`, and `mapIO` formal
-      specifications for result order and error selection.
+      specifications for result order and error selection. Carry failure
+      indices as `Fin n` first: `runChunk` already holds the proof it
+      passes to the callback, making valid-position structural.
 - [ ] Prove the slot-budget and release invariants and liveness of nested region
-      growth and joins.
-- [ ] Candidate, measure-first: count claim ordinals instead of starts, so
-      alignment holds by construction. The `% c` obligations, the division
-      reasoning behind `RunAt.exists_ofOrdinal`, and the `halign` plumbing
-      leave the table proofs; `placeRun` drops a division per run; the
-      future `WFOuts` bridge has one less invariant to establish.
-- [ ] Carry ordinal bounds through `mergeLoop` as `tabulateChunk` carries
-      its stop bound, turning the merge tables' panicking accesses into
-      proved accesses and removing the `getElem!` conversions from the
-      ownership proof. Runtime-neutral; carried proofs erase.
+      growth and joins. Start with bounded counter types (`activeRef` at
+      `{a // a ≤ config.workers}`, `Region.spawned` at `s ≤ slots`) for
+      the cap conjunct; reservation/release correspondence and liveness
+      are the substance.
 - [ ] Add general combinators built on indexed tabulation: `zip`/`zipWith`,
       `mapIdx`, and gather/permute; investigate an indexed producer interface
       without exposing chunk boundaries to callbacks.
