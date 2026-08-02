@@ -217,6 +217,24 @@ private def benchCaseTabulateNested (reps : Nat) (groups inner : Nat) :
   unless serialAll == outerLinen && serialAll == bothLinen do
     throw (IO.userError "tabulate-nested: implementations disagree")
 
+/-- Direct monadic tabulation on a cheap index function, against `mapM`
+over a prebuilt range: regression coverage for the inline factory
+boundary, which is compiler-sensitive. A gap opening between these
+controls means a boundary stopped delivering the caller's literal to the
+specialised engine. -/
+private def benchCaseTabulateM (reps : Nat) (label : String) (n : Nat)
+    (f : Nat → Nat) : IO Unit := do
+  let idx := Array.range n
+  let serial ← timed reps s!"{label}, mapM serial over range"
+    (idx.mapM (fun i => pure (f i)))
+  for (tag, chunk) in sweeps n do
+    let viaMap ← timed reps s!"{label}, via prebuilt range mapM {tag}"
+      (Linen.mapM idx (fun i => pure (f i)) (chunkSize := chunk))
+    let linen ← timed reps s!"{label}, tabulateM Linen {tag}"
+      (Linen.tabulateM n (fun i => pure (f i.1)) (chunkSize := chunk))
+    unless serial == viaMap && serial == linen do
+      throw (IO.userError s!"{label}: tabulateM implementations disagree")
+
 /-- Compare serial, eager, and Linen map-then-flatten. With an allocating
 mapper, allocation occurs during the mapped phase; every implementation
 flattens the boxed results serially. -/
@@ -498,6 +516,8 @@ def main (args : List String) : IO UInt32 := do
     ("tabulate-nested", benchCaseTabulateNested reps 300 300),
     ("tabulate-io-cheap",
       benchCaseTabulateIO reps "tabulate-io-cheap" 200000 (· * 2 + 1)),
+    ("tabulate-m-cheap",
+      benchCaseTabulateM reps "tabulate-m-cheap" 200000 (· * 2 + 1)),
     ("uneven-map", benchCase reps "uneven" (Array.range 50000) unevenWork),
     ("clustered-map", benchCase reps "clustered" (Array.range 50000) (clusteredWork 50000)),
     ("nested-wide", benchCaseNested reps "nested-wide" 300 300),
