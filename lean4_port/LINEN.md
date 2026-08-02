@@ -123,6 +123,15 @@ under-provision nested work: an outer worker retains its slot while waiting for
 an inner region, and a slotted worker reserves another slot for the nested
 region's inline worker.
 
+The budget bounds concurrent workers but does not make team growth profitable.
+On cheap, short nested regions, per-claim growth can create nearly one worker
+per claim before the region drains. Repeating that ramp across many regions
+pays task creation and joining costs without enough work to amortise them.
+Released slots are also biased by attempt frequency: growth attempts are
+per-claim, so concurrent regions with cheap claims outcompete a region with
+expensive claims for freed capacity, which can leave an expensive surviving
+region effectively serial while short-lived teams churn around it.
+
 ## Validation and benchmark
 
 Run the normal correctness gate:
@@ -144,9 +153,11 @@ LEAN_NUM_THREADS=4 lake exe linenBench
 The suite sweeps claim sizes and covers pure maps, `IO` maps, reductions,
 reference-counting, allocation, and nested composition. Nested cases include
 wide and narrow steady states, a draining outer tail, repeated short regions,
-allocating fan-out, and three parallel levels. Two-level cases run all four
+allocating fan-out, three parallel levels, a contention-free team-ramp probe
+crossing claim count with per-claim cost, and a matched draining-tail probe
+crossing light-claim frequency with heavy-region runway. Two-level cases run all four
 serial/parallel splits, with worker-budget traffic reported for
-parallel/parallel execution.
+every composition containing Linen.
 
 The table reports medians of three pure-map runs on a 10-core M1 Pro on
 2026-07-26, in milliseconds. `Scheduler` maps `(· + 1)` over 200,000 elements;
@@ -176,30 +187,37 @@ two efficiency cores, so the ten-worker results include the slower cores.
       large early claims followed by a finer tail -- with run descriptors for
       variable-size merging. The occupancy budget already handles team sizing,
       so this is a separate claim-granularity problem.
-- [ ] Isolate and reduce the fixed cost of short-lived regions.
-      `nested-repeated` measures repeated setup and joins; `nested-fanout`
-      adds allocation and ordered flattening; `nested-depth3` compounds region
-      overhead and slot retention. `nested-draining-tail` is the control that
-      any change must preserve.
-
-      First report worker-budget deltas for every nested composition containing
-      Linen, not only parallel/parallel. Then evaluate two independent A/B
-      changes:
-
-      1. allocate the region's team counter and task registry only when the
-         first worker can be spawned; and
-      2. replace entry seeding with growth-only startup.
-
-      Run each change across the full claim-size sweep and all nested cases at
-      several worker counts. Growth-only startup is most likely to regress
-      coarse and `onewave` claims, which provide few opportunities to expand
-      the team. If depth-three overhead remains after region setup is cheaper,
-      isolate retained parent slots and the extra inline-slot reservation.
-      Prefer removing structural overhead before adding a small-region cutoff.
+- [ ] Deferred design note -- fair slot handoff. The attempt-frequency bias
+      is real (draining-matched), but the v1 FIFO-queue handoff collapsed
+      Linen's slot-turnover loop and was reverted; the runs journal records
+      the failure. Any future handoff must maintain only live waiters,
+      support O(1) cancellation on region completion, return slots directly
+      to the pool when no live waiter exists, and atomically coordinate
+      completion with handoff -- a real concurrent waiter structure, i.e. a
+      scheduler mechanism. Do not build it without evidence from a real
+      workload beyond the synthetic fine/coarse case.
+- [ ] Short-region fixed cost: three mechanisms tested and rejected
+      (growth-only startup, the remaining-work growth gate, lazy region-state
+      allocation -- the runs journal records each). The ~13-15 microsecond
+      worker-lifetime cost (task creation, scheduling, join) remains the
+      leading explanation, though not proved by elimination. Meaningful
+      further reduction most plausibly requires avoiding or amortising worker
+      lifetimes -- through work-first spawning or a persistent pool -- which
+      is scheduler-class work under the same real-workload evidence bar as
+      the deferred fair-handoff note.
+- [ ] Idle-budget over-ramping stays open and is outside any claim-count
+      rule: 32-claim cheap and 32-claim medium regions have identical
+      geometry and opposite profitability, so a fix requires an explicit
+      granularity hint or an online work-first policy. Deliberately
+      deferred.
 - [ ] Route the pure runtimes' serial fast paths through the unchecked chunk
-      loops: they fold with generic closure calls today (~40x a literal fold
-      on trivial operations), while the parallel workers' direct loops come
-      within ~7x of it.
+      loops. Generic closure calls make a trivial fused fold about 40x slower
+      than a literal fold on the M1 and 110x slower on MODI; the exact factor is
+      machine-dependent, but the order-of-magnitude gap is not.
+- [ ] Isolate the `mapIO` success-path overhead. A trivial `IO` mapper remains
+      slower than its serial control at every measured width; separate the
+      costs of the generic monadic worker, error bookkeeping, and ordered
+      merging before changing the failure semantics.
 - [ ] Add deterministically shuffled or replayed cost distributions to the
       benchmark (the clustered case covers the adversarial-for-static
       extreme; shuffled covers the no-spatial-structure one).

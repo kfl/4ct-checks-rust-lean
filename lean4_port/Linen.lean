@@ -90,8 +90,8 @@ private partial def workerMapMLoop (growth : BaseIO GrowResult)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (values, starts)
-  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   let mut values := values
   for x in xs[start:stop] do
     values := values.push (← f x)
@@ -113,8 +113,8 @@ private partial def workerMapReduceMLoop (growth : BaseIO GrowResult)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (partials, starts)
-  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   let some x ← pure xs[start]?
     | return (partials, starts)
   let mut acc ← f x
@@ -158,8 +158,8 @@ private partial def workerMapIOLoop (growth : BaseIO GrowResult)
     BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (values, starts)
-  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   match ← runChunk xs f stop start values with
   | (values, none) =>
     workerMapIOLoop growth cursor failure xs f chunkSize growing values
@@ -366,8 +366,8 @@ private partial def workerMapPureLoop (growth : BaseIO GrowResult)
     BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (values, starts)
-  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   workerMapPureLoop growth cursor xs f chunkSize growing
     (mapChunkPure xs f stop (Nat.min_le_right _ _) start values)
     (starts.push start)
@@ -395,8 +395,8 @@ private partial def workerReducePureLoop (growth : BaseIO GrowResult)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if hstart : start < xs.size then
-    let growing ← if growing then (·.retryable) <$> growth else pure false
     let stop := (start + chunkSize).min xs.size
+    let growing ← if growing then (·.retryable) <$> growth else pure false
     let seed := f (xs[start]'hstart)
     let acc := reduceChunkPure xs f op stop (Nat.min_le_right _ _) (start + 1) seed
     workerReducePureLoop growth cursor xs f op chunkSize growing

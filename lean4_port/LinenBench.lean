@@ -8,7 +8,9 @@ maps, `IO` maps, reductions, and nested workloads with stable widths, a
 draining outer tail, repeated short regions, allocating fan-out, and three
 parallel levels.
 
-Run with `lake exe linenBench [reps]`. `LINEN_WORKERS` overrides
+Run with `lake exe linenBench [reps] [filters]`, where `filters` is a
+comma-separated list of case-name substrings selecting a subset of the suite
+(for the focused growth-policy A/B). `LINEN_WORKERS` overrides
 `LEAN_NUM_THREADS`; unset it when using `LEAN_NUM_THREADS` to measure scaling.
 Most cases sweep fixed `chunkSize` values plus `onewave`, which produces at
 most one chunk per configured worker. Each configuration has one untimed
@@ -51,9 +53,10 @@ private def timed (reps : Nat) (label : String)
   IO.println s!"{label}: {times} us (checksum {checksum})"
   return first
 
-/-- Time a Linen configuration and report the worker-budget traffic caused by
-its warmup and measured repetitions. Counter reads stay outside the timed
-windows. -/
+/-- Time a Linen configuration and report the worker-budget traffic caused
+by its warmup and measured repetitions; the printed label carries the
+execution count so readers can normalise to per-execution means. Counter
+reads stay outside the timed windows. -/
 private def timedWithBudget (reps : Nat) (label : String)
     (run : IO (Array Nat)) : IO (Array Nat) := do
   let before ← Linen.budgetStats
@@ -61,7 +64,7 @@ private def timedWithBudget (reps : Nat) (label : String)
   let after ← Linen.budgetStats
   let attempts := after.attempts - before.attempts
   let deniedBudget := after.deniedBudget - before.deniedBudget
-  IO.println s!"{label}, budget delta: \
+  IO.println s!"{label}, budget delta over {reps + 1} executions: \
     spawned={after.spawnedTasks - before.spawnedTasks} \
     grown={after.grownTasks - before.grownTasks} \
     granted={attempts - deniedBudget} \
@@ -342,6 +345,63 @@ private def benchCaseNestedDepth3 (reps : Nat) : IO Unit := do
   unless serial == outer && serial == outerMiddle && serial == all do
     throw (IO.userError "nested-depth3: compositions disagree")
 
+/-- Contention-free team ramp: a serial outer loop opens one inner region at
+a time, so no other region competes for the budget. Crossing claim count
+with per-claim cost separates how large the team ramp grows from whether it
+pays. Total element count is held approximately constant within each cost
+tier (Nat division truncates the group count for claim counts that do not
+divide it), so rows in a tier do near-identical work in differently shaped
+regions. The claim counts bracket typical worker counts, so the rows where
+claims approximate the team cap -- where the remaining-work gate is most
+active during formation -- are observable directly. -/
+private def benchCaseTeamRamp (reps : Nat) : IO Unit := do
+  let total := 16384
+  for (claims, fuel, tag) in
+      [(32, 200, "cheap"), (96, 200, "cheap"), (128, 200, "cheap"),
+       (160, 200, "cheap"), (256, 200, "cheap"), (512, 200, "cheap"),
+       (32, 4000, "medium"), (96, 4000, "medium"), (128, 4000, "medium"),
+       (160, 4000, "medium"), (256, 4000, "medium"), (512, 4000, "medium")] do
+    let gs := Array.range (total / claims)
+    let innerXs := Array.range claims
+    let f := fun (g i : Nat) => mix fuel (g * claims + i + 1)
+    let serial ← timed reps s!"team-ramp {claims}x{tag}, serial"
+      (blackBox fun _ => gs.map fun g => (innerXs.map (f g)).foldl (· + ·) 0)
+    let linen ← timedWithBudget reps s!"team-ramp {claims}x{tag}, inner Linen"
+      (blackBox fun _ => gs.map fun g => (Linen.map innerXs (f g)).foldl (· + ·) 0)
+    unless serial == linen do
+      throw (IO.userError s!"team-ramp {claims}x{tag}: implementations disagree")
+
+/-- Draining tail matched on both axes: the light groups perform the same
+total work as many cheap claims or as few expensive claims, and the heavy
+first group performs approximately the same total work as 128 or 512 claims.
+Crossing the two separates competition for released slots (light-claim
+attempt frequency) from ramp runway (the heavy region's remaining
+opportunities to grow). -/
+private def benchCaseDrainingMatched (reps : Nat) : IO Unit := do
+  let groups := 512
+  for (heavyClaims, heavyFuel) in [(128, 50000), (512, 12500)] do
+   let innerHeavy := Array.range heavyClaims
+   let heavy := fun (i : Nat) => mix heavyFuel (i + 1)
+   for (lightClaims, lightFuel, ltag) in [(128, 200, "fine"), (8, 3200, "coarse")] do
+    let tag := s!"{ltag}-h{heavyClaims}"
+    let gs := Array.range groups
+    let innerLight := Array.range lightClaims
+    let light := fun (g i : Nat) => mix lightFuel (g * lightClaims + i + 1)
+    let serialGroup := fun g =>
+      if g == 0 then (innerHeavy.map heavy).foldl (· + ·) 0
+      else (innerLight.map (light g)).foldl (· + ·) 0
+    let linenGroup := fun g =>
+      if g == 0 then (Linen.map innerHeavy heavy).foldl (· + ·) 0
+      else (Linen.map innerLight (light g)).foldl (· + ·) 0
+    let serial ← timed reps s!"draining-matched {tag}, serial"
+      (blackBox fun _ => gs.map serialGroup)
+    let parSeq ← timed reps s!"draining-matched {tag}, outer Linen / inner serial"
+      (blackBox fun _ => Linen.map gs serialGroup)
+    let parPar ← timedWithBudget reps s!"draining-matched {tag}, outer Linen / inner Linen"
+      (blackBox fun _ => Linen.map gs linenGroup)
+    unless serial == parSeq && serial == parPar do
+      throw (IO.userError s!"draining-matched {tag}: implementations disagree")
+
 /-- Smoke-check the core eager, map, mapIO, and mapReduce paths before timing.
 `timed` handles per-configuration warmup. -/
 private def sanityChecks : IO Unit := do
@@ -360,44 +420,56 @@ private def sanityChecks : IO Unit := do
 
 def main (args : List String) : IO UInt32 := do
   let reps := ((args.head?.bind (·.toNat?)).getD 3).max 1
+  let filters := (args[1]?.map (·.splitOn ",")).getD []
+  let want (name : String) : Bool :=
+    filters.isEmpty || filters.any fun f => (name.splitOn f).length > 1
   let os ← Std.Async.System.getSystemInfo
   IO.println s!"host: {os.name} {os.release} {os.machine}"
   IO.println s!"env: LINEN_WORKERS={(← IO.getEnv "LINEN_WORKERS").getD "-"} \
     LEAN_NUM_THREADS={(← IO.getEnv "LEAN_NUM_THREADS").getD "-"}"
-  IO.println s!"Linen config: {repr Linen.config}, reps: {reps}"
+  IO.println s!"Linen config: {repr Linen.config}, reps: {reps}\
+    {if filters.isEmpty then "" else s!", filter: {filters}"}"
   sanityChecks
-  benchCase reps "scheduler" (Array.range 200000) (· + 1)
-  benchCase reps "uneven" (Array.range 50000) unevenWork
-  benchCase reps "clustered" (Array.range 50000) (clusteredWork 50000)
-  benchCaseNested reps "nested-wide" 300 300
-  benchCaseNested reps "nested-narrow" 8 11250
-  benchCaseNestedDrainingTail reps
-  benchCaseNestedRepeated reps
-  benchCaseNestedFanout reps
-  benchCaseNestedDepth3 reps
-  benchCaseFlat reps "alloc" (Array.range 100000) (fun i => Array.range (i % 7))
-  benchCaseIO reps "scheduler" (Array.range 200000) (· + 1)
-  benchCaseIO reps "uneven" (Array.range 50000) unevenWork
-  benchCaseReduce reps "scheduler" (Array.range 200000) (· + 1)
-  benchCaseReduce reps "uneven" (Array.range 50000) unevenWork
-  benchCaseReduceId reps "sum" (Array.range 1000000)
-  benchCaseReduceId reps "bigsum" bigNums
   -- The refcount comparisons run last because `persist` retains its object
   -- graphs for the rest of the process, increasing memory use in later cases.
-  -- Uncontended: equivalent mutable and persistent inputs.
-  -- Element reads from the persistent inputs skip the atomic refcount update
-  -- (the refcount call itself remains), so the comparison estimates the
-  -- effect of skipping the atomic updates.
-  let boxedInputs ← blackBox mkBoxedInputs
-  benchCase reps "boxed" boxedInputs (·.foldl (· + ·) 0)
-  let persistentInputs ← persist (← blackBox mkBoxedInputs)
-  benchCase reps "boxed-persistent" persistentInputs (·.foldl (· + ·) 0)
-  -- Contended: every element is the same shared object. On the mutable input,
-  -- all workers update one refcount cache line.
-  let hot ← blackBox fun _ => Array.range 64
-  benchCase reps "shared" (Array.replicate 50000 hot) (·.foldl (· + ·) 0)
-  let hotPersistent ← persist (← blackBox fun _ => Array.range 64)
-  benchCase reps "shared-persistent" (Array.replicate 50000 hotPersistent) (·.foldl (· + ·) 0)
+  -- Uncontended cases use equivalent mutable and persistent inputs; element
+  -- reads from persistent inputs skip the atomic refcount update (the
+  -- refcount call itself remains), estimating the cost of atomic updates.
+  -- Contended cases replicate one shared object so all workers update one
+  -- refcount cache line.
+  let benches : List (String × IO Unit) := [
+    ("scheduler-map", benchCase reps "scheduler" (Array.range 200000) (· + 1)),
+    ("uneven-map", benchCase reps "uneven" (Array.range 50000) unevenWork),
+    ("clustered-map", benchCase reps "clustered" (Array.range 50000) (clusteredWork 50000)),
+    ("nested-wide", benchCaseNested reps "nested-wide" 300 300),
+    ("nested-narrow", benchCaseNested reps "nested-narrow" 8 11250),
+    ("nested-draining-tail", benchCaseNestedDrainingTail reps),
+    ("nested-repeated", benchCaseNestedRepeated reps),
+    ("nested-fanout", benchCaseNestedFanout reps),
+    ("nested-depth3", benchCaseNestedDepth3 reps),
+    ("team-ramp", benchCaseTeamRamp reps),
+    ("draining-matched", benchCaseDrainingMatched reps),
+    ("alloc-flat", benchCaseFlat reps "alloc" (Array.range 100000) (fun i => Array.range (i % 7))),
+    ("scheduler-io", benchCaseIO reps "scheduler" (Array.range 200000) (· + 1)),
+    ("uneven-io", benchCaseIO reps "uneven" (Array.range 50000) unevenWork),
+    ("scheduler-reduce", benchCaseReduce reps "scheduler" (Array.range 200000) (· + 1)),
+    ("uneven-reduce", benchCaseReduce reps "uneven" (Array.range 50000) unevenWork),
+    ("sum-reduce", benchCaseReduceId reps "sum" (Array.range 1000000)),
+    ("bigsum-reduce", benchCaseReduceId reps "bigsum" bigNums),
+    ("boxed-rc", do
+      let boxedInputs ← blackBox mkBoxedInputs
+      benchCase reps "boxed" boxedInputs (·.foldl (· + ·) 0)),
+    ("boxed-persistent-rc", do
+      let persistentInputs ← persist (← blackBox mkBoxedInputs)
+      benchCase reps "boxed-persistent" persistentInputs (·.foldl (· + ·) 0)),
+    ("shared-rc", do
+      let hot ← blackBox fun _ => Array.range 64
+      benchCase reps "shared" (Array.replicate 50000 hot) (·.foldl (· + ·) 0)),
+    ("shared-persistent-rc", do
+      let hotPersistent ← persist (← blackBox fun _ => Array.range 64)
+      benchCase reps "shared-persistent" (Array.replicate 50000 hotPersistent) (·.foldl (· + ·) 0))]
+  for (name, bench) in benches do
+    if want name then bench
   let st ← Linen.budgetStats
   IO.println s!"budget: peak={st.peak} spawnedTasks={st.spawnedTasks} \
     grownTasks={st.grownTasks} granted={st.attempts - st.deniedBudget} \
