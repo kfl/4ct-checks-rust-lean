@@ -2136,6 +2136,386 @@ private theorem failureReports_least {n : Nat} {ck : Chunking n}
   (FailedRun.ofTraces outcome traces m hwf hprefix hpoison).selectsLeast
     j₀ e₀ hfail hleast
 
+/-! ## Slot-ledger model
+
+The budget's pure content, in the schedule-replay pattern: reservation
+and release are pure transitions on a ledger, invariants are proved over
+event traces, and connecting the runtime's atomic `activeRef`/`statsRef`
+updates to those transitions is a small trusted statement. Denied
+attempts change no invariant and are absent from the event alphabet.
+
+The unlabelled alphabet models aggregate accounting only: it cannot
+distinguish which holder released, so per-slot ownership (fresh tokens
+created by grants and consumed by their releases) is the next
+refinement.
+
+Trusted, connecting the runtime to this model:
+- `tryReserveSlot` and `releaseSlot` each perform exactly one model
+  transition, atomically (one `modifyGet` on the live count);
+- every grant is released exactly once, by its holder
+  (`slottedWorker`, the inline-slot release, and the lost-race release
+  all release a slot they hold), which keeps the emitted trace
+  feasible;
+- liveness is a separate conditional layer: assuming spawned tasks are
+  eventually scheduled and terminate, `joinRegion` drains each region,
+  so every holder trace completes. Lean's task semantics cannot prove
+  the assumption. -/
+
+/-- The slot ledger: live slots and audit counters, the pure shadow of
+`activeRef` and the reservation parts of `BudgetStats`. -/
+private structure SlotLedger where
+  active : Nat := 0
+  granted : Nat := 0
+  released : Nat := 0
+  underflows : Nat := 0
+  peak : Nat := 0
+
+/-- The ledger at process start. -/
+private def SlotLedger.init : SlotLedger := {}
+
+/-- One reservation attempt: grant while below budget, deny otherwise.
+The returned flag reports the grant, as `tryReserveSlot` does. -/
+private def SlotLedger.reserve (budget : Nat) (st : SlotLedger) :
+    SlotLedger × Bool :=
+  if st.active < budget then
+    ({ st with
+        active := st.active + 1, granted := st.granted + 1,
+        peak := st.peak.max (st.active + 1) }, true)
+  else (st, false)
+
+/-- One release: guarded, so a stray release records an underflow rather
+than wrapping, mirroring `releaseSlot`. -/
+private def SlotLedger.release (st : SlotLedger) : SlotLedger :=
+  if st.active = 0 then { st with underflows := st.underflows + 1 }
+  else { st with active := st.active - 1, released := st.released + 1 }
+
+/-- A guarded grant, spelled out. -/
+private theorem SlotLedger.reserve_of_lt {budget : Nat} {st : SlotLedger}
+    (h : st.active < budget) :
+    (st.reserve budget).1
+      = { st with
+          active := st.active + 1, granted := st.granted + 1,
+          peak := st.peak.max (st.active + 1) } := by
+  simp [SlotLedger.reserve, h]
+
+/-- A guarded release, spelled out. -/
+private theorem SlotLedger.release_of_pos {st : SlotLedger}
+    (h : 0 < st.active) :
+    st.release
+      = { st with
+          active := st.active - 1,
+          released := st.released + 1 } := by
+  simp [SlotLedger.release, Nat.pos_iff_ne_zero.mp h]
+
+/-- Ledger events: granted reservations and releases. -/
+private inductive SlotEvent where
+  | grant
+  | release
+
+/-- Play a trace of events on the ledger. -/
+private def SlotLedger.play (budget : Nat) (st : SlotLedger) :
+    List SlotEvent → SlotLedger
+  | [] => st
+  | .grant :: rest => ((st.reserve budget).1).play budget rest
+  | .release :: rest => st.release.play budget rest
+
+/-- Grants in a trace. -/
+private def grantCount : List SlotEvent → Nat
+  | [] => 0
+  | .grant :: rest => grantCount rest + 1
+  | .release :: rest => grantCount rest
+
+/-- Releases in a trace. -/
+private def releaseCount : List SlotEvent → Nat
+  | [] => 0
+  | .grant :: rest => releaseCount rest
+  | .release :: rest => releaseCount rest + 1
+
+/-- Traces the runtime can emit from `active` live slots: grants happen
+only below budget and releases only against a live slot. The atomic
+guards in `tryReserveSlot`/`releaseSlot` and the holders' discipline
+make this true of the runtime's history. -/
+private def Feasible (budget : Nat) : Nat → List SlotEvent → Prop
+  | _, [] => True
+  | a, .grant :: rest => a < budget ∧ Feasible budget (a + 1) rest
+  | a, .release :: rest => 0 < a ∧ Feasible budget (a - 1) rest
+
+/-- Ledger invariants: the reservation balance and the caps. -/
+private structure WFLedger (budget : Nat) (st : SlotLedger) : Prop where
+  balance : st.granted = st.released + st.active
+  cap : st.active ≤ budget
+  active_le_peak : st.active ≤ st.peak
+  peak_le : st.peak ≤ budget
+
+/-- The initial ledger is well formed. -/
+private theorem WFLedger.init (budget : Nat) :
+    WFLedger budget SlotLedger.init :=
+  ⟨rfl, Nat.zero_le _, Nat.le_refl _, Nat.zero_le _⟩
+
+/-- Any played trace preserves the ledger invariants: reservations never
+exceed the budget, the peak never exceeds the budget, and grants always
+equal releases plus live slots. -/
+private theorem WFLedger.play {budget : Nat} {st : SlotLedger}
+    (h : WFLedger budget st) (t : List SlotEvent) :
+    WFLedger budget (st.play budget t) := by
+  induction t generalizing st with
+  | nil => exact h
+  | cons e rest ih =>
+    obtain ⟨hb, hc, hap, hp⟩ := h
+    cases e
+    · refine ih ?_
+      unfold SlotLedger.reserve
+      split
+      next hlt =>
+        refine ⟨?_, ?_, ?_, ?_⟩
+        · show st.granted + 1 = st.released + (st.active + 1)
+          omega
+        · show st.active + 1 ≤ budget
+          omega
+        · show st.active + 1 ≤ st.peak.max (st.active + 1)
+          exact Nat.le_max_right _ _
+        · show st.peak.max (st.active + 1) ≤ budget
+          exact Nat.max_le.mpr ⟨hp, hlt⟩
+      next => exact ⟨hb, hc, hap, hp⟩
+    · refine ih ?_
+      unfold SlotLedger.release
+      split
+      next => exact ⟨hb, hc, hap, hp⟩
+      next hpos =>
+        refine ⟨?_, ?_, ?_, ?_⟩
+        · show st.granted = st.released + 1 + (st.active - 1)
+          omega
+        · show st.active - 1 ≤ budget
+          omega
+        · show st.active - 1 ≤ st.peak
+          omega
+        · exact hp
+
+/-- Feasible traces never record an underflow. -/
+private theorem play_underflows {budget : Nat} {st : SlotLedger}
+    (t : List SlotEvent) (hf : Feasible budget st.active t) :
+    (st.play budget t).underflows = st.underflows := by
+  induction t generalizing st with
+  | nil => rfl
+  | cons e rest ih =>
+    cases e
+    · obtain ⟨hlt, hrest⟩ := hf
+      show (((st.reserve budget).1).play budget rest).underflows
+        = st.underflows
+      rw [SlotLedger.reserve_of_lt hlt]
+      exact ih hrest
+    · obtain ⟨hpos, hrest⟩ := hf
+      show ((st.release).play budget rest).underflows = st.underflows
+      rw [SlotLedger.release_of_pos hpos]
+      exact ih hrest
+
+/-- On feasible traces the live count follows the event counts. -/
+private theorem play_active {budget : Nat} {st : SlotLedger}
+    (t : List SlotEvent) (hf : Feasible budget st.active t) :
+    (st.play budget t).active + releaseCount t
+      = st.active + grantCount t := by
+  induction t generalizing st with
+  | nil => rfl
+  | cons e rest ih =>
+    cases e
+    · obtain ⟨hlt, hrest⟩ := hf
+      show (((st.reserve budget).1).play budget rest).active
+          + releaseCount rest = st.active + (grantCount rest + 1)
+      rw [SlotLedger.reserve_of_lt hlt]
+      have hrec : ((({ st with
+            active := st.active + 1, granted := st.granted + 1,
+            peak := st.peak.max (st.active + 1) } : SlotLedger)).play
+              budget rest).active + releaseCount rest
+          = (st.active + 1) + grantCount rest := ih hrest
+      omega
+    · obtain ⟨hpos, hrest⟩ := hf
+      show ((st.release).play budget rest).active
+          + (releaseCount rest + 1) = st.active + grantCount rest
+      rw [SlotLedger.release_of_pos hpos]
+      have hrec : ((({ st with
+            active := st.active - 1,
+            released := st.released + 1 } : SlotLedger)).play
+              budget rest).active + releaseCount rest
+          = (st.active - 1) + grantCount rest := ih hrest
+      omega
+
+/-- A balanced trace restores the aggregate live count. Aggregate only:
+the unlabelled ledger cannot show each holder released its own slot --
+`grant, grant, release, release` with one holder releasing twice plays
+identically -- which the ownership refinement will distinguish. -/
+private theorem play_returns {budget : Nat} {st : SlotLedger}
+    (t : List SlotEvent) (hf : Feasible budget st.active t)
+    (hbal : grantCount t = releaseCount t) :
+    (st.play budget t).active = st.active := by
+  have h := play_active t hf
+  omega
+
+/-- Quiescence: from the initial ledger, a feasible, balanced history
+ends with no live slots, grants equal to releases, no underflows, and
+the peak within budget -- the invariants the test suite checks. -/
+private theorem play_quiescent (budget : Nat) (t : List SlotEvent)
+    (hf : Feasible budget 0 t)
+    (hbal : grantCount t = releaseCount t) :
+    ((SlotLedger.init.play budget t).active = 0)
+      ∧ (SlotLedger.init.play budget t).granted
+          = (SlotLedger.init.play budget t).released
+      ∧ (SlotLedger.init.play budget t).underflows = 0
+      ∧ (SlotLedger.init.play budget t).peak ≤ budget := by
+  have hwf := (WFLedger.init budget).play t
+  have hret : (SlotLedger.init.play budget t).active = 0 :=
+    play_returns (st := SlotLedger.init) t hf hbal
+  have hund : (SlotLedger.init.play budget t).underflows = 0 :=
+    play_underflows (st := SlotLedger.init) t hf
+  obtain ⟨hb, -, -, hp⟩ := hwf
+  refine ⟨hret, by omega, hund, hp⟩
+
+/-! ## Ownership refinement
+
+The aggregate ledger cannot show each holder released its own slot.
+This layer can: a grant creates a fresh token, a release consumes
+exactly that token, and the live tokens form a set. Erasing the tokens
+yields a feasible aggregate trace, and the live count is the ledger's
+`active`, so the aggregate theorems apply to every owned history.
+Double releases are unrepresentable; leaks appear as outstanding live
+tokens and are ruled out by the conditional completion assumption. -/
+
+/-- Ownership events: slot grants and releases labelled by holder
+token. -/
+private inductive OwnEvent where
+  | grant (token : Nat)
+  | release (token : Nat)
+
+/-- Forget the tokens. -/
+private def OwnEvent.erase : OwnEvent → SlotEvent
+  | .grant _ => .grant
+  | .release _ => .release
+
+/-- Ownership discipline from tokens `used` (ever granted) and `live`
+(granted, not yet released): grants create fresh tokens below budget,
+releases consume a live token. -/
+private def Owned (budget : Nat) :
+    List Nat → List Nat → List OwnEvent → Prop
+  | _, _, [] => True
+  | used, live, .grant tok :: rest =>
+      tok ∉ used ∧ live.length < budget
+        ∧ Owned budget (tok :: used) (tok :: live) rest
+  | used, live, .release tok :: rest =>
+      tok ∈ live ∧ Owned budget used (live.erase tok) rest
+
+/-- The live tokens after a trace. -/
+private def liveAfter : List Nat → List OwnEvent → List Nat
+  | live, [] => live
+  | live, .grant tok :: rest => liveAfter (tok :: live) rest
+  | live, .release tok :: rest => liveAfter (live.erase tok) rest
+
+/-- Live tokens remain duplicate-free: releases consume exactly one
+occurrence, and freshness keeps grants from introducing a duplicate. -/
+private theorem owned_nodup {budget : Nat}
+    {used live : List Nat} {t : List OwnEvent}
+    (h : Owned budget used live t)
+    (hsub : ∀ tok ∈ live, tok ∈ used) (hdup : live.Nodup) :
+    (liveAfter live t).Nodup := by
+  induction t generalizing used live with
+  | nil => exact hdup
+  | cons e rest ih =>
+    cases e with
+    | grant tok =>
+      obtain ⟨hfresh, -, hrest⟩ := h
+      exact ih hrest
+        (fun tok' htok' => by
+          rcases List.mem_cons.mp htok' with h' | h'
+          · simp [h']
+          · simp [hsub tok' h'])
+        (List.nodup_cons.mpr ⟨fun hmem => hfresh (hsub tok hmem), hdup⟩)
+    | release tok =>
+      obtain ⟨hmem, hrest⟩ := h
+      exact ih hrest
+        (fun tok' htok' => hsub tok' (List.mem_of_mem_erase htok'))
+        (hdup.erase tok)
+
+/-- Erasing an owned trace yields a feasible aggregate trace from the
+live count. -/
+private theorem owned_feasible {budget : Nat}
+    {used live : List Nat} {t : List OwnEvent}
+    (h : Owned budget used live t) :
+    Feasible budget live.length (t.map OwnEvent.erase) := by
+  induction t generalizing used live with
+  | nil => trivial
+  | cons e rest ih =>
+    cases e with
+    | grant tok =>
+      obtain ⟨-, hcap, hrest⟩ := h
+      exact ⟨hcap, by simpa using ih hrest⟩
+    | release tok =>
+      obtain ⟨hmem, hrest⟩ := h
+      refine ⟨List.length_pos_of_mem hmem, ?_⟩
+      have hlen := List.length_erase_of_mem hmem
+      simpa [hlen] using ih hrest
+
+/-- The ledger's live count is the number of live tokens: playing the
+erased trace from a matching state ends at the final live-token count. -/
+private theorem play_active_eq_live {budget : Nat} {st : SlotLedger}
+    {used live : List Nat} {t : List OwnEvent}
+    (h : Owned budget used live t) (hact : st.active = live.length) :
+    (st.play budget (t.map OwnEvent.erase)).active
+      = (liveAfter live t).length := by
+  induction t generalizing used live st with
+  | nil => exact hact
+  | cons e rest ih =>
+    cases e with
+    | grant tok =>
+      obtain ⟨-, hcap, hrest⟩ := h
+      show (((st.reserve budget).1).play budget
+          (rest.map OwnEvent.erase)).active
+        = (liveAfter (tok :: live) rest).length
+      rw [SlotLedger.reserve_of_lt (by omega)]
+      exact ih (st := { st with
+          active := st.active + 1, granted := st.granted + 1,
+          peak := st.peak.max (st.active + 1) }) hrest
+        (congrArg (· + 1) hact)
+    | release tok =>
+      obtain ⟨hmem, hrest⟩ := h
+      have hpos : 0 < st.active := hact ▸ List.length_pos_of_mem hmem
+      show ((st.release).play budget
+          (rest.map OwnEvent.erase)).active
+        = (liveAfter (live.erase tok) rest).length
+      rw [SlotLedger.release_of_pos hpos]
+      exact ih (st := { st with
+          active := st.active - 1, released := st.released + 1 }) hrest
+        (by
+          show st.active - 1 = (live.erase tok).length
+          have hlen := List.length_erase_of_mem hmem
+          omega)
+
+/-- Full release: when every token is released, no slot stays live. -/
+private theorem play_active_zero_of_owned {budget : Nat}
+    {used : List Nat} {t : List OwnEvent}
+    (h : Owned budget used [] t) (hdone : liveAfter [] t = []) :
+    (SlotLedger.init.play budget (t.map OwnEvent.erase)).active = 0 := by
+  have := play_active_eq_live (st := SlotLedger.init) h rfl
+  simpa [hdone] using this
+
+/-- Quiescence, packaged from ownership: an owned history that releases
+every token ends with no live slots, balanced counters, no underflows,
+and the peak within budget. Convenience over the constituent results. -/
+private theorem owned_quiescent (budget : Nat) {used : List Nat}
+    (t : List OwnEvent) (h : Owned budget used [] t)
+    (hdone : liveAfter [] t = []) :
+    ((SlotLedger.init.play budget (t.map OwnEvent.erase)).active = 0)
+      ∧ (SlotLedger.init.play budget (t.map OwnEvent.erase)).granted
+          = (SlotLedger.init.play budget (t.map OwnEvent.erase)).released
+      ∧ (SlotLedger.init.play budget
+          (t.map OwnEvent.erase)).underflows = 0
+      ∧ (SlotLedger.init.play budget (t.map OwnEvent.erase)).peak
+          ≤ budget := by
+  have hact := play_active_zero_of_owned h hdone
+  have hund : (SlotLedger.init.play budget
+      (t.map OwnEvent.erase)).underflows = 0 :=
+    play_underflows (st := SlotLedger.init) _ (owned_feasible h)
+  obtain ⟨hb, -, -, hp⟩ :=
+    (WFLedger.init budget).play (t.map OwnEvent.erase)
+  exact ⟨hact, by omega, hund, hp⟩
+
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
 def activeSlots : BaseIO Nat :=

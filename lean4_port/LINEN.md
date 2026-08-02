@@ -167,10 +167,39 @@ failing claimed chunk is reported. `FailedRun.selectsLeast` and
 `failureReports_least` then prove in kernel that the register ends at the
 least failing input index's error, whatever order reports arrive in.
 
-The following proof work remains:
+The slot budget's pure content is a ledger state machine (`SlotLedger`)
+with guarded `reserve`/`release` transitions mirroring
+`tryReserveSlot`/`releaseSlot`. Over any feasible event trace -- grants
+only below budget, releases only against a live slot, which the atomic
+guards and the holders' discipline provide -- the proved invariants are:
+reservations and the recorded peak never exceed the budget, grants
+always equal releases plus live slots (`WFLedger.play`), no underflow is
+ever recorded (`play_underflows`), a balanced trace restores the
+aggregate live count (`play_returns`), and a balanced history from start
+ends quiescent: no live slots, grants equal releases (`play_quiescent`)
+-- the invariants the test suite checks. This is aggregate accounting:
+the unlabelled ledger cannot show each holder released its own slot,
+only that the totals balance. The cap is carried by the reserve guard
+alone, so bounded counter types are unnecessary for proving the
+aggregate cap; they would not address ownership or liveness either.
+Liveness is a separate conditional trusted layer: assuming spawned
+tasks are eventually scheduled and terminate, `joinRegion` drains each
+region and every holder trace completes.
 
-- the worker-budget, release, and liveness invariants of nested growth and
-  joins.
+The ownership refinement labels grants and releases with holder tokens
+(`OwnEvent`): a grant creates a fresh token, a release consumes exactly
+that token, and the live tokens provably remain duplicate-free
+(`owned_nodup`). Double releases are unrepresentable; leaks appear as
+outstanding live tokens and are ruled out by the conditional completion
+assumption. Erasing the tokens yields a feasible aggregate trace
+(`owned_feasible`), the ledger's live count equals the number of live
+tokens (`play_active_eq_live`), full release drives it to zero
+(`play_active_zero_of_owned`), and `owned_quiescent` packages the
+quiescence invariants directly from an owned, fully released history --
+so the aggregate theorems apply to every owned history. The pure proof work on the budget is complete; the
+remaining trusted statement is that the runtime's history is an owned
+trace (its atomic transitions and per-holder release discipline) and the
+conditional liveness layer.
 
 The contract tests exercise these properties across worker counts and
 scheduling shapes, but tests are evidence rather than proofs.
@@ -259,11 +288,21 @@ journal rather than this document.
       (`FallibleTrace`), a prefix cover of the claims
       (`Schedule.Prefix`), and their refinement to `FailedRun`
       prove that the register ends at the least failing input index's error.
-- [ ] Prove the slot-budget and release invariants and liveness of nested region
-      growth and joins. Start with bounded counter types (`activeRef` at
-      `{a // a ≤ config.workers}`, `Region.spawned` at `s ≤ slots`) for
-      the cap conjunct; reservation/release correspondence and liveness
-      are the substance.
+- [x] Slot-ledger model (aggregate layer): `SlotLedger` with guarded
+      transitions proves the budget cap, peak bound, grant/release
+      balance, no-underflow, aggregate slot return for balanced traces,
+      and quiescence over feasible traces. Subtyped counter refs are
+      unnecessary for the aggregate cap (it lives in the reserve
+      guard); they would not address ownership or liveness. Liveness
+      stays a separate conditional trusted layer.
+- [x] Ownership refinement of the ledger: holder tokens (`OwnEvent`,
+      `Owned`) with fresh grants and exact-token releases; live tokens
+      remain duplicate-free (`owned_nodup`), erasure yields a feasible
+      aggregate trace (`owned_feasible`), the live count equals the
+      live tokens (`play_active_eq_live`, `play_active_zero_of_owned`),
+      and `owned_quiescent` packages quiescence from full release.
+      Double releases are unrepresentable; leaks are outstanding live
+      tokens, ruled out by conditional completion.
 - [ ] Add general combinators built on indexed tabulation: `zip`/`zipWith`,
       `mapIdx`, and gather/permute; investigate an indexed producer interface
       without exposing chunk boundaries to callbacks.
