@@ -213,7 +213,14 @@ two efficiency cores, so the ten-worker results include the slower cores.
       ordinal's unique owner, worker index, and prefix-sum offset) and the
       final assembly `merge_wf`: for any `WFOuts`-well-formed worker output,
       `merge outs xs.size chunkSize = xs.map f`, so worker count and
-      claim order cannot affect the result. Open: the reduce-side
+      claim order cannot affect the result. The table-correctness proof
+      factors `placeChunks` through a flat trace of logical writes
+      (`placementTrace`) and shows the tables depend only on the set of
+      writes, not their order (`foldl_set_constant` needs agreement among
+      the writes hitting an ordinal, not a unique writer) -- the
+      order-invariance that the trusted concurrent bridge will lean on:
+      any schedule producing the same set of aligned, uniquely-claimed
+      runs produces identical tables. Open: the reduce-side
       instantiation via the regrouping lemma. The final bridge, that the
       concurrent runtime always produces well-formed output, requires
       reasoning about atomic claims and tasks; it stays an explicitly

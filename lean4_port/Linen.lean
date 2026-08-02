@@ -923,218 +923,218 @@ private def prefixLen (lenOf : Nat → Nat) (starts : List Nat) (k : Nat) :
     Nat :=
   (starts.take k).foldl (fun n s => n + lenOf s) 0
 
-/-- Split a left fold at a successfully looked-up element. -/
-private theorem foldl_split_at (l : List α) (f : β → α → β) (init : β)
-    (i : Nat) (x : α) (h : l[i]? = some x) :
-    l.foldl f init = (l.drop (i + 1)).foldl f (f ((l.take i).foldl f init) x) := by
-  obtain ⟨hi, hval⟩ := List.getElem?_eq_some_iff.mp h
-  calc l.foldl f init
-      = (l.take i ++ x :: l.drop (i + 1)).foldl f init := by
-        rw [← hval, ← List.drop_eq_getElem_cons hi, List.take_append_drop]
-    _ = (l.drop (i + 1)).foldl f (f ((l.take i).foldl f init) x) := by
-        rw [List.foldl_append, List.foldl_cons]
+/-- One logical write performed by `placeChunks`. -/
+private structure RunPlacement where
+  worker : Nat
+  start : Nat
+  offset : Nat
 
-/-- One worker's placement fold preserves table sizes. -/
-private theorem placeRun_foldl_sizes (c : Nat) (lenOf : Nat → Nat)
-    (w : Nat) (starts : List Nat) (st : PlaceRun) :
-    ((starts.foldl (placeRun c lenOf w) st).slotWorker.size
-        = st.slotWorker.size)
-      ∧ ((starts.foldl (placeRun c lenOf w) st).slotOffset.size
-        = st.slotOffset.size) := by
+/-- Logical writes for one worker, with offsets supplied by a prefix scan. -/
+private noncomputable def workerPlacementTrace (lenOf : Nat → Nat)
+    (worker : Nat) (starts : List Nat) (offset : Nat) : List RunPlacement :=
+  (starts.zip (starts.scanl (fun n s => n + lenOf s) offset)).map fun p =>
+    { worker, start := p.1, offset := p.2 }
+
+/-- The nested worker/run output flattened into its logical table writes. -/
+private noncomputable def placementTrace (lenOf : Nat → Nat)
+    (firstWorker : Nat)
+    (outs : List (Array β × Array Nat)) : List RunPlacement :=
+  (outs.zipIdx firstWorker).flatMap fun p =>
+    workerPlacementTrace lenOf p.2 p.1.2.toList 0
+
+/-- Apply one logical table write. -/
+private noncomputable def applyRunPlacement (c : Nat)
+    (tables : Array Nat × Array Nat)
+    (run : RunPlacement) : Array Nat × Array Nat :=
+  (tables.1.set! (run.start / c) (run.worker + 1),
+    tables.2.set! (run.start / c) run.offset)
+
+/-- Folding `placeRun` performs exactly the corresponding logical writes. -/
+private theorem placeRun_foldl_eq_trace (c : Nat) (lenOf : Nat → Nat)
+    (worker : Nat) (starts : List Nat) (st : PlaceRun) :
+    let final := starts.foldl (placeRun c lenOf worker) st
+    (final.slotWorker, final.slotOffset) =
+      (workerPlacementTrace lenOf worker starts st.offset).foldl
+        (applyRunPlacement c) (st.slotWorker, st.slotOffset) := by
   induction starts generalizing st with
-  | nil => exact ⟨rfl, rfl⟩
+  | nil => rfl
   | cons s rest ih =>
-    simpa [placeRun] using ih (placeRun c lenOf w st s)
+    simp only [List.foldl_cons]
+    rw [ih (st := placeRun c lenOf worker st s)]
+    simp [workerPlacementTrace, applyRunPlacement, placeRun, List.scanl_cons]
 
-/-- Ordinals a worker never writes keep their table entries. -/
-private theorem placeRun_foldl_untouched (c : Nat) (lenOf : Nat → Nat)
-    (w : Nat) (starts : List Nat) (st : PlaceRun) (o : Nat)
-    (ho : ∀ s ∈ starts, s / c ≠ o) :
-    ((starts.foldl (placeRun c lenOf w) st).slotWorker[o]?
-        = st.slotWorker[o]?)
-      ∧ ((starts.foldl (placeRun c lenOf w) st).slotOffset[o]?
-        = st.slotOffset[o]?) := by
-  induction starts generalizing st with
-  | nil => exact ⟨rfl, rfl⟩
-  | cons s rest ih =>
-    have hne : s / c ≠ o := ho s (by simp)
-    have hrest := ih (placeRun c lenOf w st s)
-      (fun s' hs' => ho s' (by simp [hs']))
-    grind [placeRun]
-
-/-- The run at position `K` writes its owner and prefix-sum offset, and --
-given no other run of this worker shares the ordinal -- the entry
-survives to the end of the worker's fold. -/
-private theorem placeRun_foldl_written (c : Nat) (lenOf : Nat → Nat)
-    (w : Nat) (starts : List Nat) (st : PlaceRun) (o K : Nat)
-    (hK : K < starts.length)
-    (hKo : starts[K] / c = o)
-    (hbw : o < st.slotWorker.size)
-    (hbo : o < st.slotOffset.size)
-    (huniq : ∀ k' (hk' : k' < starts.length),
-      starts[k'] / c = o → k' = K) :
-    ((starts.foldl (placeRun c lenOf w) st).slotWorker[o]?
-        = some (w + 1))
-      ∧ ((starts.foldl (placeRun c lenOf w) st).slotOffset[o]?
-        = some (st.offset + prefixLen lenOf starts K)) := by
-  induction starts generalizing st K with
-  | nil => exact absurd hK (by simp)
-  | cons s rest ih =>
-    match K with
-    | 0 =>
-      have hso : s / c = o := by simpa using hKo
-      have hrest : ∀ s' ∈ rest, s' / c ≠ o := by
-        intro s' hs' heq
-        obtain ⟨k', hk', hs'k⟩ := List.mem_iff_getElem.mp hs'
-        have h := huniq (k' + 1) (by simpa using Nat.succ_lt_succ hk')
-          (by simpa [hs'k] using heq)
-        omega
-      have hu := placeRun_foldl_untouched c lenOf w rest
-        (placeRun c lenOf w st s) o hrest
-      rw [List.foldl_cons]
-      grind [placeRun, prefixLen]
-    | K + 1 =>
-      have hKr : K < rest.length := by simpa using Nat.lt_of_succ_lt_succ hK
-      have hidx : ((s :: rest)[K + 1] : Nat) = rest[K] := by simp
-      have hbw' : o < (placeRun c lenOf w st s).slotWorker.size := by
-        simpa [placeRun] using hbw
-      have hbo' : o < (placeRun c lenOf w st s).slotOffset.size := by
-        simpa [placeRun] using hbo
-      have hrec := ih (placeRun c lenOf w st s) K hKr
-        (by simpa [hidx] using hKo) hbw' hbo'
-        (fun k' hk' heq => by
-          have h := huniq (k' + 1) (by simpa using Nat.succ_lt_succ hk') heq
-          omega)
-      constructor
-      · rw [List.foldl_cons]
-        exact hrec.1
-      · rw [List.foldl_cons, hrec.2]
-        congr 1
-        simp only [placeRun, prefixLen, List.take_succ_cons,
-          List.foldl_cons, Nat.zero_add]
-        rw [foldl_add_shift lenOf (List.take K rest) (lenOf s)]
-        omega
-
-/-- The worker index advances once per worker. -/
-private theorem placeWorker_foldl_worker (c : Nat) (lenOf : Nat → Nat)
-    (outsL : List (Array β × Array Nat)) (st : PlaceAll) :
-    (outsL.foldl (placeWorker c lenOf) st).worker
-      = st.worker + outsL.length := by
-  induction outsL generalizing st with
+/-- The nested implementation fold equals one fold over logical writes. -/
+private theorem placeWorker_foldl_eq_trace (c : Nat) (lenOf : Nat → Nat)
+    (outs : List (Array β × Array Nat)) (st : PlaceAll) :
+    let final := outs.foldl (placeWorker c lenOf) st
+    (final.slotWorker, final.slotOffset) =
+      (placementTrace lenOf st.worker outs).foldl (applyRunPlacement c)
+        (st.slotWorker, st.slotOffset) := by
+  induction outs generalizing st with
   | nil => rfl
   | cons out rest ih =>
-    rw [List.foldl_cons, ih]
-    simp [placeWorker]
-    omega
-
-/-- The worker fold preserves table sizes. -/
-private theorem placeWorker_foldl_sizes (c : Nat) (lenOf : Nat → Nat)
-    (outsL : List (Array β × Array Nat)) (st : PlaceAll) :
-    ((outsL.foldl (placeWorker c lenOf) st).slotWorker.size
-        = st.slotWorker.size)
-      ∧ ((outsL.foldl (placeWorker c lenOf) st).slotOffset.size
-        = st.slotOffset.size) := by
-  induction outsL generalizing st with
-  | nil => exact ⟨rfl, rfl⟩
-  | cons out rest ih =>
-    have hin := placeRun_foldl_sizes c lenOf st.worker out.2.toList
+    have hin := placeRun_foldl_eq_trace c lenOf st.worker out.2.toList
       { offset := 0, slotWorker := st.slotWorker,
         slotOffset := st.slotOffset }
     have hrec := ih (placeWorker c lenOf st out)
-    rw [List.foldl_cons]
-    grind [placeWorker]
+    have hin' :
+        ((placeWorker c lenOf st out).slotWorker,
+          (placeWorker c lenOf st out).slotOffset) =
+          (workerPlacementTrace lenOf st.worker out.2.toList 0).foldl
+            (applyRunPlacement c) (st.slotWorker, st.slotOffset) := by
+      simpa [placeWorker, Array.foldl_toList] using hin
+    have hrec' :
+        let final := rest.foldl (placeWorker c lenOf) (placeWorker c lenOf st out)
+        (final.slotWorker, final.slotOffset) =
+          (placementTrace lenOf (st.worker + 1) rest).foldl
+            (applyRunPlacement c)
+            ((placeWorker c lenOf st out).slotWorker,
+              (placeWorker c lenOf st out).slotOffset) := by
+      simpa [placeWorker] using hrec
+    simp only [List.foldl_cons]
+    rw [hrec']
+    rw [show placementTrace lenOf st.worker (out :: rest) =
+        workerPlacementTrace lenOf st.worker out.2.toList 0 ++
+          placementTrace lenOf (st.worker + 1) rest from rfl,
+      List.foldl_append, ← hin']
 
-/-- Workers that never record ordinal `o` leave its table entries alone. -/
-private theorem placeWorker_foldl_untouched (c : Nat) (lenOf : Nat → Nat)
-    (outsL : List (Array β × Array Nat)) (st : PlaceAll) (o : Nat)
-    (ho : ∀ out ∈ outsL, ∀ s ∈ out.2.toList, s / c ≠ o) :
-    ((outsL.foldl (placeWorker c lenOf) st).slotWorker[o]?
-        = st.slotWorker[o]?)
-      ∧ ((outsL.foldl (placeWorker c lenOf) st).slotOffset[o]?
-        = st.slotOffset[o]?) := by
-  induction outsL generalizing st with
-  | nil => exact ⟨rfl, rfl⟩
-  | cons out rest ih =>
-    have hin := placeRun_foldl_untouched c lenOf st.worker out.2.toList
-      { offset := 0, slotWorker := st.slotWorker,
-        slotOffset := st.slotOffset } o (ho out (by simp))
-    have hrec := ih (placeWorker c lenOf st out)
-      (fun out' hout' => ho out' (by simp [hout']))
-    rw [List.foldl_cons]
-    grind [placeWorker]
+/-- A fold of writes away from `o` preserves the entry at `o`. -/
+private theorem foldl_set_untouched (items : List σ) (index : σ → Nat)
+    (value : σ → Nat) (a : Array Nat) (o : Nat)
+    (h : ∀ x ∈ items, index x ≠ o) :
+    (items.foldl (fun a x => a.set! (index x) (value x)) a)[o]? = a[o]? := by
+  induction items generalizing a with
+  | nil => rfl
+  | cons x xs ih =>
+    have hx := h x (by simp)
+    have hxs : ∀ y ∈ xs, index y ≠ o :=
+      fun y hy => h y (by simp [hy])
+    rw [List.foldl_cons, ih (a := a.set! (index x) (value x)) hxs]
+    grind
 
-/-- Proof-carrying form of table correctness. `RunAt` packages the owner and
-run lookups; splitting at that owner leaves only the suffix non-overwrite
-argument. -/
+/-- If every write to `o` stores `v` and at least one such write occurs,
+the final entry is `v`. -/
+private theorem foldl_set_constant (items : List σ) (index : σ → Nat)
+    (value : σ → Nat) (a : Array Nat) (o v : Nat) (ho : o < a.size)
+    (hsame : ∀ x ∈ items, index x = o → value x = v)
+    (hexists : ∃ x ∈ items, index x = o) :
+    (items.foldl (fun a x => a.set! (index x) (value x)) a)[o]? = some v := by
+  induction items generalizing a with
+  | nil => grind
+  | cons x xs ih =>
+    have htail : ∀ y ∈ xs, index y = o → value y = v :=
+      fun y hy => hsame y (by simp [hy])
+    by_cases hx : index x = o
+    · have hv := hsame x (by simp) hx
+      by_cases hmore : ∃ y ∈ xs, index y = o
+      · exact ih (a := a.set! (index x) (value x)) (by grind)
+          htail hmore
+      · rw [List.foldl_cons, foldl_set_untouched xs index value
+          (a.set! (index x) (value x)) o (by grind)]
+        grind
+    · exact ih (a := a.set! (index x) (value x)) (by grind) htail
+        (by grind)
+
+/-- Folding paired logical writes is the pair of the component folds. -/
+private theorem foldl_applyRunPlacement (c : Nat)
+    (runs : List RunPlacement)
+    (tables : Array Nat × Array Nat) :
+    runs.foldl (applyRunPlacement c) tables =
+      (runs.foldl
+          (fun a run => a.set! (run.start / c) (run.worker + 1)) tables.1,
+        runs.foldl
+          (fun a run => a.set! (run.start / c) run.offset) tables.2) := by
+  induction runs generalizing tables with
+  | nil => rfl
+  | cons run rest ih =>
+    simpa [List.foldl_cons, applyRunPlacement] using
+      ih (applyRunPlacement c tables run)
+
+/-- A concrete `RunAt` occurs in the flattened logical writes. -/
+private theorem RunAt.mem_placementTrace (lenOf : Nat → Nat)
+    (firstWorker : Nat)
+    {outs : List (Array β × Array Nat)} {start : Nat}
+    (target : RunAt outs start) :
+    (⟨firstWorker + target.worker, start,
+      prefixLen lenOf target.out.2.toList target.runIdx⟩ : RunPlacement) ∈
+        placementTrace lenOf firstWorker outs := by
+  refine List.mem_flatMap_of_mem
+    (List.mk_add_mem_zipIdx_iff_getElem?.2 target.worker_eq) ?_
+  refine List.mem_map.mpr ⟨(start,
+    prefixLen lenOf target.out.2.toList target.runIdx), ?_, rfl⟩
+  apply List.mem_of_getElem? (i := target.runIdx)
+  apply List.getElem?_zip_eq_some.mpr
+  constructor <;> grind [prefixLen, RunAt]
+
+/-- Every logical write comes from a concrete worker/run position. -/
+private theorem RunPlacement.of_mem_placementTrace (lenOf : Nat → Nat)
+    (firstWorker : Nat) {outs : List (Array β × Array Nat)}
+    (run : RunPlacement) (hmem : run ∈ placementTrace lenOf firstWorker outs) :
+    ∃ target : RunAt outs run.start,
+      run.worker = firstWorker + target.worker ∧
+      run.offset = prefixLen lenOf target.out.2.toList target.runIdx := by
+  obtain ⟨p, hp, hrun⟩ := List.mem_flatMap.mp hmem
+  obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hrun
+  obtain ⟨k, hk, hqval⟩ := List.mem_iff_getElem.mp hq
+  refine ⟨⟨p.2 - firstWorker, k, p.1, ?_, ?_⟩, ?_⟩
+  · grind
+  · grind
+  · grind [prefixLen]
+
+/-- Table correctness derived from the flattened logical writes. -/
 private theorem placeWorker_foldl_spec (c : Nat) (lenOf : Nat → Nat)
-    (outsL : List (Array β × Array Nat)) (st : PlaceAll) (o : Nat)
-    (target : RunAt outsL (o * c))
-    (hc : 0 < c)
+    (outs : List (Array β × Array Nat)) (st : PlaceAll) (o : Nat)
+    (target : RunAt outs (o * c)) (hc : 0 < c)
     (hbw : o < st.slotWorker.size) (hbo : o < st.slotOffset.size)
-    (halign : ∀ out ∈ outsL, ∀ s ∈ out.2.toList, s % c = 0)
-    (huniq : ∀ other : RunAt outsL (o * c),
+    (halign : ∀ out ∈ outs, ∀ s ∈ out.2.toList, s % c = 0)
+    (huniq : ∀ other : RunAt outs (o * c),
       other.worker = target.worker ∧ other.runIdx = target.runIdx) :
-    ((outsL.foldl (placeWorker c lenOf) st).slotWorker[o]?
-        = some (st.worker + target.worker + 1))
-      ∧ ((outsL.foldl (placeWorker c lenOf) st).slotOffset[o]?
-        = some (prefixLen lenOf target.out.2.toList target.runIdx)) := by
-  have hW := (List.getElem?_eq_some_iff.mp target.worker_eq).1
-  let before := (outsL.take target.worker).foldl (placeWorker c lenOf) st
-  have hbeforeWorker : before.worker = st.worker + target.worker := by
-    rw [show before.worker = st.worker + (outsL.take target.worker).length from
-      placeWorker_foldl_worker c lenOf (outsL.take target.worker) st]
-    rw [List.length_take_of_le (Nat.le_of_lt hW)]
-  have hbeforeSizes :=
-    placeWorker_foldl_sizes c lenOf (outsL.take target.worker) st
-  have hbw' : o < before.slotWorker.size := by
-    rw [hbeforeSizes.1]
-    exact hbw
-  have hbo' : o < before.slotOffset.size := by
-    rw [hbeforeSizes.2]
-    exact hbo
-  obtain ⟨hK, hKval⟩ := Array.getElem?_eq_some_iff.mp target.run_eq
-  have hKl : target.runIdx < target.out.2.toList.length := by simpa using hK
-  have hKo : target.out.2.toList[target.runIdx] / c = o := by
-    rw [show target.out.2.toList[target.runIdx] = o * c from by simpa using hKval]
-    exact Nat.mul_div_cancel o hc
-  have hinner : ∀ k (hk : k < target.out.2.toList.length),
-      target.out.2.toList[k] / c = o → k = target.runIdx := by
-    intro k hk heq
-    have hrun : target.out.2[k]? = some target.out.2.toList[k] := by
-      rw [← Array.getElem?_toList, List.getElem?_eq_getElem hk]
-    obtain ⟨other, _, hk⟩ := RunAt.exists_ofOrdinal outsL c o _
-      target.worker k target.out halign target.worker_eq hrun heq
-    have hother := (huniq other).2
-    omega
-  have hwritten := placeRun_foldl_written c lenOf before.worker
-    target.out.2.toList
-    { offset := 0, slotWorker := before.slotWorker,
-      slotOffset := before.slotOffset }
-    o target.runIdx hKl hKo hbw' hbo' hinner
-  let afterOwner := placeWorker c lenOf before target.out
-  have howner : afterOwner.slotWorker[o]? = some (before.worker + 1)
-      ∧ afterOwner.slotOffset[o]?
-        = some (prefixLen lenOf target.out.2.toList target.runIdx) := by
-    simpa [afterOwner, placeWorker, Array.foldl_toList] using hwritten
-  have hafter : ∀ out ∈ outsL.drop (target.worker + 1),
-      ∀ s ∈ out.2.toList, s / c ≠ o := by
-    intro out hout s hs hso
-    obtain ⟨w, hw, houtval⟩ := List.mem_iff_getElem.mp hout
-    obtain ⟨k, hk, hsval⟩ := List.mem_iff_getElem.mp hs
-    have hworker : outsL[target.worker + 1 + w]? = some out := by
-      rw [← List.getElem?_drop]
-      exact houtval ▸ List.getElem?_eq_getElem hw
-    have hrun : out.2[k]? = some s := by
-      rw [← Array.getElem?_toList, List.getElem?_eq_getElem hk, hsval]
-    obtain ⟨other, hwEq, _⟩ := RunAt.exists_ofOrdinal outsL c o s
-      (target.worker + 1 + w) k out halign hworker hrun hso
-    have heq := (huniq other).1
-    omega
-  have hu := placeWorker_foldl_untouched c lenOf
-    (outsL.drop (target.worker + 1)) afterOwner o hafter
-  rw [foldl_split_at outsL (placeWorker c lenOf) st
-    target.worker target.out target.worker_eq]
-  exact ⟨by rw [hu.1, howner.1, hbeforeWorker], by rw [hu.2, howner.2]⟩
+    ((outs.foldl (placeWorker c lenOf) st).slotWorker[o]? =
+        some (st.worker + target.worker + 1)) ∧
+      ((outs.foldl (placeWorker c lenOf) st).slotOffset[o]? =
+        some (prefixLen lenOf target.out.2.toList target.runIdx)) := by
+  let runs := placementTrace lenOf st.worker outs
+  let wanted : RunPlacement :=
+    ⟨st.worker + target.worker, o * c,
+      prefixLen lenOf target.out.2.toList target.runIdx⟩
+  have hwanted : wanted ∈ runs := by
+    simpa [wanted, runs] using target.mem_placementTrace lenOf st.worker
+  have hsame : ∀ run ∈ runs, run.start / c = o →
+      run.worker + 1 = st.worker + target.worker + 1 ∧
+      run.offset = prefixLen lenOf target.out.2.toList target.runIdx := by
+    intro run hrun hro
+    obtain ⟨other, hw, hoffset⟩ :=
+      RunPlacement.of_mem_placementTrace lenOf st.worker run hrun
+    obtain ⟨normal, hnW, hnK⟩ := RunAt.exists_ofOrdinal outs c o run.start
+      other.worker other.runIdx other.out halign other.worker_eq other.run_eq hro
+    have hunique := huniq normal
+    have hworker : other.worker = target.worker := by omega
+    have hrunIdx : other.runIdx = target.runIdx := by omega
+    have htargetOut : outs[other.worker]? = some target.out := by
+      simpa [hworker] using target.worker_eq
+    have houtEq : other.out = target.out :=
+      Option.some.inj (other.worker_eq.symm.trans htargetOut)
+    constructor
+    · omega
+    · simpa [houtEq, hrunIdx] using hoffset
+  have hordinal : wanted.start / c = o := by
+    simp [wanted, Nat.mul_div_cancel o hc]
+  have hexists : ∃ run ∈ runs, run.start / c = o :=
+    ⟨wanted, hwanted, hordinal⟩
+  have hworker := foldl_set_constant runs (fun run => run.start / c)
+    (fun run => run.worker + 1) st.slotWorker o
+    (st.worker + target.worker + 1) hbw
+    (fun run hrun hro => (hsame run hrun hro).1) hexists
+  have hoffset := foldl_set_constant runs (fun run => run.start / c)
+    (fun run => run.offset) st.slotOffset o
+    (prefixLen lenOf target.out.2.toList target.runIdx) hbo
+    (fun run hrun hro => (hsame run hrun hro).2) hexists
+  have hflat := (placeWorker_foldl_eq_trace c lenOf outs st).trans
+    (foldl_applyRunPlacement c runs (st.slotWorker, st.slotOffset))
+  exact ⟨by simpa [runs] using
+      congrArg (fun tables => tables.1[o]?) hflat |>.trans hworker,
+    by simpa [runs] using
+      congrArg (fun tables => tables.2[o]?) hflat |>.trans hoffset⟩
 
 /-- `placeChunks` computes the owner and prefix-sum tables from any
 uniquely-claimed, aligned worker output: the array-level table
