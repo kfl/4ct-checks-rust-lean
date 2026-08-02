@@ -27,6 +27,7 @@ lscpu || true
 echo "## /proc topology note: threads beyond 'Core(s) per socket' x 'Socket(s)' are SMT siblings"
 
 REPS="${REPS:-3}"
+FILTER="${FILTER:-}"
 # `nproc` can mis-report inside SLURM/containers (returns 2 on a 128-core MODI
 # node); prefer SLURM's allocated count, then the hardware count, then nproc.
 NP="${SLURM_CPUS_ON_NODE:-$(nproc --all 2>/dev/null || nproc)}"
@@ -34,10 +35,10 @@ THREADS="${THREADS:-}"
 if [ -z "$THREADS" ]; then
   for t in 1 2 4 8 16 32 64 96 128; do [ "$t" -le "$NP" ] && THREADS="$THREADS $t"; done
 fi
-echo "## reps: $REPS, threads swept:$( for t in $THREADS; do printf ' %s' "$t"; done )"
+echo "## reps: $REPS, threads swept:$( for t in $THREADS; do printf ' %s' "$t"; done )${FILTER:+, filter: $FILTER}"
 
 for t in $THREADS; do
   echo
   echo "===== LEAN_NUM_THREADS=$t ====="
-  env -u LINEN_WORKERS LEAN_NUM_THREADS="$t" "$BENCH" "$REPS"
+  env -u LINEN_WORKERS LEAN_NUM_THREADS="$t" "$BENCH" "$REPS" ${FILTER:+"$FILTER"}
 done
