@@ -7,8 +7,9 @@ standard library.
 Lean's task pool is a good fit for coarse tasks, but representing every
 element of a large array as its own `Task` pays queue and scheduler traffic
 per element. Linen instead starts a bounded set of workers that claim chunks
-from an atomic cursor. This balances uneven work without creating a task per
-element.
+from an atomic cursor, with every region drawing its workers from one
+process-wide slot budget so nested regions cannot oversubscribe the machine.
+This balances uneven work without creating a task per element.
 
 The worker count follows `LINEN_WORKERS`, then `LEAN_NUM_THREADS`, then the
 machine's logical core count. The per-call `chunkSize` argument controls claim
@@ -65,49 +66,69 @@ claiming. -/
 private def startsCapacity (size count chunkSize : Nat) : Nat :=
   (size + chunkSize - 1) / chunkSize / count + 1
 
-/-- Monadic `mapM` worker. It appends values in claim order and records each
-chunk's start; the merge derives chunk lengths from those starts. -/
-private partial def workerMapMLoop (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → BaseIO β) (chunkSize : Nat) (values : Array β)
+/-- Outcome of one team-growth attempt under the occupancy policy (see the
+occupancy section below). `teamFull` is permanent for a region; `budgetFull`
+is transient and worth retrying. -/
+private inductive GrowResult where
+  | spawned
+  | budgetFull
+  | teamFull
+deriving Inhabited
+
+/-- Whether a growth result permits further attempts. -/
+private def GrowResult.retryable : GrowResult → Bool
+  | .teamFull => false
+  | _ => true
+
+/-- Monadic `mapM` worker. It appends values in claim order and records
+each chunk's start; the merge derives chunk lengths from those starts. One
+team-growth attempt runs per successful claim; `growing` caches the verdict,
+so a full team costs nothing per claim. -/
+private partial def workerMapMLoop (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (xs : Array α) (f : α → BaseIO β)
+    (chunkSize : Nat) (growing : Bool) (values : Array β)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (values, starts)
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
   let mut values := values
   for x in xs[start:stop] do
     values := values.push (← f x)
-  workerMapMLoop cursor xs f chunkSize values (starts.push start)
+  workerMapMLoop growth cursor xs f chunkSize growing values
+    (starts.push start)
 
-/-- Allocate buffers when the task runs so workers do not share a captured
-array. -/
-private def workerMapM (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → BaseIO β) (chunkSize valuesCap startsCap : Nat) :
+/-- Allocate worker-local buffers inside the task. -/
+private def workerMapM (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
+    (xs : Array α) (f : α → BaseIO β) (chunkSize valuesCap startsCap : Nat) :
     BaseIO (Array β × Array Nat) :=
-  workerMapMLoop cursor xs f chunkSize (Array.mkEmpty valuesCap)
-    (Array.mkEmpty startsCap)
+  workerMapMLoop growth cursor xs f chunkSize true
+    (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
 
-/-- Monadic `mapReduceM` worker. Each chunk is folded left-to-right into one
-partial, seeded by its first element. -/
-private partial def workerMapReduceMLoop (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → BaseIO β) (op : β → β → β) (chunkSize : Nat)
-    (partials : Array β) (starts : Array Nat) :
-    BaseIO (Array β × Array Nat) := do
+/-- Monadic `mapReduceM` worker. Each chunk is folded left-to-right into
+one partial, seeded by its first element, with per-claim team growth. -/
+private partial def workerMapReduceMLoop (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (xs : Array α) (f : α → BaseIO β)
+    (op : β → β → β) (chunkSize : Nat) (growing : Bool) (partials : Array β)
+    (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (partials, starts)
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
   let some x ← pure xs[start]?
     | return (partials, starts)
   let mut acc ← f x
   for x in xs[start + 1:stop] do
     acc := op acc (← f x)
-  workerMapReduceMLoop cursor xs f op chunkSize (partials.push acc) (starts.push start)
+  workerMapReduceMLoop growth cursor xs f op chunkSize growing
+    (partials.push acc) (starts.push start)
 
 /-- Allocate worker-local buffers inside the task. -/
-private def workerMapReduceM (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → BaseIO β) (op : β → β → β) (chunkSize startsCap : Nat) :
-    BaseIO (Array β × Array Nat) :=
-  workerMapReduceMLoop cursor xs f op chunkSize (Array.mkEmpty startsCap)
-    (Array.mkEmpty startsCap)
+private def workerMapReduceM (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
+    (xs : Array α) (f : α → BaseIO β) (op : β → β → β)
+    (chunkSize startsCap : Nat) : BaseIO (Array β × Array Nat) :=
+  workerMapReduceMLoop growth cursor xs f op chunkSize true
+    (Array.mkEmpty startsCap) (Array.mkEmpty startsCap)
 
 /-- Run one fallible chunk and return its first failing index and error.
 Explicit recursion keeps early-exit bookkeeping out of the success loop. -/
@@ -125,20 +146,24 @@ private partial def runChunk (xs : Array α) (f : α → BaseIO (Except ε β))
     return (values, none)
 
 /-- Fallible `mapIO` worker. On failure it sets the cursor to `size`,
-preventing new claims while the current chunks run to completion, and retains
-the lowest-index failure. Because chunks are claimed in order, all earlier elements have run
-when the tasks join. Failed chunks are omitted; results are merged only when
-every worker succeeds. -/
-private partial def workerMapIOLoop (cursor : IO.Ref Nat)
-    (failure : IO.Ref (Option (Nat × ε))) (xs : Array α)
-    (f : α → BaseIO (Except ε β)) (chunkSize : Nat) (values : Array β)
-    (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
+preventing new claims while current chunks run to completion, and retains
+the lowest-index failure; because chunks are claimed in order, all earlier
+elements have run when the workers join. Failed chunks are omitted; results
+are merged only when every worker succeeds. Grown siblings exit at their
+next claim after the cursor is poisoned. -/
+private partial def workerMapIOLoop (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (failure : IO.Ref (Option (Nat × ε)))
+    (xs : Array α) (f : α → BaseIO (Except ε β)) (chunkSize : Nat)
+    (growing : Bool) (values : Array β) (starts : Array Nat) :
+    BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (values, starts)
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
   match ← runChunk xs f stop start values with
   | (values, none) =>
-    workerMapIOLoop cursor failure xs f chunkSize values (starts.push start)
+    workerMapIOLoop growth cursor failure xs f chunkSize growing values
+      (starts.push start)
   | (values, some (i, e)) =>
     cursor.set xs.size
     failure.modify fun current =>
@@ -148,24 +173,176 @@ private partial def workerMapIOLoop (cursor : IO.Ref Nat)
     return (values, starts)
 
 /-- Allocate worker-local buffers inside the task. -/
-private def workerMapIO (cursor : IO.Ref Nat)
+private def workerMapIO (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
     (failure : IO.Ref (Option (Nat × ε))) (xs : Array α)
     (f : α → BaseIO (Except ε β)) (chunkSize valuesCap startsCap : Nat) :
     BaseIO (Array β × Array Nat) :=
-  workerMapIOLoop cursor failure xs f chunkSize (Array.mkEmpty valuesCap)
-    (Array.mkEmpty startsCap)
-
-private def spawnWorkers (count : Nat)
-    (work : BaseIO (Array β × Array Nat)) :
-    BaseIO (Array (Array β × Array Nat)) := do
-  let mut tasks : Array (Task (Array β × Array Nat)) := Array.mkEmpty count
-  for _ in [0:count] do
-    tasks := tasks.push (← BaseIO.asTask work)
-  tasks.mapM IO.wait
+  workerMapIOLoop growth cursor failure xs f chunkSize true
+    (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
 
 private def workerCount (size chunkSize : Nat) : Nat :=
   let chunks := (size + chunkSize - 1) / chunkSize
   config.workers.min chunks
+
+/-! ## Occupancy-based team sizing
+
+Sizing a team from the chunk count alone would let concurrently running
+regions oversubscribe the machine: each nested region would start its own
+full team. Instead the process holds a single worker-slot budget of
+`config.workers`. A region spawns a worker task only while it can reserve a
+slot, and always runs one worker inline on its caller (holding a slot when
+one is free, proceeding without one otherwise), so at most `config.workers`
+Linen worker tasks are live or queued at any time and nested work without a
+slot runs on its caller. The budget covers Linen-created workers only, not other tasks
+in the process. Workers retry reservation on each claim, so a team that
+started small grows as other regions retire and release slots. -/
+
+/-- Live count of reserved worker slots. Kept scalar in a ref of its own so
+the per-claim growth gate reads it without touching a shared boxed object; a
+boxed value would pay contended reference-count updates on every read. -/
+private initialize activeRef : IO.Ref Nat ← IO.mkRef 0
+
+/-- Reservation traffic under the occupancy policy, updated only on
+reservation events, never on the per-claim gate path. `spawnedTasks` counts
+every spawned worker; `grownTasks` is the subset spawned from a worker's
+per-claim growth attempt rather than from entry seeding. At quiescence the
+granted reservations `attempts - deniedBudget` equal `releases`,
+`underflows` is zero, and `peak` never exceeds `config.workers`. -/
+structure BudgetStats where
+  peak : Nat := 0
+  attempts : Nat := 0
+  deniedBudget : Nat := 0
+  deniedRegion : Nat := 0
+  spawnedTasks : Nat := 0
+  grownTasks : Nat := 0
+  releases : Nat := 0
+  underflows : Nat := 0
+deriving Nonempty
+
+private initialize statsRef : IO.Ref BudgetStats ← IO.mkRef {}
+
+/-- Reserve one worker slot if the budget allows, recording the attempt. -/
+private def tryReserveSlot : BaseIO Bool := do
+  let newActive ← activeRef.modifyGet fun a =>
+    if a < config.workers then (some (a + 1), a + 1) else (none, a)
+  match newActive with
+  | some a =>
+    statsRef.modify fun st =>
+      { st with attempts := st.attempts + 1, peak := st.peak.max a }
+    return true
+  | none =>
+    statsRef.modify fun st =>
+      { st with attempts := st.attempts + 1,
+                deniedBudget := st.deniedBudget + 1 }
+    return false
+
+/-- Return a worker's slot to the budget. The release is guarded: a release
+without a matching reservation is recorded as an underflow instead of
+saturating silently, so a double release cannot quietly widen the budget. -/
+private def releaseSlot : BaseIO Unit := do
+  let ok ← activeRef.modifyGet fun a =>
+    if a == 0 then (false, 0) else (true, a - 1)
+  statsRef.modify fun st =>
+    if ok then { st with releases := st.releases + 1 }
+    else { st with underflows := st.underflows + 1 }
+
+/-- Return a slot lost in a race for a region's last team position. -/
+private def releaseSlotRegionFull : BaseIO Unit := do
+  releaseSlot
+  statsRef.modify fun st => { st with deniedRegion := st.deniedRegion + 1 }
+
+/-- Run one worker and release its slot when it finishes. Every reserved
+worker runs through this wrapper. `BaseIO` cannot throw, and the fail-fast
+loops return normally after poisoning their cursor, so the release always
+runs. -/
+private def slottedWorker (work : BaseIO (Array β × Array Nat)) :
+    BaseIO (Array β × Array Nat) := do
+  let out ← work
+  releaseSlot
+  return out
+
+/-- Per-region team state under the occupancy policy. `spawned` counts team
+positions handed out, capped at `slots`; `registry` collects spawned worker
+tasks for the region's join. -/
+private structure Region (β : Type) where
+  slots : Nat
+  spawned : IO.Ref Nat
+  registry : IO.Ref (Array (Task (Array β × Array Nat)))
+
+/-- One team-growth attempt: reserve a global slot, then a team position, and
+spawn a sibling worker holding both. The slot is released again if another
+worker took the region's last position first; the atomic position counter is
+what bounds the team, since concurrent workers could all pass a plain read of
+it. Two plain reads of scalar counters gate the reservation, so a saturated
+pool costs no read-modify-write per claim (budget denials under the read
+gate therefore go unrecorded; `deniedBudget` counts lost races only). The
+team-position gate comes first: a full team is permanent for the region --
+`spawned` never decreases -- so `teamFull` lets callers stop attempting for
+the rest of the region, while `budgetFull` is transient and worth retrying.
+A spawned child is registered before its spawner can finish, which
+`joinRegion` relies on. `fromWorker` distinguishes per-claim growth from
+entry seeding in the statistics. -/
+private partial def growTeam (region : Region β) (fromWorker : Bool)
+    (mkWork : BaseIO GrowResult → BaseIO (Array β × Array Nat)) :
+    BaseIO GrowResult := do
+  if (← region.spawned.get) ≥ region.slots then return .teamFull
+  if (← activeRef.get) ≥ config.workers then return .budgetFull
+  if ← tryReserveSlot then
+    if ← region.spawned.modifyGet fun s =>
+        if s < region.slots then (true, s + 1) else (false, s) then
+      let task ← BaseIO.asTask
+        (slottedWorker (mkWork (growTeam region true mkWork)))
+      region.registry.modify (·.push task)
+      statsRef.modify fun st =>
+        { st with spawnedTasks := st.spawnedTasks + 1,
+                  grownTasks := st.grownTasks + (if fromWorker then 1 else 0) }
+      return .spawned
+    else
+      releaseSlotRegionFull
+      return .teamFull
+  else
+    return .budgetFull
+
+/-- Wait for every spawned worker. Each round atomically empties the registry
+and joins that batch; a worker registers any child before finishing, so an
+empty registry observed after a fully joined batch means no producer remains.
+Reading the registry without the swap would race with a late spawn. -/
+private def joinRegion (region : Region β)
+    (outs : Array (Array β × Array Nat)) :
+    BaseIO (Array (Array β × Array Nat)) := do
+  let mut outs := outs
+  repeat
+    let batch ← region.registry.modifyGet fun tasks => (tasks, (#[] : Array _))
+    if batch.isEmpty then break
+    for task in batch do
+      outs := outs.push (← IO.wait task)
+  return outs
+
+/-- Run one region under the occupancy policy: seed the team from the free
+budget, run one worker inline on the caller (the region's progress guarantee;
+it proceeds with or without a slot), and join. Per-claim growth attempts let
+the team approach `slots` as the budget frees up, so a region that started
+small is not stuck small. The inline worker holds a slot when one is free: a
+fully used budget is then visible to the growth read gates, which would
+otherwise chase a permanently free slot with a reservation per claim. A
+caller that is itself a slotted worker thereby reserves a second slot for
+its inline role, conservatively under-provisioning some nested teams by one;
+tracking execution context to avoid this is deliberately out of scope.
+Seeding stops at the first denial, so on a saturated pool a nested region
+costs a few counter reads rather than `slots` growth attempts. -/
+private def runGrowingRegion (slots : Nat)
+    (mkWork : BaseIO GrowResult → BaseIO (Array β × Array Nat)) :
+    BaseIO (Array (Array β × Array Nat)) := do
+  let region : Region β := ⟨slots, ← IO.mkRef 0, ← IO.mkRef #[]⟩
+  let inlineSlot ← if (← activeRef.get) < config.workers then tryReserveSlot
+    else pure false
+  let mut seeding := true
+  for _ in [0:slots] do
+    if seeding then
+      seeding := (← growTeam region false mkWork) matches .spawned
+  let mine ← mkWork (growTeam region true mkWork)
+  if inlineSlot then releaseSlot
+  joinRegion region #[mine]
 
 /-! Workers for the pure runtimes (`mapImpl` and `mapReduceImpl`). Their inner
 loops call `f` and `op` without `BaseIO`. Bounds derived from `claim` justify
@@ -180,21 +357,27 @@ private def mapChunkPure (xs : Array α) (f : α → β) (stop : Nat)
   else values
 termination_by stop - i
 
-private partial def workerMapPureLoop (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → β) (chunkSize : Nat) (values : Array β) (starts : Array Nat) :
+/-- Pure `map` worker with one team-growth attempt per successful claim.
+`growing` caches `growth`'s verdict: once the team is full the loop stops
+attempting, leaving no per-claim cost. -/
+private partial def workerMapPureLoop (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (xs : Array α) (f : α → β) (chunkSize : Nat)
+    (growing : Bool) (values : Array β) (starts : Array Nat) :
     BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if start ≥ xs.size then return (values, starts)
+  let growing ← if growing then (·.retryable) <$> growth else pure false
   let stop := (start + chunkSize).min xs.size
-  workerMapPureLoop cursor xs f chunkSize
+  workerMapPureLoop growth cursor xs f chunkSize growing
     (mapChunkPure xs f stop (Nat.min_le_right _ _) start values)
     (starts.push start)
 
-private def workerMapPure (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → β) (chunkSize valuesCap startsCap : Nat) :
+/-- Allocate worker-local buffers inside the task. -/
+private def workerMapPure (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
+    (xs : Array α) (f : α → β) (chunkSize valuesCap startsCap : Nat) :
     BaseIO (Array β × Array Nat) :=
-  workerMapPureLoop cursor xs f chunkSize (Array.mkEmpty valuesCap)
-    (Array.mkEmpty startsCap)
+  workerMapPureLoop growth cursor xs f chunkSize true
+    (Array.mkEmpty valuesCap) (Array.mkEmpty startsCap)
 
 private def reduceChunkPure (xs : Array α) (f : α → β) (op : β → β → β)
     (stop : Nat) (hstop : stop ≤ xs.size) (i : Nat) (acc : β) : β :=
@@ -204,24 +387,29 @@ private def reduceChunkPure (xs : Array α) (f : α → β) (op : β → β → 
   else acc
 termination_by stop - i
 
-private partial def workerReducePureLoop (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → β) (op : β → β → β) (chunkSize : Nat) (partials : Array β)
+/-- Pure reducing worker: each chunk folds to one partial seeded by its
+first element, with per-claim team growth. -/
+private partial def workerReducePureLoop (growth : BaseIO GrowResult)
+    (cursor : IO.Ref Nat) (xs : Array α) (f : α → β) (op : β → β → β)
+    (chunkSize : Nat) (growing : Bool) (partials : Array β)
     (starts : Array Nat) : BaseIO (Array β × Array Nat) := do
   let start ← claim cursor xs.size chunkSize
   if hstart : start < xs.size then
+    let growing ← if growing then (·.retryable) <$> growth else pure false
     let stop := (start + chunkSize).min xs.size
     let seed := f (xs[start]'hstart)
     let acc := reduceChunkPure xs f op stop (Nat.min_le_right _ _) (start + 1) seed
-    workerReducePureLoop cursor xs f op chunkSize (partials.push acc)
-      (starts.push start)
+    workerReducePureLoop growth cursor xs f op chunkSize growing
+      (partials.push acc) (starts.push start)
   else
     return (partials, starts)
 
-private def workerReducePure (cursor : IO.Ref Nat) (xs : Array α)
-    (f : α → β) (op : β → β → β) (chunkSize startsCap : Nat) :
+/-- Allocate worker-local buffers inside the task. -/
+private def workerReducePure (growth : BaseIO GrowResult) (cursor : IO.Ref Nat)
+    (xs : Array α) (f : α → β) (op : β → β → β) (chunkSize startsCap : Nat) :
     BaseIO (Array β × Array Nat) :=
-  workerReducePureLoop cursor xs f op chunkSize (Array.mkEmpty startsCap)
-    (Array.mkEmpty startsCap)
+  workerReducePureLoop growth cursor xs f op chunkSize true
+    (Array.mkEmpty startsCap) (Array.mkEmpty startsCap)
 
 /-- Build lookup tables from chunk ordinal to worker and buffer offset.
 `slotWorker` stores the worker index plus one, reserving zero for unclaimed
@@ -288,9 +476,9 @@ private def mergeReduce (outs : Array (Array β × Array Nat))
     let levelChunk := (ps.size + config.workers - 1) / config.workers
     let count := workerCount ps.size levelChunk
     let cursor ← IO.mkRef 0
-    let levelOuts ← spawnWorkers count
-      (workerReducePure cursor ps id op levelChunk
-        (startsCapacity ps.size count levelChunk))
+    let levelOuts ← runGrowingRegion (count - 1) fun growth =>
+      workerReducePure growth cursor ps id op levelChunk
+        (startsCapacity ps.size count levelChunk)
     return (orderedPartials levelOuts ps.size levelChunk).foldl op init
 
 /-- Parallel map using at most one task per configured worker. Workers claim
@@ -304,10 +492,10 @@ def mapM (xs : Array α) (f : α → BaseIO β) (chunkSize : Nat := 1) :
   else
     let count := workerCount xs.size chunkSize
     let cursor ← IO.mkRef 0
-    let outs ← spawnWorkers count
-      (workerMapM cursor xs f chunkSize
+    let outs ← runGrowingRegion (count - 1) fun growth =>
+      workerMapM growth cursor xs f chunkSize
         (valuesCapacity xs.size count)
-        (startsCapacity xs.size count chunkSize))
+        (startsCapacity xs.size count chunkSize)
     return merge outs xs.size chunkSize
 
 /-- Monadic map-reduce using dynamically claimed chunks. Each chunk produces
@@ -321,21 +509,22 @@ def mapReduceM (xs : Array α) (f : α → BaseIO β) (op : β → β → β)
   else
     let count := workerCount xs.size chunkSize
     let cursor ← IO.mkRef 0
-    let outs ← spawnWorkers count
-      (workerMapReduceM cursor xs f op chunkSize
-        (startsCapacity xs.size count chunkSize))
+    let outs ← runGrowingRegion (count - 1) fun growth =>
+      workerMapReduceM growth cursor xs f op chunkSize
+        (startsCapacity xs.size count chunkSize)
     mergeReduce outs xs.size chunkSize op init
 
 /-- Parallel engine for the pure `map` runtime; preconditions (more than one
 worker, `size > chunkSize`) are checked by `mapImpl`. -/
 private def mapCoreIO (xs : Array α) (f : α → β) (chunkSize : Nat) :
     BaseIO (Array β) := do
-  let count := workerCount xs.size chunkSize
+  let base := workerCount xs.size chunkSize
   let cursor ← IO.mkRef 0
-  let outs ← spawnWorkers count
-    (workerMapPure cursor xs f chunkSize
-      (valuesCapacity xs.size count)
-      (startsCapacity xs.size count chunkSize))
+  -- The caller runs one worker inline, so the spawn cap is `base - 1`.
+  let outs ← runGrowingRegion (base - 1) fun growth =>
+    workerMapPure growth cursor xs f chunkSize
+      (valuesCapacity xs.size base)
+      (startsCapacity xs.size base chunkSize)
   return merge outs xs.size chunkSize
 
 /-- Parallel engine for the pure `mapReduce` runtime; preconditions as for
@@ -344,9 +533,9 @@ private def reduceCoreIO (xs : Array α) (f : α → β) (op : β → β → β)
     (init : β) (chunkSize : Nat) : BaseIO β := do
   let count := workerCount xs.size chunkSize
   let cursor ← IO.mkRef 0
-  let outs ← spawnWorkers count
-    (workerReducePure cursor xs f op chunkSize
-      (startsCapacity xs.size count chunkSize))
+  let outs ← runGrowingRegion (count - 1) fun growth =>
+    workerReducePure growth cursor xs f op chunkSize
+      (startsCapacity xs.size count chunkSize)
   mergeReduce outs xs.size chunkSize op init
 
 /-- Runtime implementation of `map`. Its public specification is `xs.map f`,
@@ -419,10 +608,10 @@ def mapIO (xs : Array α) (f : α → IO β) (chunkSize : Nat := 1) :
     let count := workerCount xs.size chunkSize
     let cursor ← IO.mkRef 0
     let failure ← IO.mkRef (none : Option (Nat × IO.Error))
-    let outs ← spawnWorkers count
-      (workerMapIO cursor failure xs (fun x => (f x).toBaseIO) chunkSize
+    let outs ← runGrowingRegion (count - 1) fun growth =>
+      workerMapIO growth cursor failure xs (fun x => (f x).toBaseIO) chunkSize
         (valuesCapacity xs.size count)
-        (startsCapacity xs.size count chunkSize))
+        (startsCapacity xs.size count chunkSize)
     match ← failure.get with
     | some (_, e) => throw e
     | none => return merge outs xs.size chunkSize
@@ -432,5 +621,14 @@ smallest-index error reporting as `mapIO`. -/
 def forEach (xs : Array α) (f : α → IO Unit) (chunkSize : Nat := 1) :
     IO Unit :=
   discard <| mapIO xs f chunkSize
+
+/-- Number of currently reserved worker slots, including inline callers'
+slots; zero whenever no combinator is running. For tests and diagnostics. -/
+def activeSlots : BaseIO Nat :=
+  activeRef.get
+
+/-- Snapshot of the reservation statistics. For tests and diagnostics. -/
+def budgetStats : BaseIO BudgetStats :=
+  statsRef.get
 
 end Linen

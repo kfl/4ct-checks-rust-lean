@@ -18,8 +18,8 @@ candidate as a runtime task.
 
 ## Design
 
-`Linen.mapM` creates an atomic claim cursor for each parallel region. A bounded
-team of at most one Lean task per configured worker repeatedly:
+`Linen.mapM` creates an atomic claim cursor for each parallel region. Each
+worker in the region's team repeatedly:
 
 1. claims the next small, half-open chunk;
 2. computes it outside the atomic claim operation;
@@ -28,6 +28,18 @@ team of at most one Lean task per configured worker repeatedly:
 
 After the workers join, their chunk runs are merged into input order serially.
 No result-side synchronisation occurs in the hot path.
+
+Teams are drawn from a single process-wide slot budget of `config.workers`
+worker slots. A region spawns a worker task only while it can reserve a slot,
+and always runs one worker inline on its caller, so at most `config.workers`
+Linen worker tasks are live or queued at any time and nested work without a
+slot runs serially on its caller. Workers retry reservation once per
+successful claim (two scalar-counter reads when nothing is free), so a team
+that started small grows as other regions retire and release slots; in the
+measured nested check workloads most workers were spawned by this growth
+path rather than at region entry. The
+inline worker holds a slot when one is free, making a saturated budget
+visible to the growth gates.
 
 The per-call `chunkSize` argument controls claim granularity and is clamped to
 at least one. Smaller chunks preserve balancing when element costs vary;
@@ -62,15 +74,29 @@ for the combining operation is the caller's obligation that makes the
 specification and the parallel runtime agree. Commutativity is not required,
 so associative non-commutative operations reduce deterministically.
 
+## Diagnostics
+
+The slot budget keeps an always-on reservation ledger, updated only on
+reservation events (never on the per-claim gate path); the engine's
+measured results include this cost. `Linen.activeSlots` and
+`Linen.budgetStats` expose it as supported diagnostics, and the test suite
+asserts its invariants: at quiescence `underflows` is zero, granted
+reservations equal `releases`, `active` is zero, and `peak` never exceeds
+the configured worker count. The check driver prints the ledger to stderr
+under `--budget_stats`.
+
 ## Scope and limitations
 
 Linen is inspired by Rayon but is not yet a Rayon clone. It is a bounded
 dynamic executor without per-worker deques, global cross-region work stealing,
 a persistent worker pool, or a help-join protocol. Each nested parallel region
-creates its own bounded team and atomic claim cursor. Lean's task runtime
-prevents nested joins from starving the pool. With one level of nesting and
-`W` configured workers, the outer workers can collectively queue up to `W²`
-inner tasks; deeper nesting or multiple concurrent regions can queue more.
+has its own atomic claim cursor, but all regions share the worker-slot
+budget, so nesting depth and concurrent regions cannot multiply the task
+count. Lean's task runtime prevents nested joins from starving the pool. Two
+known conservatisms under-provision teams slightly rather than oversubscribe:
+an outer worker blocked joining its inner region keeps its slot, and a
+slotted worker entering a nested region reserves a second slot for its
+inline role.
 
 ## Validation and benchmark
 
@@ -112,13 +138,16 @@ homogeneous configuration and the ten-row mixes in the slower cores.
 
 ## TODO
 
-- [ ] Profile the full checks at 128, 64, and 32 workers.
-- [ ] Amortise claim traffic at fine granularity: the shared cursor makes
-      c=1 collapse as worker count grows. Coarser claims retain useful
-      scaling on uneven and clustered workloads, although the best
-      granularity depends on the workload and machine topology. Candidates:
-      guided chunk decay (large early claims, finer tail) with run
-      descriptors so the merge tolerates variable chunk sizes.
+- [ ] Profile the full checks at 128, 96, 64, and 32 workers.
+- [ ] Amortise claim overhead at fine granularity: the shared cursor makes
+      c=1 collapse as worker count grows on cheap elements. Coarser claims
+      retain useful scaling on uneven and clustered workloads, although the
+      best granularity depends on the workload and machine topology.
+      Candidates include guided chunk decay (large early claims, finer tail)
+      with run descriptors for variable-size merging. Team sizing is now
+      handled by the occupancy budget and no longer coupled to `chunkSize`
+      (a chunk-count cap aside), so this is purely a claim-granularity
+      question.
 - [ ] Route the pure runtimes' serial fast paths through the unchecked chunk
       loops: they fold with generic closure calls today (~40x a literal fold
       on trivial operations), while the parallel workers' direct loops come

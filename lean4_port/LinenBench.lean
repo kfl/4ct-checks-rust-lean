@@ -284,4 +284,8 @@ def main (args : List String) : IO UInt32 := do
   benchCase reps "shared" (Array.replicate 50000 hot) (·.foldl (· + ·) 0)
   let hotPersistent ← persist (← blackBox fun _ => Array.range 64)
   benchCase reps "shared-persistent" (Array.replicate 50000 hotPersistent) (·.foldl (· + ·) 0)
+  let st ← Linen.budgetStats
+  IO.println s!"budget: peak={st.peak} spawnedTasks={st.spawnedTasks} \
+    grownTasks={st.grownTasks} granted={st.attempts - st.deniedBudget} \
+    releases={st.releases} underflows={st.underflows}"
   return 0
