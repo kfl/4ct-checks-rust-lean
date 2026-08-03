@@ -39,6 +39,16 @@ to this repo, matching that layout (override with `CPP=...`).
 - **`full_array.sh`** -- `sbatch` job ARRAY: all degrees 7-11 as separate jobs, checkpoint+resume via a ledger.
 - **`scaling.sh`** -- parallel wall-clock thread sweep (Rust & Lean vs serial C++).
 - **`scaling_job.sh`** -- `sbatch` wrapper for `scaling.sh` (stock image).
+- **`linen.sh`** -- `LinenBench` thread-count sweep with topology and build
+  provenance.
+- **`linen_job.sh`** -- `sbatch` wrapper for `linen.sh`.
+- **`tabulate_job.sh`** -- focused `LinenBench` preset for indexed tabulation,
+  effectful mapping, and nested tabulation.
+- **`checkbench.sh`** -- repeated Linen-enabled real-check runs with a
+  byte-identical output gate and resource accounting.
+- **`checkbench_job.sh`** -- `sbatch` wrapper for `checkbench.sh`.
+- **`rusage.py`** -- resource-accounting helper used where GNU `time -v` is
+  unavailable.
 
 ## MODI facts these scripts assume (from the MODI user guide)
 - **Apptainer** is the container runtime (not Singularity).

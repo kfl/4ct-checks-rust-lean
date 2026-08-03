@@ -160,10 +160,15 @@ page. Only the deviations below depart from a literal transcription.
   `Cartwheel.lean`), rule expansion (`Rule.lean`), and configuration-file
   parsing (`Configuration.lean`) -- but exploits them only because each packs
   into a pure, order-preserving combinator (`parMap`/`parFilterMap`/`parMapM`):
-  one `Task` per element, no shared mutable state, so the parallel run computes
-  the same function as the serial run by construction. Anything that would need
-  shared state or ad-hoc synchronisation stays serial. The byte-exact oracles
-  and the differential run against these parallel defaults.
+  Linen workers governed by a process-wide slot budget dynamically claim
+  independent elements and restore the results to input order. The scheduler's
+  atomic claim cursor and worker-local result buffers are encapsulated below
+  the combinators; user
+  functions still only read immutable data. Pure `parMap` is definitionally the
+  serial `Array.map` and uses the executor only through `implemented_by`, so
+  proofs see the same function by construction. Anything that would need
+  algorithm-level shared state or ad-hoc synchronisation stays serial. The
+  byte-exact oracles and the differential run check these parallel defaults.
 
 - **Degrees are `Nat`, curvature is `Int`.** A degree is `>= 1` (validated at
   load by `assertDegreesValid`); the signed curvature `10*(6-d)` coerces the

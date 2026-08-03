@@ -36,7 +36,7 @@ def valuedOptions : List String :=
 /-- Boolean switches: the mode selectors and `help`. -/
 def flagOptions : List String :=
   ["combine_rules", "enum_wheels", "enum_cartwheels",
-   "check_deg8", "check_7triangle", "check_deg7", "help"]
+   "check_deg8", "check_7triangle", "check_deg7", "budget_stats", "help"]
 
 /-- An option either takes a value or is a boolean switch. -/
 inductive OptKind | valued | flag
@@ -97,6 +97,7 @@ def helpText : String :=
   "  -d [ --degree ] arg       Degree of the center vertex of wheels\n" ++
   "  -o [ --outdir ] arg       Output directory\n" ++
   "  --shard arg               i/n: check_* only handles cartwheels k = i mod n\n" ++
+  "  --budget_stats            Print Linen worker-budget statistics to stderr\n" ++
   "  -H [ --help ]             Display options"
 
 /-- The three checks share an argument shape. -/
@@ -174,6 +175,19 @@ def Job.run : Job → IO Unit
   | .check .deg7 cartwheeldir confdir shard => runCheckDeg7 cartwheeldir confdir shard
 
 def main (argv : List String) : IO UInt32 := do
-  match parseOptions argv >>= buildJobs with
+  match parseOptions argv with
   | .error msg => IO.eprintln msg; return 1
-  | .ok jobs => jobs.forM Job.run; return 0
+  | .ok opts =>
+    match buildJobs opts with
+    | .error msg => IO.eprintln msg; return 1
+    | .ok jobs =>
+      jobs.forM Job.run
+      if opts.has "budget_stats" then
+        let st ← Linen.budgetStats
+        IO.eprintln s!"budget: peak={st.peak} attempts={st.attempts} \
+          granted={st.attempts - st.deniedBudget} \
+          spawnedTasks={st.spawnedTasks} grownTasks={st.grownTasks} \
+          deniedBudget={st.deniedBudget} deniedRegion={st.deniedRegion} \
+          releases={st.releases} underflows={st.underflows} \
+          active={← Linen.activeSlots}"
+      return 0

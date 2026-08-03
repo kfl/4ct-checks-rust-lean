@@ -8,13 +8,10 @@ and their helpers.
 
 The checks are parallel at two nested levels: `parForEach` over the checked
 cartwheels, and inside each, `combineEachCartwheel`'s candidate sweep as an
-order-preserving `parFlatMap` (see Cartwheel.lean). The inner level makes
-every cartwheel's work thousands of tasks wide, so the scheduler absorbs
-per-cartwheel cost skew at any thread count; the outer level spreads task
-creation itself across workers (a serial outer loop measurably bottlenecks
-on spawning). Workers blocking on inner tasks are replaced by the Lean task
-pool, so the nesting does not starve. A failing proof obligation throws in
-its worker; `parForEach` re-raises it, so the process exits non-zero.
+order-preserving `parFlatMap` (see Cartwheel.lean). The combinators retain the
+fine-grained load balancing needed for per-cartwheel cost skew. A failing proof
+obligation throws in its worker; `parForEach` re-raises the first failure in
+input order, so the process exits non-zero.
 
 The asserts here ARE the proof → `proofAssert` (always-on, aborts), never
 `panic!` (which Lean would swallow). This includes the `assert(false)`

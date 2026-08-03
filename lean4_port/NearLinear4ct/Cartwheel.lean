@@ -425,11 +425,9 @@ namespace PseudoConfiguration
 configuration (A.10.2).
 
 The candidate sweep is one independent trial per cartwheel, run as an
-order-preserving `parFlatMap` (one task per candidate -- the natural unit),
-so the survivor list is identical to the sequential sweep's at any thread
-count. This inner level is what lets the check drivers absorb per-cartwheel
-cost skew: even a single expensive cartwheel's check is thousands of tasks
-wide. -/
+order-preserving `parFlatMap`, so the survivor list is identical to the
+sequential sweep's at any thread count while a single expensive cartwheel
+remains wide enough to absorb candidate-cost skew. -/
 def combineEachCartwheel (pc : PseudoConfiguration) (dart : Nat) (cartwheels : Array CartWheel)
     (confs : Array Configuration) : Array (PseudoConfiguration × Mappings) :=
   parFlatMap cartwheels fun cartwheel => Id.run do
