@@ -26,7 +26,7 @@ structure Queue (α : Type) where
   private head : Nat
   /-- The head never runs past the backing array: a `Queue` is well-formed by
   construction (erased at runtime), so the proofs never carry a separate
-  queue-wellformedness invariant. -/
+  queue well-formedness invariant. -/
   private queue_invariant : head ≤ items.size
 
 namespace Queue

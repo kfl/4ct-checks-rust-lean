@@ -3,13 +3,14 @@ import NearLinear4ct.Rule
 /-!
 The enumeration engine (Appendix A.9).
 
-`CartWheel extends PseudoConfiguration` and adds `center` + `centerDarts` (the
+`CartWheel extends WFConfig` and adds `center` + `centerDarts` (the
 darts of the centre vertex, in rotation order). Covers wheel/cartwheel
 enumeration, in/out-rule fixing, charge-bound pruning, refinement, and
 `enumBadCartwheels`.
 
-This file also hosts the remaining **charge methods** on `PseudoConfiguration`
-(`alwaysApply`/`neverApply`/`amountOf*`/`dominantlyApply`) and the
+This file also hosts the remaining **charge methods** in the
+`PseudoConfiguration` namespace (`alwaysApply`/`neverApply`/`amountOf*`/
+`dominantlyApply`, all consuming `WFConfig`) and the
 **cartwheel-combination** methods (`combineEachCartwheel*`). These consume
 `Rule`/`CartWheel`, and Lean has no forward declarations, so they live here (after
 those types exist).
@@ -18,12 +19,12 @@ The enumeration relies on `assert`s as invariants -- but in `enumBadCartwheels`
 those are genuine **proof obligations** (the final charge must be 0, etc.), so
 they go through `proofAssert` (must abort). The enumeration-internal sanity
 `assert`s (`A ≥ 0`, `U_R` non-empty, degree in `[5,9]`) are structural invariants
-of correct input; they use `panic!` (loud, and unreachable on wellformed data).
+of correct input; they use `panic!` (loud, and unreachable on well-formed data).
 -/
 
 namespace NearLinear4ct
 
--- --- charge methods on PseudoConfiguration (consume Rule) --------------------
+-- --- charge methods in the PseudoConfiguration namespace (consume Rule) ------
 namespace PseudoConfiguration
 
 /-- Whether `rule` always applies at `dartId` -- its degrees include this

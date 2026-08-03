@@ -3,10 +3,10 @@ import NearLinear4ct.PseudoConfiguration
 /-!
 File-backed reducible configurations (Appendix A.6).
 
-`Configuration extends PseudoConfiguration` and adds a root `dartId`.
+`Configuration extends WFConfig` and adds a root `dartId`.
 
 The adjacency scratch `suc` is a plain 2-D vector with a `-1` sentinel, an
-`Array (Array Int)`; no ordered-container behaviour is observable. `from_file`
+`Array (Array Int)`; no ordered-container behaviour is observable. `fromFile`
 parsing reproduces the structures `FORMAT.md` specifies, byte-for-byte.
 
 This file also hosts the **reducible-configuration cluster** on
@@ -85,7 +85,7 @@ def getMirrors (confs : Array Configuration) : Array Configuration :=
 
 /-- Find internal vertices that are cut-vertices, returning their two ring
 neighbours (A.6.2). An invalid cut-vertex aborts via `panic!` (input
-wellformedness, not a proof obligation). -/
+well-formedness, not a proof obligation). -/
 def findCutPairs (n r : Nat) (rotations : Array (Array Int)) : Array (Nat × Nat) := Id.run do
   let mut p : Array (Nat × Nat) := #[]
   for i in [r:n] do

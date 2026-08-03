@@ -25,10 +25,10 @@ differential testing against C++ meaningful.
   CLI mirroring the C++ `main`.
 - **`lean4_port/`** -- the Lean 4 port: the `NearLinear4ct` library plus `main`
   and `test` executables, with a machine-checked theorem layer -- the
-  homomorphism routine is proved to compute the paper's Algorithm A.2.1,
-  sound and complete for Sec. 9's predicate, and total. `lean4_port/FIDELITY.md`
-  records the paper correspondence and claims; `lean4_port/PERFORMANCE_NOTES.md`
-  the measurements.
+  guarded homomorphism routine is proved total and sound. On in-range root
+  darts, it is also proved complete and equivalent to Algorithm A.2.1.
+  `lean4_port/FIDELITY.md` records the paper correspondence and claims;
+  `lean4_port/PERFORMANCE_NOTES.md` the measurements.
 - **`modi/`** -- scripts to build and run the full 3-way differential (C++ /
   Rust / Lean) on the MODI Linux HPC cluster.
 - **`FORMAT.md`** -- shared on-disk format spec (copied from the C++ repo).
@@ -66,10 +66,10 @@ git clone --depth 1 git@github.com:near-linear-4ct/discharging-rules.git
 ```
 
 and, for the differential, the C++ reference binary built from the
-`computer-checks` repo. The pipeline is: combine rules (A.1/A.2) -> enumerate
-wheels and cartwheels (A.3) -> the degree/triangle checks (A.4-A.6). On a laptop
-the cheap byte-identical subset (the `combine_rules` stage) runs directly; the
-full enumeration is many-core work.
+`computer-checks` repo. The pipeline is: combine rules (paper Lemmas A.1 and
+A.2) -> enumerate wheels and cartwheels (Lemma A.3) -> the degree/triangle checks
+(Lemmas A.4-A.6). On a laptop the cheap byte-identical subset (the
+`combine_rules` stage) runs directly; the full enumeration is many-core work.
 
 `modi/` packages this for the MODI HPC cluster -- see `modi/README.md` for the
 end-to-end 3-way differential and the parallel scaling runs, and `RESULTS.md`

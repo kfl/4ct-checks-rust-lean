@@ -16,9 +16,9 @@ import NearLinear4ct.PseudoConfiguration
 
 -- file-backed types
 import NearLinear4ct.Configuration
--- graph well-formedness (after Configuration: proves `mirror` preserves WF)
+-- graph well-formedness, quotient coherence, and degree-resolution preservation
 import NearLinear4ct.PseudoTriangulationProofs
--- homomorphism BFS: structural well-formedness of `homCoreGo`'s output
+-- homomorphism BFS: soundness, completeness, totality, and A.2.1 correspondence
 import NearLinear4ct.HomomorphismProofs
 import NearLinear4ct.Rule
 
@@ -36,4 +36,3 @@ Lean 4 port of the near-linear 4CT computer checks.
 A behaviour-preserving port of the C++ library in `computer-checks/src`. Built bottom-up;
 modules are imported here in dependency order.
 -/
-

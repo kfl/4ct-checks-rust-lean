@@ -1,9 +1,10 @@
 # Results: Rust and Lean ports of the near-linear 4CT computer checks
 
 The near-linear 4CT computer-check pipeline has been independently
-re-implemented in Rust and Lean 4. Both ports produce output byte-identical to
-the C++ original and match the paper's published counts across the A.2-A.6 run
-on the real data; A.1 is checked by a separate `combine_rules` differential.
+re-implemented in Rust and Lean 4. Across paper Lemmas A.2-A.6, every
+file-producing stage is byte-identical to the C++ original, every published
+count matches, and every assertion-only check passes. Lemma A.1 is covered by a
+separate `combine_rules` differential.
 
 This gives two results:
 
@@ -24,8 +25,9 @@ This gives two results:
 Run on MODI (University of Copenhagen, SCIENCE HPC centre). Each degree used one
 node with two AMD EPYC 7501 processors: 64 physical cores, 128 SMT hardware
 threads, and 256 GB RAM. Measured at commit `0d05d5e` (SLURM job array 229); the
-raw per-degree A.2-A.6 logs are archived in [`modi/runs/`](modi/runs/). The
-separate A.1 run is not archived there. For *how* to build and run, see
+raw per-degree logs for Lemmas A.2-A.6 are archived in
+[`modi/runs/`](modi/runs/). The separate Lemma A.1 run is not archived there.
+For *how* to build and run, see
 [`modi/README.md`](modi/README.md).
 
 ---
@@ -45,10 +47,10 @@ compared:
 | A.5   | `check_7triangle`                       | every 7-triangle bad cartwheel is dischargeable       |
 | A.6   | `check_deg7`                            | every degree-7-centred bad cartwheel is dischargeable |
 
-**Verification method.** Two 3-way differentials: `modi/run_p7.sh 0` checks A.1
-(and repeats A.2), while
-[`modi/full_differential.sh`](modi/full_differential.sh) checks A.2-A.6 per
-centre degree as a SLURM job array
+**Verification method.** Two 3-way differentials: `modi/run_p7.sh 0` checks
+Lemma A.1 (and repeats Lemma A.2), while
+[`modi/full_differential.sh`](modi/full_differential.sh) checks Lemmas A.2-A.6
+per centre degree as a SLURM job array
 ([`modi/full_array.sh`](modi/full_array.sh)):
 
 - **File-producing stages** (`combine_rules`, `enum_wheels`, `enum_cartwheels`)

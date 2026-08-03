@@ -78,7 +78,7 @@ def WF (pt : PseudoTriangulation) : Prop :=
   ∀ i (h : i < pt.darts.size), (pt.darts[i]'h).InBounds pt.n pt.darts.size
 
 /-- Executable well-formedness check (`Test.lean` tripwires and
-`WFConfig.attach?` boundary certification). -/
+`WFConfig.attach!` boundary certification). -/
 def wfCheck (pt : PseudoTriangulation) : Bool :=
   pt.darts.all fun d => d.inBoundsCheck pt.n pt.darts.size
 

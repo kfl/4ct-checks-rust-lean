@@ -18,8 +18,9 @@ that costs clarity must earn it with a big measured win.
 
 - **Gate**: a measurement counts only if the measured binaries are byte-exact --
   the full-corpus 3-way differential (`p7_differential.sh 0`: 84 rules x 8200
-  configs, A.1 and A.2) passed IDENTICAL for C++/Rust/Lean immediately before
-  timing, and the `enum_wheels` outputs of the timed runs were byte-diffed too.
+  configs, paper Lemmas A.1 and A.2) passed IDENTICAL for C++/Rust/Lean
+  immediately before timing, and the `enum_wheels` outputs of the timed runs
+  were byte-diffed too.
 
 - **Single-thread pinning**: `LEAN_NUM_THREADS=1` (Lean), `RAYON_NUM_THREADS=1`
   (Rust); the C++ reference is serial. "Default" rows are the binaries as
@@ -74,7 +75,7 @@ Headlines:
   (87.6 s pinned -> 13.0 s default; the parallel run burns ~39% more total CPU
   than the pinned one, 120 s vs 86.5 s user, so user/wall overstates it).
 - Many-core, full pipeline: see `RESULTS.md` (128-way MODI runs; whole-pipeline
-  Lean 1.3x faster than serial C++, Rust 6.5x).
+  Lean 1.5x faster than serial C++, Rust 5.8x).
 
 ## Where the single-thread price comes from
 
@@ -201,11 +202,11 @@ samples only):
   offset the win. Pre-sizing with `mkEmpty` and fusing `flatMap` spines measured
   exactly nothing.
 
-## Nested check parallelism and its thread-count sensitivity
+## Why the eager nested executor was replaced
 
-- The measurements below describe the original eager-task implementation,
-  since replaced by the bounded dynamic executor documented in `LINEN.md`;
-  its full-corpus matrix is pending.
+- The first three measurements below describe the original eager-task
+  implementation. They motivated the bounded dynamic executor now documented
+  in `LINEN.md`.
 - The check drivers were parallel at two levels: `parForEach` over the checked
   cartwheels and, inside each, `combineEachCartwheel`'s candidate sweep as an
   order-preserving `parFlatMap` (one task per candidate). At full thread
@@ -225,8 +226,13 @@ samples only):
   change in the Rust port (inner `par_iter`) wins uniformly at every thread
   count under rayon's work-stealing (d7 check ALL 406/381/477 ->
   208/211/312 s at x128/x64/x32) -- unstolen work never becomes a scheduled
-  task and joins steal instead of sleeping. A work-stealing layer under the
-  `par*` combinators is the planned remedy for the Lean side.
+  task and joins steal instead of sleeping. The defect was eager task creation,
+  not fine-grained work itself.
+- The promoted Linen executor was subsequently tested on the full d7/d8 check
+  corpora at 32, 64, 96, and 128 workers. Outputs stayed byte-identical and all
+  budget invariants held in 60 runs. The sums of the three per-phase medians
+  were 1178.1, 705.6, 628.0, and 581.3 s respectively; 128 workers was the
+  wall-time optimum, while 64 was the physical-core efficiency knee.
 
 ## Levers deliberately not pulled
 

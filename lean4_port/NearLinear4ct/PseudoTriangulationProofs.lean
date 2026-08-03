@@ -15,7 +15,7 @@ corpus, since intermediates of the gluing (A.3) may violate them.
 The predicates, their executable checkers (`inBoundsCheck`/`wfCheck`) and
 decidability bridges (`_iff`) live beside the structure definitions
 (`PseudoTriangulation.lean`/`PseudoConfiguration.lean`), where
-`WFConfig.attach?` certifies loaded objects; this file holds the proofs.
+`WFConfig.attach!` certifies loaded objects; this file holds the proofs.
 
 This is the graph-side counterpart of `IndexMap.WF` (`MappingProofs.lean`),
 and it is exactly the hypothesis the `homCoreGo` termination argument needs:

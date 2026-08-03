@@ -41,10 +41,11 @@ to this repo, matching that compatibility path (override with `CPP=...`).
 - **`Dockerfile`** -- toolchain image for building the **C++ reference binary**
   as a static glibc-only ELF from a separate `computer-checks` source checkout
   on a Docker-capable machine.
-- **`run_p7.sh`** -- the cheap byte-identical subset (combine_rules A.1/A.2); **run this first**.
+- **`run_p7.sh`** -- the cheap byte-identical subset (paper Lemmas A.1 and A.2);
+  **run this first**.
 - **`p7_job.sh`** -- `sbatch` wrapper that runs `run_p7.sh 0` inside the stock image.
-- **`full_differential.sh`** -- **full** 3-way A.2-A.6 differential:
-  `combine_rules` -> `enum_wheels` -> `enum_cartwheels` -> `check_*`.
+- **`full_differential.sh`** -- **full** 3-way differential for paper Lemmas
+  A.2-A.6: `combine_rules` -> `enum_wheels` -> `enum_cartwheels` -> `check_*`.
 - **`full_job.sh`** -- `sbatch` wrapper for `full_differential.sh` (single degree; degree-7 gate by default).
 - **`full_array.sh`** -- `sbatch` job ARRAY: all degrees 7-11 as separate jobs, checkpoint+resume via a ledger.
 - **`scaling.sh`** -- parallel wall-clock thread sweep (Rust & Lean vs serial C++).
@@ -156,7 +157,7 @@ self-speedups, and Rust-vs-serial-C++.
 > single-threaded), so its scaling plateaus early. For a representative *compute*
 > scaling curve, use a `check_*` phase once the cartwheel data is staged (step 4).
 
-## 4. Full correctness -- the A.2-A.6 pipeline (goal 1)
+## 4. Full correctness -- paper Lemmas A.2-A.6 (goal 1)
 > **Lemma coverage:** this script covers **A.2-A.6** (its `combine_rules` stage is the
 > A.2 non-blocked variant, `-C reducible-configurations/D`, needed as input to A.3). The
 > **A.1** empty-config combine (`-C empty`) is byte-diffed by `run_p7.sh 0` (step 2). So a

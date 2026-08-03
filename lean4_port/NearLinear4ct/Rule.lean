@@ -3,7 +3,7 @@ import NearLinear4ct.Configuration
 /-!
 Discharging rules (Appendix A.8).
 
-`Rule extends PseudoConfiguration` and adds `stId` (the charge-carrying dart) and
+`Rule extends WFConfig` and adds `stId` (the charge-carrying dart) and
 `amount`. `CombinedRule extends Rule` and adds the `combinedFlag` bitvector.
 
 `combinedFlag` indexes rules "ordered by filename" (`../FORMAT.md`), coupled to

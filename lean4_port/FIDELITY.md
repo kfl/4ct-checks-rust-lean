@@ -17,11 +17,12 @@ has been reduced to machine-checked proof. The reference is the
 Fidelity is established two ways:
 
 - **Behavioural** -- `lake exe test` runs fixture-based unit and exact-equality
-  checks. The 3-way `p7_differential.sh` byte-compares the A.1/A.2 output on real
-  data; `../modi/full_differential.sh` does the same for file-producing stages
-  A.2-A.3 and compares exit codes for the A.4-A.6 checks. The on-disk file
-  formats (configurations, rules, combined rules, cartwheels) are specified
-  byte-for-byte in `../FORMAT.md`.
+  checks. The 3-way `p7_differential.sh` byte-compares the output for paper
+  Lemmas A.1 and A.2 on real data; `../modi/full_differential.sh` does the same
+  for the file-producing stages of Lemmas A.2-A.3 and compares exit codes for
+  the checks corresponding to Lemmas A.4-A.6. The on-disk file formats
+  (configurations, rules, combined rules, cartwheels) are specified byte-for-byte
+  in `../FORMAT.md`.
 
 - **Structural** -- naming generally follows the appendix (lowerCamelCase,
   terse), so routines map directly to Lean functions. Additional helper names
@@ -52,18 +53,14 @@ and parallelism differences are documented below.
   a scan-with-`break`. Same behaviour, named intent.
 
 - **A.3 adjacency steps as named helpers.** The gluing loop's two three-way
-  `succ`/`pred` matches are lifted verbatim into `glueSucc`/`gluePred`
-  (`PseudoTriangulation.lean`), each returning the darts/queue it may touch;
-  the union-find logic stays inline, so the loop keeps the pseudocode's shape.
-  Behaviour is unchanged (byte-exact oracles) and the compiled code is
-  IR-verified identical modulo shared join points -- the `@[inline]` helpers
-  leave no calls or extra allocations. The factoring exists for the proofs:
-  each helper carries a three-case specification lemma, replacing the nine-way
-  cross-product a monolithic loop body forces on the verifier.
+  `succ`/`pred` matches are named `glueSucc`/`gluePred`
+  (`PseudoTriangulation.lean`); the union-find logic stays inline. Each helper
+  has a three-case specification lemma. Byte-exact tests are unchanged, and
+  compiler IR confirms that inlining adds no calls or allocations.
 
 - **Panics vs. proof obligations.** The spec's `assert` lines split by kind:
   genuine invariants (`assert C = 0`, `d ∈ {7, 8}`) become `proofAssert`;
-  input-wellformedness failures (malformed parse, unreachable `assert false`
+  input well-formedness failures (malformed parse, unreachable `assert false`
   tails) are `panic!`. Only the former are candidate proof obligations. (What
   `proofAssert` is, and why not `assert!`, is under Cross-cutting design
   decisions.)
@@ -113,24 +110,24 @@ and parallelism differences are documented below.
   runtime), so every construction proves consistency.
 
 - **The homomorphism pipeline runs on certified configurations.** The BFS
-  (`homStep`/`homomorphismExists`, A.2) and the containment/charge drivers
+  (`homStep`/`homomorphismExists`, Appendix A.2) and the containment/charge drivers
   take `WFConfig` -- a `PseudoConfiguration` carrying an erased proof of
   well-formedness and `darts.size <= pairBase`. Certification is
   `WFConfig.attach!`, a `wfCheck` run at the object boundaries: inside
-  `Configuration.new`/`Rule.new`/`CartWheel.new` (so loading, mirroring,
-  wheel generation and rule combination certify each object once) and once
-  per surviving combination in `combineEachCartwheel`. Degrees-only
-  refinements transport the certificate (`withDegrees`), and
-  `representativeDegree` re-certifies by an O(1) size test. On well-formed
-  input every check passes and `attach!` is the identity, so behaviour is
+  `Configuration.new`/`Rule.new`/`CartWheel.new` and once per surviving
+  combination in `combineEachCartwheel`. Degrees-only refinements transport
+  the certificate with `withDegrees`; `representativeDegree` does the same
+  after an O(1) size check. On well-formed input every check passes and
+  `attach!` is the identity, so behaviour is
   unchanged (byte-exact against both oracles); on malformed input the
   reference computes on the malformed values, where the port prints a
   `panic!` message and continues with the default -- the `Unionfind.unite`
   guard convention. The field is erased and the checks are outside the
-  loops; measurements in `PERFORMANCE_NOTES.md`.
+  loops; `wfCheck_iff` proves that the executable check is exactly `WF`, and
+  `PERFORMANCE_NOTES.md` records the measurements.
 
 - **The BFS indexes with proofs.** `homStep`'s eight array reads and writes
-  (A.2) carry their bounds: the step takes one erased indexing invariant
+  (Appendix A.2) carry their bounds: the step takes one erased indexing invariant
   (`HomIndexSafe` -- worklist decode bounds plus the two scratch-map sizes),
   the `WFConfig` facts supply the dart bounds, and the one implementation
   contract `homStep_next_safe`, proved beside the definition, re-establishes
@@ -312,21 +309,15 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   `initialMappings` *is* `id_X`, `composeMap` *is* Kleisli composition, and
   `splitMap` *is* restriction along the disjoint-union domain.
 
-- **Homomorphism soundness and completeness** (`HomomorphismProofs.lean`): the
-  BFS decides the paper's homomorphism predicate. The spec is `IsRootedHom`: a
-  transcription of Sec. 9's dart-homomorphism conditions (`head`/`rev` commute,
-  `succ`/`pred` where both sides are interior, degree compatibility), *pinned at
-  a root dart pairing* `dartFrom ↦ dartTo`. "Rooted" is our descriptor, not the
-  paper's -- Sec. 9 says only "homomorphism" -- and it names a fact Sec. 9 relies
-  on: such a homomorphism is unique once the image of a single oriented edge is
-  chosen, the rest being forced by the dart incidences. Fixing that one image and
-  propagating is the paper's own `rootedContainConf` (Algorithm A.6.8), hence the
-  name. On that spec, each invariant is preserved by a recursion-free lemma
-  about the single step (`homStep_bounded` / `homStep_next_sound` /
-  `homStep_agrees`): `Bounded` gives output well-formedness, `Sound` gives
-  `homCore_sound` / `homomorphismExists_sound` (no false positives), and
-  folding `homStep_agrees` over the fuel-bounded driver gives completeness
-  (no false negatives).
+- **Homomorphism soundness and completeness** (`HomomorphismProofs.lean`): for
+  in-range root darts, the BFS decides the paper's homomorphism predicate. The
+  spec is `IsRootedHom`, a transcription of Sec. 9's dart-homomorphism
+  conditions pinned at `dartFrom ↦ dartTo`. "Rooted" is our descriptor: once
+  one oriented edge image is fixed, the remaining dart incidences force the
+  map, as in `rootedContainConf` (Algorithm A.6.8). Recursion-free step lemmas
+  establish output well-formedness, soundness, and completeness. Soundness
+  needs no root-bound premises because a successful result implies that the
+  guard passed; completeness uses the bounds to show that it passes.
 
 - **`lexMin`** (`UtilProofs.lean`): `lexMin` decides "no rotation of the list
   is lexicographically smaller" (`lexMin_iff_forall_rotateLeft`), stated in
@@ -373,19 +364,11 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   (`resolveDegreeIssues`) is the remaining lift: stating a loop rule for its
   `while` needs A.4.4's termination potential.
 
-- **The homomorphism theorems read well-formedness off a certified type**
-  (`PseudoConfiguration.lean`, `HomomorphismProofs.lean`): `WFConfig` bundles
-  a configuration with an erased proof of well-formedness plus the packed-pair
-  bound `darts.size <= pairBase` (the `queue_invariant`/`unionfind_invariant`
-  pattern at a boundary type, as sanctioned for `Mappings`). The BFS and its
-  lemmas take `src dst : WFConfig`, deleting the well-formedness/packability
-  premise row from all sixteen signatures; `WFConfig.attach!` certifies each
-  loaded, generated or combined object once by the executable `wfCheck` (the
-  predicates and checks live beside the definitions, decided by
-  `wfCheck_iff`), so the facts are in scope inside `homStep`.
-  `Configuration.mirror` constructs its certificate from a structural
-  preservation lemma (swapping `succ`/`pred` keeps the graph well-formed,
-  `mirror_graph_wf`) rather than a re-check.
+- **Certified transformations preserve their evidence**
+  (`PseudoConfiguration.lean`, `Configuration.lean`): degree-only changes use
+  `WFConfig.withDegrees` to transport certification, while
+  `Configuration.mirror` uses `mirror_graph_wf` -- swapping `succ` and `pred`
+  preserves graph well-formedness -- instead of rechecking the result.
 
-Everything else rests on the byte-exact oracles above -- faithful by test, not
-yet by mechanised proof.
+Everything else rests on the behavioural tests and differentials above --
+faithful by test, not yet by mechanised proof.
