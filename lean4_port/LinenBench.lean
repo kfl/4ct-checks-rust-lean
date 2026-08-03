@@ -453,7 +453,8 @@ private def benchCaseDrainingMatched (reps : Nat) : IO Unit := do
       else (Linen.map innerLight (light g)).foldl (· + ·) 0
     let serial ← timed reps s!"draining-matched {tag}, serial"
       (blackBox fun _ => gs.map serialGroup)
-    let parSeq ← timed reps s!"draining-matched {tag}, outer Linen / inner serial"
+    let parSeq ← timedWithBudget reps
+      s!"draining-matched {tag}, outer Linen / inner serial"
       (blackBox fun _ => Linen.map gs serialGroup)
     let parPar ← timedWithBudget reps s!"draining-matched {tag}, outer Linen / inner Linen"
       (blackBox fun _ => Linen.map gs linenGroup)

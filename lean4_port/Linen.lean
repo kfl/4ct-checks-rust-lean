@@ -288,7 +288,7 @@ grow as other regions release slots. -/
 /-- Live count of reserved worker slots. Kept scalar in a ref of its own so
 the per-claim growth gate reads it without touching a shared boxed object; a
 boxed value would pay contended reference-count updates on every read. -/
-private initialize activeRef : IO.Ref Nat ← IO.mkRef 0
+private initialize activeSlotsRef : IO.Ref Nat ← IO.mkRef 0
 
 /-- Reservation traffic under the occupancy policy, updated only on
 reservation events, never on the per-claim gate path. `spawnedTasks` counts
@@ -307,19 +307,19 @@ structure BudgetStats where
   underflows : Nat := 0
 deriving Nonempty
 
-private initialize statsRef : IO.Ref BudgetStats ← IO.mkRef {}
+private initialize budgetStatsRef : IO.Ref BudgetStats ← IO.mkRef {}
 
 /-- Reserve one worker slot if the budget allows, recording the attempt. -/
 private def tryReserveSlot : BaseIO Bool := do
-  let newActive ← activeRef.modifyGet fun a =>
+  let newActive ← activeSlotsRef.modifyGet fun a =>
     if a < config.workers then (some (a + 1), a + 1) else (none, a)
   match newActive with
   | some a =>
-    statsRef.modify fun st =>
+    budgetStatsRef.modify fun st =>
       { st with attempts := st.attempts + 1, peak := st.peak.max a }
     return true
   | none =>
-    statsRef.modify fun st =>
+    budgetStatsRef.modify fun st =>
       { st with attempts := st.attempts + 1,
                 deniedBudget := st.deniedBudget + 1 }
     return false
@@ -328,16 +328,16 @@ private def tryReserveSlot : BaseIO Bool := do
 without a matching reservation is recorded as an underflow instead of
 saturating silently, so a double release cannot quietly widen the budget. -/
 private def releaseSlot : BaseIO Unit := do
-  let ok ← activeRef.modifyGet fun a =>
+  let ok ← activeSlotsRef.modifyGet fun a =>
     if a == 0 then (false, 0) else (true, a - 1)
-  statsRef.modify fun st =>
+  budgetStatsRef.modify fun st =>
     if ok then { st with releases := st.releases + 1 }
     else { st with underflows := st.underflows + 1 }
 
 /-- Return a slot lost in a race for a region's last team position. -/
 private def releaseSlotRegionFull : BaseIO Unit := do
   releaseSlot
-  statsRef.modify fun st => { st with deniedRegion := st.deniedRegion + 1 }
+  budgetStatsRef.modify fun st => { st with deniedRegion := st.deniedRegion + 1 }
 
 /-- Run one worker and release its slot when it finishes. Every reserved
 worker runs through this wrapper. `BaseIO` cannot throw, and the fail-fast
@@ -348,12 +348,12 @@ private def slottedWorker {ρ : Type} (work : BaseIO ρ) : BaseIO ρ := do
   releaseSlot
   return out
 
-/-- Per-region team state under the occupancy policy. `spawned` counts team
-positions handed out, capped at `slots`; `registry` collects spawned worker
-tasks for the region's join. Generic in the worker result type: the
-scheduler needs no view of chunking or ordinals. -/
+/-- Per-region team state under the occupancy policy. `spawned` counts
+spawned siblings, capped at `spawnLimit`; `registry` collects their tasks for
+the region's join. Generic in the worker result type: the scheduler needs no
+view of chunking or ordinals. -/
 private structure Region (ρ : Type) where
-  slots : Nat
+  spawnLimit : Nat
   spawned : IO.Ref Nat
   registry : IO.Ref (Array (Task ρ))
 
@@ -367,15 +367,15 @@ registered before its spawner can finish, as required by `joinRegion`.
 private partial def growTeam {ρ : Type} (region : Region ρ)
     (fromWorker : Bool)
     (mkWork : BaseIO GrowResult → BaseIO ρ) : BaseIO GrowResult := do
-  if (← region.spawned.get) ≥ region.slots then return .teamFull
-  if (← activeRef.get) ≥ config.workers then return .budgetFull
+  if (← region.spawned.get) ≥ region.spawnLimit then return .teamFull
+  if (← activeSlotsRef.get) ≥ config.workers then return .budgetFull
   if ← tryReserveSlot then
     if ← region.spawned.modifyGet fun s =>
-        if s < region.slots then (true, s + 1) else (false, s) then
+        if s < region.spawnLimit then (true, s + 1) else (false, s) then
       let task ← BaseIO.asTask
         (slottedWorker (mkWork (growTeam region true mkWork)))
       region.registry.modify (·.push task)
-      statsRef.modify fun st =>
+      budgetStatsRef.modify fun st =>
         { st with spawnedTasks := st.spawnedTasks + 1,
                   grownTasks := st.grownTasks + (if fromWorker then 1 else 0) }
       return .spawned
@@ -405,13 +405,13 @@ gates see the occupied capacity; a nested caller may therefore hold one slot
 for its outer role and another for its inline inner role. Growth after each
 claim lets a region expand when slots become free. Seeding stops at the first
 denial. -/
-private def runGrowingRegion {ρ : Type} (slots : Nat)
+private def runGrowingRegion {ρ : Type} (spawnLimit : Nat)
     (mkWork : BaseIO GrowResult → BaseIO ρ) : BaseIO (Array ρ) := do
-  let region : Region ρ := ⟨slots, ← IO.mkRef 0, ← IO.mkRef #[]⟩
-  let inlineSlot ← if (← activeRef.get) < config.workers then tryReserveSlot
+  let region : Region ρ := ⟨spawnLimit, ← IO.mkRef 0, ← IO.mkRef #[]⟩
+  let inlineSlot ← if (← activeSlotsRef.get) < config.workers then tryReserveSlot
     else pure false
   let mut seeding := true
-  for _ in [0:slots] do
+  for _ in [0:spawnLimit] do
     if seeding then
       seeding := (← growTeam region false mkWork) matches .spawned
   let mine ← mkWork (growTeam region true mkWork)
@@ -653,8 +653,8 @@ and `n > chunkSize`. -/
   else
     tabulateMCore n (Chunking.clamp n chunkSize) makeWorkerFn
 
-/-- Parallel monadic tabulation using at most one task per configured
-worker: build the array whose entry at `i` is the result of `g i`. Workers
+/-- Parallel `BaseIO` tabulation using at most one task per configured worker:
+build the array whose entry at `i` is the result of `g i`. Workers
 claim chunks dynamically, and the results are restored to index order.
 Result positions are deterministic, but `g`'s externally observable
 effects can reveal scheduling: effects within a chunk run in index order,
@@ -665,7 +665,7 @@ def tabulateM (n : Nat) (g : Fin n → BaseIO β) (chunkSize : Nat := 1) :
     BaseIO (Array β) :=
   tabulateMWithWorkerFn n (fun _ i => g i) chunkSize
 
-/-- Parallel monadic map with the scheduling and effect-order behaviour of
+/-- Parallel `BaseIO` map with the scheduling and effect-order behaviour of
 `tabulateM`. The serial fast path traverses the array directly. -/
 -- Inlining exposes the caller's mapper to the worker-callback factory.
 @[inline]
@@ -678,9 +678,10 @@ def mapM (xs : Array α) (f : α → BaseIO β) (chunkSize : Nat := 1) :
     tabulateMCore xs.size (Chunking.clamp xs.size chunkSize)
       (fun _ => fun i => f xs[i])
 
-/-- Monadic map-reduce using dynamically claimed chunks. Each chunk produces
-one partial; `mergeReduce` combines them in input order. `op` must be
-associative but need not be commutative. -/
+/-- `BaseIO` map-reduce using dynamically claimed chunks. Each chunk produces
+one partial; `mergeReduce` combines them in input order. Effects within a
+chunk run in input order, while cross-chunk effect order is unspecified. `op`
+must be associative but need not be commutative. -/
 def mapReduceM (xs : Array α) (f : α → BaseIO β) (op : β → β → β)
     (init : β) (chunkSize : Nat := 1) [Std.Associative op] : BaseIO β := do
   let chunkSize := chunkSize.max 1
@@ -865,16 +866,17 @@ def mapIO (xs : Array α) (f : α → IO β) (chunkSize : Nat := 1) :
 
 /-- Parallel `IO` traversal, fail-fast with the same deterministic
 smallest-index error reporting as `mapIO`. -/
-def forEach (xs : Array α) (f : α → IO Unit) (chunkSize : Nat := 1) :
+def forEachIO (xs : Array α) (f : α → IO Unit) (chunkSize : Nat := 1) :
     IO Unit :=
   discard <| mapIO xs f chunkSize
 
 /-! ## Verified properties
 
 The runtime crosses an `unsafeBaseIO` boundary, so the correspondence is split
-into pure lemmas about its data path. The serial chunk loops, associative
-regrouping, and ordered assembly are proved below. The concurrent bridge and
-effectful specifications remain open; see LINEN.md. -/
+into pure lemmas about its data path. The proofs below cover the serial chunk
+loops, associative regrouping, ordered assembly, schedule replay, effectful
+specifications, and slot-budget accounting. LINEN.md states the remaining
+runtime assumptions. -/
 
 /-- The tabulation chunk loop computes exactly the specification slice,
 appended to the accumulator. -/
@@ -2140,29 +2142,28 @@ private theorem failureReports_least {n : Nat} {ck : Chunking n}
 
 The budget's pure content, in the schedule-replay pattern: reservation
 and release are pure transitions on a ledger, invariants are proved over
-event traces, and connecting the runtime's atomic `activeRef`/`statsRef`
-updates to those transitions is a small trusted statement. Denied
-attempts change no invariant and are absent from the event alphabet.
+event traces, and connecting the runtime's atomic
+`activeSlotsRef`/`budgetStatsRef` updates to those transitions is a small
+trusted statement. Denied attempts change no invariant and are absent from
+the event alphabet.
 
 The unlabelled alphabet models aggregate accounting only: it cannot
-distinguish which holder released, so per-slot ownership (fresh tokens
-created by grants and consumed by their releases) is the next
-refinement.
+distinguish which holder released. The ownership refinement below adds fresh
+tokens created by grants and consumed by their releases.
 
 Trusted, connecting the runtime to this model:
 - `tryReserveSlot` and `releaseSlot` each perform exactly one model
   transition, atomically (one `modifyGet` on the live count);
-- every grant is released exactly once, by its holder
-  (`slottedWorker`, the inline-slot release, and the lost-race release
-  all release a slot they hold), which keeps the emitted trace
-  feasible;
+- each release consumes a distinct grant held by that execution path
+  (`slottedWorker`, the inline-slot release, or the lost-race release),
+  while conditional completion accounts for every grant;
 - liveness is a separate conditional layer: assuming spawned tasks are
   eventually scheduled and terminate, `joinRegion` drains each region,
   so every holder trace completes. Lean's task semantics cannot prove
   the assumption. -/
 
 /-- The slot ledger: live slots and audit counters, the pure shadow of
-`activeRef` and the reservation parts of `BudgetStats`. -/
+`activeSlotsRef` and the reservation parts of `BudgetStats`. -/
 private structure SlotLedger where
   active : Nat := 0
   granted : Nat := 0
@@ -2342,7 +2343,7 @@ private theorem play_active {budget : Nat} {st : SlotLedger}
 /-- A balanced trace restores the aggregate live count. Aggregate only:
 the unlabelled ledger cannot show each holder released its own slot --
 `grant, grant, release, release` with one holder releasing twice plays
-identically -- which the ownership refinement will distinguish. -/
+identically -- a distinction represented by the ownership refinement below. -/
 private theorem play_returns {budget : Nat} {st : SlotLedger}
     (t : List SlotEvent) (hf : Feasible budget st.active t)
     (hbal : grantCount t = releaseCount t) :
@@ -2381,29 +2382,29 @@ tokens and are ruled out by the conditional completion assumption. -/
 
 /-- Ownership events: slot grants and releases labelled by holder
 token. -/
-private inductive OwnEvent where
+private inductive HolderEvent where
   | grant (token : Nat)
   | release (token : Nat)
 
 /-- Forget the tokens. -/
-private def OwnEvent.erase : OwnEvent → SlotEvent
+private def HolderEvent.erase : HolderEvent → SlotEvent
   | .grant _ => .grant
   | .release _ => .release
 
 /-- Ownership discipline from tokens `used` (ever granted) and `live`
 (granted, not yet released): grants create fresh tokens below budget,
 releases consume a live token. -/
-private def Owned (budget : Nat) :
-    List Nat → List Nat → List OwnEvent → Prop
+private def OwnedTrace (budget : Nat) :
+    List Nat → List Nat → List HolderEvent → Prop
   | _, _, [] => True
   | used, live, .grant tok :: rest =>
       tok ∉ used ∧ live.length < budget
-        ∧ Owned budget (tok :: used) (tok :: live) rest
+        ∧ OwnedTrace budget (tok :: used) (tok :: live) rest
   | used, live, .release tok :: rest =>
-      tok ∈ live ∧ Owned budget used (live.erase tok) rest
+      tok ∈ live ∧ OwnedTrace budget used (live.erase tok) rest
 
 /-- The live tokens after a trace. -/
-private def liveAfter : List Nat → List OwnEvent → List Nat
+private def liveAfter : List Nat → List HolderEvent → List Nat
   | live, [] => live
   | live, .grant tok :: rest => liveAfter (tok :: live) rest
   | live, .release tok :: rest => liveAfter (live.erase tok) rest
@@ -2411,8 +2412,8 @@ private def liveAfter : List Nat → List OwnEvent → List Nat
 /-- Live tokens remain duplicate-free: releases consume exactly one
 occurrence, and freshness keeps grants from introducing a duplicate. -/
 private theorem owned_nodup {budget : Nat}
-    {used live : List Nat} {t : List OwnEvent}
-    (h : Owned budget used live t)
+    {used live : List Nat} {t : List HolderEvent}
+    (h : OwnedTrace budget used live t)
     (hsub : ∀ tok ∈ live, tok ∈ used) (hdup : live.Nodup) :
     (liveAfter live t).Nodup := by
   induction t generalizing used live with
@@ -2436,9 +2437,9 @@ private theorem owned_nodup {budget : Nat}
 /-- Erasing an owned trace yields a feasible aggregate trace from the
 live count. -/
 private theorem owned_feasible {budget : Nat}
-    {used live : List Nat} {t : List OwnEvent}
-    (h : Owned budget used live t) :
-    Feasible budget live.length (t.map OwnEvent.erase) := by
+    {used live : List Nat} {t : List HolderEvent}
+    (h : OwnedTrace budget used live t) :
+    Feasible budget live.length (t.map HolderEvent.erase) := by
   induction t generalizing used live with
   | nil => trivial
   | cons e rest ih =>
@@ -2455,9 +2456,9 @@ private theorem owned_feasible {budget : Nat}
 /-- The ledger's live count is the number of live tokens: playing the
 erased trace from a matching state ends at the final live-token count. -/
 private theorem play_active_eq_live {budget : Nat} {st : SlotLedger}
-    {used live : List Nat} {t : List OwnEvent}
-    (h : Owned budget used live t) (hact : st.active = live.length) :
-    (st.play budget (t.map OwnEvent.erase)).active
+    {used live : List Nat} {t : List HolderEvent}
+    (h : OwnedTrace budget used live t) (hact : st.active = live.length) :
+    (st.play budget (t.map HolderEvent.erase)).active
       = (liveAfter live t).length := by
   induction t generalizing used live st with
   | nil => exact hact
@@ -2466,7 +2467,7 @@ private theorem play_active_eq_live {budget : Nat} {st : SlotLedger}
     | grant tok =>
       obtain ⟨-, hcap, hrest⟩ := h
       show (((st.reserve budget).1).play budget
-          (rest.map OwnEvent.erase)).active
+          (rest.map HolderEvent.erase)).active
         = (liveAfter (tok :: live) rest).length
       rw [SlotLedger.reserve_of_lt (by omega)]
       exact ih (st := { st with
@@ -2477,7 +2478,7 @@ private theorem play_active_eq_live {budget : Nat} {st : SlotLedger}
       obtain ⟨hmem, hrest⟩ := h
       have hpos : 0 < st.active := hact ▸ List.length_pos_of_mem hmem
       show ((st.release).play budget
-          (rest.map OwnEvent.erase)).active
+          (rest.map HolderEvent.erase)).active
         = (liveAfter (live.erase tok) rest).length
       rw [SlotLedger.release_of_pos hpos]
       exact ih (st := { st with
@@ -2489,9 +2490,9 @@ private theorem play_active_eq_live {budget : Nat} {st : SlotLedger}
 
 /-- Full release: when every token is released, no slot stays live. -/
 private theorem play_active_zero_of_owned {budget : Nat}
-    {used : List Nat} {t : List OwnEvent}
-    (h : Owned budget used [] t) (hdone : liveAfter [] t = []) :
-    (SlotLedger.init.play budget (t.map OwnEvent.erase)).active = 0 := by
+    {used : List Nat} {t : List HolderEvent}
+    (h : OwnedTrace budget used [] t) (hdone : liveAfter [] t = []) :
+    (SlotLedger.init.play budget (t.map HolderEvent.erase)).active = 0 := by
   have := play_active_eq_live (st := SlotLedger.init) h rfl
   simpa [hdone] using this
 
@@ -2499,30 +2500,30 @@ private theorem play_active_zero_of_owned {budget : Nat}
 every token ends with no live slots, balanced counters, no underflows,
 and the peak within budget. Convenience over the constituent results. -/
 private theorem owned_quiescent (budget : Nat) {used : List Nat}
-    (t : List OwnEvent) (h : Owned budget used [] t)
+    (t : List HolderEvent) (h : OwnedTrace budget used [] t)
     (hdone : liveAfter [] t = []) :
-    ((SlotLedger.init.play budget (t.map OwnEvent.erase)).active = 0)
-      ∧ (SlotLedger.init.play budget (t.map OwnEvent.erase)).granted
-          = (SlotLedger.init.play budget (t.map OwnEvent.erase)).released
+    ((SlotLedger.init.play budget (t.map HolderEvent.erase)).active = 0)
+      ∧ (SlotLedger.init.play budget (t.map HolderEvent.erase)).granted
+          = (SlotLedger.init.play budget (t.map HolderEvent.erase)).released
       ∧ (SlotLedger.init.play budget
-          (t.map OwnEvent.erase)).underflows = 0
-      ∧ (SlotLedger.init.play budget (t.map OwnEvent.erase)).peak
+          (t.map HolderEvent.erase)).underflows = 0
+      ∧ (SlotLedger.init.play budget (t.map HolderEvent.erase)).peak
           ≤ budget := by
   have hact := play_active_zero_of_owned h hdone
   have hund : (SlotLedger.init.play budget
-      (t.map OwnEvent.erase)).underflows = 0 :=
+      (t.map HolderEvent.erase)).underflows = 0 :=
     play_underflows (st := SlotLedger.init) _ (owned_feasible h)
   obtain ⟨hb, -, -, hp⟩ :=
-    (WFLedger.init budget).play (t.map OwnEvent.erase)
+    (WFLedger.init budget).play (t.map HolderEvent.erase)
   exact ⟨hact, by omega, hund, hp⟩
 
 /-- Number of currently reserved worker slots, including inline callers'
 slots; zero whenever no combinator is running. For tests and diagnostics. -/
 def activeSlots : BaseIO Nat :=
-  activeRef.get
+  activeSlotsRef.get
 
 /-- Snapshot of the reservation statistics. For tests and diagnostics. -/
 def budgetStats : BaseIO BudgetStats :=
-  statsRef.get
+  budgetStatsRef.get
 
 end Linen

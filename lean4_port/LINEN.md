@@ -72,16 +72,18 @@ array whose entry at `i` is `g i`; its pure specification is `Array.ofFn g`.
 The callback observes only its index, not workers, claims, or chunk boundaries,
 so `chunkSize` cannot change a pure result.
 
-For `tabulateM` and `tabulateIO`, result positions remain deterministic, but
-effects can reveal scheduling. Effects within a chunk run in index order;
-effect order across chunks is unspecified. `tabulateIO` and `mapIO` stop new
-claims after a failure and rethrow the failure with the lowest input index
-after already claimed chunks finish.
+The `M` operations accept `BaseIO` callbacks; the `IO` operations accept
+callbacks that may throw. Effects within a chunk run in index order, while
+effect order across chunks is unspecified. `tabulateM` and `mapM` restore
+results to input order. `tabulateIO`, `mapIO`, and `forEachIO` stop new claims
+after a failure and rethrow the failure with the lowest input index after
+already claimed chunks finish.
 
 `map`, `mapM`, and `mapIO` instantiate the tabulation engine with an indexed
-reader of their input. `filterMap` and `flatMap` build on pure `map`.
-`mapReduce` and `mapReduceM` use array-specific reducing loops so each chunk
-produces one partial rather than an intermediate mapped array.
+reader of their input. `filterMap` and `flatMap` build on pure `map`, while
+`forEachIO` discards the result of `mapIO`. `mapReduce` and `mapReduceM` use
+array-specific reducing loops so each chunk produces one partial rather than
+an intermediate mapped array.
 
 The compiled engine receives a factory that constructs the callback separately
 for each worker. Specialisation and the public `@[inline]` monadic wrappers let
@@ -187,7 +189,7 @@ tasks are eventually scheduled and terminate, `joinRegion` drains each
 region and every holder trace completes.
 
 The ownership refinement labels grants and releases with holder tokens
-(`OwnEvent`): a grant creates a fresh token, a release consumes exactly
+(`HolderEvent`): a grant creates a fresh token, a release consumes exactly
 that token, and the live tokens provably remain duplicate-free
 (`owned_nodup`). Double releases are unrepresentable; leaks appear as
 outstanding live tokens and are ruled out by the conditional completion
@@ -195,11 +197,10 @@ assumption. Erasing the tokens yields a feasible aggregate trace
 (`owned_feasible`), the ledger's live count equals the number of live
 tokens (`play_active_eq_live`), full release drives it to zero
 (`play_active_zero_of_owned`), and `owned_quiescent` packages the
-quiescence invariants directly from an owned, fully released history --
-so the aggregate theorems apply to every owned history. The pure proof work on the budget is complete; the
-remaining trusted statement is that the runtime's history is an owned
-trace (its atomic transitions and per-holder release discipline) and the
-conditional liveness layer.
+quiescence invariants directly from an owned, fully released history. The
+aggregate safety theorems apply to every owned trace; quiescence additionally
+requires full release. The remaining trusted statement is that the runtime's
+history satisfies `OwnedTrace` and the conditional liveness assumption.
 
 The contract tests exercise these properties across worker counts and
 scheduling shapes, but tests are evidence rather than proofs.
@@ -273,36 +274,6 @@ journal rather than this document.
 
 ## TODO
 
-- [x] Concurrent bridge, reduced to a small trusted boundary: the schedule-replay
-      model (`Schedule`, `replaySchedule_wf`, `replay_merge`,
-      `replay_merge_ofFn`, `replay_reduce`) proves any partitioned claim
-      trace yields the serial results. The four-point trusted statement
-      in the verification-status section is the residual boundary without
-      semantics for refs, tasks, and `unsafeBaseIO`.
-- [x] Effectful specifications: failure indices are `Fin n`, the monadic
-      chunk loops equal the pure chunk loops for schedule-independent
-      outcomes in any lawful monad, the fallible chunk and the
-      `keepLower` register have proved least-index selection, and result
-      order reduces to the schedule replay.
-- [x] Fallible-schedule replay: per-worker traces with a stopping claim
-      (`FallibleTrace`), a prefix cover of the claims
-      (`Schedule.Prefix`), and their refinement to `FailedRun`
-      prove that the register ends at the least failing input index's error.
-- [x] Slot-ledger model (aggregate layer): `SlotLedger` with guarded
-      transitions proves the budget cap, peak bound, grant/release
-      balance, no-underflow, aggregate slot return for balanced traces,
-      and quiescence over feasible traces. Subtyped counter refs are
-      unnecessary for the aggregate cap (it lives in the reserve
-      guard); they would not address ownership or liveness. Liveness
-      stays a separate conditional trusted layer.
-- [x] Ownership refinement of the ledger: holder tokens (`OwnEvent`,
-      `Owned`) with fresh grants and exact-token releases; live tokens
-      remain duplicate-free (`owned_nodup`), erasure yields a feasible
-      aggregate trace (`owned_feasible`), the live count equals the
-      live tokens (`play_active_eq_live`, `play_active_zero_of_owned`),
-      and `owned_quiescent` packages quiescence from full release.
-      Double releases are unrepresentable; leaks are outstanding live
-      tokens, ruled out by conditional completion.
 - [ ] Add general combinators built on indexed tabulation: `zip`/`zipWith`,
       `mapIdx`, and gather/permute; investigate an indexed producer interface
       without exposing chunk boundaries to callbacks.

@@ -223,13 +223,13 @@ def writeVertexLines (degrees : Array Degree) (vRotations : Array (Array Int)) :
 
 /-! ### Parallel combinators (Linen, order-preserving)
 
-A small vocabulary of order-preserving parallel patterns. Each spawns its work on
-the bounded `Linen` worker team and restores input order, so the result is
-**identical to the sequential version regardless of thread count** -- valid for
-a read-only `f` over shared immutable data. The parallelism is wall-clock only;
-it never changes results. Centralising the scheduling here means the parallelism
-is audited once, and call sites read as the pattern they are (`parFilterMap`,
-`parFlatMap`). -/
+A small vocabulary of order-preserving parallel patterns. Each runs through
+Linen's process-wide worker-slot budget and restores input order, so the result
+is **identical to the sequential version regardless of thread count** -- valid
+for a read-only `f` over shared immutable data. The parallelism is wall-clock
+only; it never changes results. Centralising the scheduling here means the
+parallelism is audited once, and call sites read as the pattern they are
+(`parFilterMap`, `parFlatMap`). -/
 
 /-- Parallel `Array.map` (≡ `xs.map f`, order-preserving). -/
 def parMap.{u, v} {α : Type u} {β : Type v}
@@ -259,7 +259,7 @@ and the error at the smallest input index is re-raised -- so a failing
 The closures only read shared immutable data (shared by reference-counting, not
 copied), so results are thread-count independent. -/
 def parForEach (xs : Array α) (f : α → IO Unit) : IO Unit :=
-  Linen.forEach xs f
+  Linen.forEachIO xs f
 
 /-- A type loadable from a single file. `fromFile` runs in `IO` because parsing
 reads the file; it may fail (throw) on malformed input. -/
