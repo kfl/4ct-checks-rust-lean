@@ -965,15 +965,21 @@ theorem homCore_complete {src dst : WFConfig} {degreeTest : Degree → Degree �
   exact (homCoreGo_eq_imp _ _ _ _ _ (Nat.lt_succ_self _)).trans hr
 
 /-- **`homomorphismExists` is complete**: if a rooted homomorphism exists, the
-`.isSome` fast path reports it. With `homomorphismExists_sound`, this gives
-`homomorphismExists = true ↔ ∃ hom` -- the equivalence the containment checks
-rely on. -/
+`.isSome` fast path reports it. -/
 theorem homomorphismExists_complete {src dst : WFConfig}
     {degreeTest : Degree → Degree → Bool} {dartFrom dartTo : Nat}
     (hdf : dartFrom < src.darts.size) (hdt : dartTo < dst.darts.size)
     (h : ∃ vm dm, IsRootedHom src dst degreeTest dartFrom dartTo vm dm) :
     homomorphismExists src dartFrom dst dartTo degreeTest = true := by
   grind [homomorphismExists, homCore_complete]
+
+/-- For in-range root darts, `homomorphismExists` decides `IsRootedHom`. -/
+theorem homomorphismExists_eq_true_iff {src dst : WFConfig}
+    {degreeTest : Degree → Degree → Bool} {dartFrom dartTo : Nat}
+    (hdf : dartFrom < src.darts.size) (hdt : dartTo < dst.darts.size) :
+    homomorphismExists src dartFrom dst dartTo degreeTest = true ↔
+      ∃ vmap dmap, IsRootedHom src dst degreeTest dartFrom dartTo vmap dmap :=
+  ⟨homomorphismExists_sound, homomorphismExists_complete hdf hdt⟩
 
 /-! ### Algorithm A.2.1, transcribed
 
