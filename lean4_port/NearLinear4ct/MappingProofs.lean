@@ -94,6 +94,18 @@ theorem bounded_iff_idx?_lt {m : IndexMap} {codom : Nat} :
     rw [idx?_eq_some_iff]
     exact ⟨hi, hj⟩
 
+/-- Two index maps of equal size that agree at every `idx?` are equal: the
+structural-to-pointwise bridge, so a combinator equality can be proved once at
+the `idx?` level and lifted here. -/
+theorem ext_idx? {m1 m2 : IndexMap} (hsize : m1.size = m2.size)
+    (h : ∀ i, m1.idx? i = m2.idx? i) : m1 = m2 := by
+  apply Array.ext
+  · exact hsize
+  intro i hi₁ hi₂
+  apply OptIdx.get?_inj.mp
+  rw [← idx?_pos hi₁, ← idx?_pos hi₂]
+  exact h i
+
 /-! ### The decode: a WF `IndexMap` *is* a function between finite index sets -/
 
 /-- The partial function `Fin dom → Option (Fin codom)` a well-formed
@@ -205,6 +217,11 @@ theorem Mappings.idx?_initialMappings_vmap (n d i : Nat) :
   unfold idx?
   simp [Mappings.initialMappings]
 
+theorem Mappings.idx?_initialMappings_dmap (n d i : Nat) :
+    (Mappings.initialMappings n d).dmap.idx? i = if i < d then Option.some i else Option.none := by
+  unfold idx?
+  simp [Mappings.initialMappings]
+
 /-! ### L2 -- `composeMap` is Kleisli composition (the paper's `φ̃ ∘ φ★`, A.4.3) -/
 
 @[simp] theorem size_composeMap (m1 m2 : IndexMap) :
@@ -235,15 +252,71 @@ theorem idx?_composeMap {m1 m2 : IndexMap} (hb : m1.Bounded m2.size) (i : Nat) :
   · rw [idx?_neg (by simpa using hi), idx?_neg hi]
     rfl
 
+/-- Composing preserves boundedness: if `m1` decodes into `m2`'s domain and `m2`
+into `c`, the composite decodes into `c`. -/
+theorem composeMap_bounded {m1 m2 : IndexMap} {c : Nat}
+    (h12 : m1.Bounded m2.size) (h2 : m2.Bounded c) : (composeMap m1 m2).Bounded c := by
+  grind [bounded_iff_idx?_lt, idx?_composeMap, idx?_lt_of_bounded, Option.bind_eq_some_iff]
+
 theorem composeMap_wf {m1 m2 : IndexMap} {a b c : Nat}
-    (h1 : m1.WF a b) (h2 : m2.WF b c) : (composeMap m1 m2).WF a c := by
-  grind [IndexMap.WF, size_composeMap, bounded_iff_idx?_lt, idx?_composeMap,
-    idx?_lt_of_bounded, Option.bind_eq_some_iff]
+    (h1 : m1.WF a b) (h2 : m2.WF b c) : (composeMap m1 m2).WF a c :=
+  ⟨by simpa using h1.size_eq,
+    composeMap_bounded (h2.size_eq ▸ h1.bounded) h2.bounded⟩
 
 theorem composeMap_total {m1 m2 : IndexMap}
     (t1 : m1.Total) (hb : m1.Bounded m2.size) (t2 : m2.Total) :
     (composeMap m1 m2).Total := by
   grind [Total, composeMap, Bounded, OptIdx.isNone, OptIdx.isSome, OptIdx.idx!, OptIdx.get?]
+
+/-- The canonical total map is a left identity for a well-formed map. -/
+theorem composeMap_id_left {m : IndexMap} {dom codom : Nat} (h : m.WF dom codom) :
+    composeMap ((Array.range dom).map OptIdx.some) m = m := by
+  have hid : IndexMap.Bounded ((Array.range dom).map OptIdx.some) m.size := by
+    simpa [h.size_eq] using
+      (range_map_some_wf (n := dom) (codom := dom)
+        (f := fun i => i) (fun _ hi => hi)).bounded
+  apply Array.ext
+  · simpa using h.size_eq.symm
+  intro i hi₁ hi₂
+  apply OptIdx.get?_inj.mp
+  rw [← idx?_pos hi₁, ← idx?_pos hi₂, idx?_composeMap hid]
+  have hi : i < dom := h.size_eq ▸ hi₂
+  simp [idx?, hi]
+
+/-- The canonical total map is a right identity for a well-formed map. -/
+theorem composeMap_id_right {m : IndexMap} {dom codom : Nat} (h : m.WF dom codom) :
+    composeMap m ((Array.range codom).map OptIdx.some) = m := by
+  have hb : m.Bounded ((Array.range codom).map OptIdx.some).size := by
+    simpa using h.bounded
+  apply Array.ext
+  · simp
+  intro i hi₁ hi₂
+  apply OptIdx.get?_inj.mp
+  rw [← idx?_pos hi₁, ← idx?_pos hi₂, idx?_composeMap hb]
+  rcases hm : m.idx? i with _ | j
+  · simp
+  · have hj := idx?_lt_of_bounded h.bounded hm
+    simp [idx?, hj]
+
+/-- `composeMap` is associative on denotations: following `m1` by `m2` and
+then `m3` gives the same result either way the operations are bracketed,
+provided each stage decodes into the next's domain. -/
+theorem idx?_composeMap_assoc {m1 m2 m3 : IndexMap}
+    (h12 : m1.Bounded m2.size) (h23 : m2.Bounded m3.size) (i : Nat) :
+    (composeMap (composeMap m1 m2) m3).idx? i
+      = (composeMap m1 (composeMap m2 m3)).idx? i := by
+  rw [idx?_composeMap (composeMap_bounded h12 h23), idx?_composeMap h12,
+    idx?_composeMap (by simpa using h12), Option.bind_assoc]
+  congr 1
+  funext y
+  exact (idx?_composeMap h23 y).symm
+
+/-- Structural associativity for a bounded three-stage composition chain -- the
+denotational law (`idx?_composeMap_assoc`) lifted through `ext_idx?`. -/
+theorem composeMap_assoc {m1 m2 m3 : IndexMap}
+    (h12 : m1.Bounded m2.size) (h23 : m2.Bounded m3.size) :
+    composeMap (composeMap m1 m2) m3 = composeMap m1 (composeMap m2 m3) :=
+  IndexMap.ext_idx? (by simp) (idx?_composeMap_assoc h12 h23)
 
 /-- Lifted to `Mappings.compose` (`self` first, then `other` -- note the paper
 writes `φ̃ ∘ φ★`, applying `φ★` first; same composite, opposite notation). -/
@@ -251,6 +324,34 @@ theorem Mappings.compose_wf {ms1 ms2 : Mappings} {n d n' d' n'' d'' : Nat}
     (h1 : ms1.WF n d n' d') (h2 : ms2.WF n' d' n'' d'') :
     (ms1.compose ms2).WF n d n'' d'' :=
   ⟨composeMap_wf h1.vmap_wf h2.vmap_wf, composeMap_wf h1.dmap_wf h2.dmap_wf⟩
+
+/-- `initialMappings` is a left identity for a well-formed pair of maps. -/
+theorem Mappings.initialMappings_compose {ms : Mappings} {n d n' d' : Nat}
+    (h : ms.WF n d n' d') : (Mappings.initialMappings n d).compose ms = ms := by
+  cases ms with
+  | mk vmap dmap =>
+    simp only [Mappings.initialMappings, Mappings.compose]
+    congr
+    · exact composeMap_id_left h.vmap_wf
+    · exact composeMap_id_left h.dmap_wf
+
+/-- `initialMappings` is a right identity for a well-formed pair of maps. -/
+theorem Mappings.compose_initialMappings {ms : Mappings} {n d n' d' : Nat}
+    (h : ms.WF n d n' d') : ms.compose (Mappings.initialMappings n' d') = ms := by
+  cases ms with
+  | mk vmap dmap =>
+    simp only [Mappings.initialMappings, Mappings.compose]
+    congr
+    · exact composeMap_id_right h.vmap_wf
+    · exact composeMap_id_right h.dmap_wf
+
+/-- `Mappings.compose` is associative for a well-formed three-stage chain. -/
+theorem Mappings.compose_assoc {ms1 ms2 ms3 : Mappings}
+    {n₀ d₀ n₁ d₁ n₂ d₂ n₃ d₃ : Nat}
+    (h1 : ms1.WF n₀ d₀ n₁ d₁) (h2 : ms2.WF n₁ d₁ n₂ d₂)
+    (h3 : ms3.WF n₂ d₂ n₃ d₃) :
+    (ms1.compose ms2).compose ms3 = ms1.compose (ms2.compose ms3) := by
+  grind [Mappings.compose, Mappings.WF, IndexMap.WF, composeMap_assoc]
 
 /-! ### L3 -- `splitMap` is restriction along a domain decomposition (the
 codomain is unchanged: both halves map into the same target; the second

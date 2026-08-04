@@ -61,7 +61,101 @@ def Coherent (maps : Mappings) (src dst : PseudoTriangulation) : Prop :=
       ∃ t, (dst.darts[fStar]!).pred.get? = Option.some t ∧
         maps.dmap.idx? p = Option.some t)
 
+/-- Coherence composes: chaining a `src → mid` coherent map with a `mid → dst`
+one gives a `src → dst` coherent map. No degree relation is involved; the
+only additional premises say that `maps1`'s images land in `maps2`'s domain. -/
+theorem Coherent.compose {maps1 maps2 : Mappings} {src mid dst : PseudoTriangulation}
+    (hvb : maps1.vmap.Bounded maps2.vmap.size)
+    (hdb : maps1.dmap.Bounded maps2.dmap.size)
+    (h1 : maps1.Coherent src mid) (h2 : maps2.Coherent mid dst) :
+    (maps1.compose maps2).Coherent src dst := by
+  have hv : ∀ i, (maps1.compose maps2).vmap.idx? i
+      = (maps1.vmap.idx? i).bind maps2.vmap.idx? := fun i => by
+    simp only [Mappings.compose]; exact idx?_composeMap hvb i
+  have hd : ∀ i, (maps1.compose maps2).dmap.idx? i
+      = (maps1.dmap.idx? i).bind maps2.dmap.idx? := fun i => by
+    simp only [Mappings.compose]; exact idx?_composeMap hdb i
+  intro f fStar hf
+  obtain ⟨g, hfg, hgStar⟩ := Option.bind_eq_some_iff.mp (hd f ▸ hf)
+  -- Pin the two homomorphisms at this dart so their coherence facts are ground;
+  -- grind then chains each clause through `hv`/`hd`. Applying `h1`/`h2` here (not
+  -- listing `Coherent` as a grind hint) is what stops grind re-instantiating the
+  -- coherence quantifiers against their own `mid.darts[…]` outputs -- the earlier
+  -- e-matching blow-up.
+  have := h1 f g hfg
+  have := h2 g fStar hgStar
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> grind [Option.bind_eq_some_iff]
+
+/-- A well-formed mapping chain supplies the bounds needed by
+`Coherent.compose`. -/
+theorem Coherent.compose_of_wf {maps1 maps2 : Mappings}
+    {src mid dst : PseudoTriangulation}
+    (hwf1 : maps1.WF src.n src.darts.size mid.n mid.darts.size)
+    (hwf2 : maps2.WF mid.n mid.darts.size dst.n dst.darts.size)
+    (h1 : maps1.Coherent src mid) (h2 : maps2.Coherent mid dst) :
+    (maps1.compose maps2).Coherent src dst :=
+  Coherent.compose
+    (hwf2.vmap_wf.size_eq ▸ hwf1.vmap_wf.bounded)
+    (hwf2.dmap_wf.size_eq ▸ hwf1.dmap_wf.bounded) h1 h2
+
+/-- The identity map is coherent from a well-formed pseudo-triangulation to
+itself: every dart and vertex maps to itself, including its links. -/
+theorem Coherent.id {src : PseudoTriangulation} (hsrc : src.WF) :
+    (Mappings.initialMappings src.n src.darts.size).Coherent src src := by
+  intro f fStar hf
+  obtain ⟨hfd, rfl⟩ : f < src.darts.size ∧ f = fStar := by
+    have h := Mappings.idx?_initialMappings_dmap src.n src.darts.size f
+    grind
+  obtain ⟨hh, hr, hs, hp⟩ := hsrc.read_inBounds hfd
+  grind [Mappings.idx?_initialMappings_vmap, Mappings.idx?_initialMappings_dmap]
+
 end Mappings
+
+/-- A `src → dst` mapping with bounds and structural coherence (A.3).
+The proof fields are erased. -/
+structure CoherentMappings (src dst : PseudoTriangulation) where
+  maps : Mappings
+  wf : maps.WF src.n src.darts.size dst.n dst.darts.size
+  coherent : maps.Coherent src dst
+
+namespace CoherentMappings
+
+/-- Certified mappings are determined by their underlying maps. -/
+@[ext] theorem ext {src dst : PseudoTriangulation} {F G : CoherentMappings src dst}
+    (h : F.maps = G.maps) : F = G := by
+  cases F; cases G; cases h; rfl
+
+/-- The identity mapping on a well-formed pseudo-triangulation. -/
+def id {src : PseudoTriangulation} (hsrc : src.WF) : CoherentMappings src src where
+  maps := Mappings.initialMappings src.n src.darts.size
+  wf := Mappings.initialMappings_wf src.n src.darts.size
+  coherent := Mappings.Coherent.id hsrc
+
+/-- Compose certified mappings through their shared middle graph. -/
+def compose {src mid dst : PseudoTriangulation}
+    (F : CoherentMappings src mid) (G : CoherentMappings mid dst) :
+    CoherentMappings src dst where
+  maps := F.maps.compose G.maps
+  wf := Mappings.compose_wf F.wf G.wf
+  coherent := Mappings.Coherent.compose_of_wf F.wf G.wf F.coherent G.coherent
+
+/-- Left identity. -/
+@[simp] theorem id_comp {src dst : PseudoTriangulation} (hsrc : src.WF)
+    (F : CoherentMappings src dst) : (CoherentMappings.id hsrc).compose F = F :=
+  ext (Mappings.initialMappings_compose F.wf)
+
+/-- Right identity. -/
+@[simp] theorem comp_id {src dst : PseudoTriangulation} (hdst : dst.WF)
+    (F : CoherentMappings src dst) : F.compose (CoherentMappings.id hdst) = F :=
+  ext (Mappings.compose_initialMappings F.wf)
+
+/-- Associativity: composition chains are correct however they are bracketed. -/
+theorem compose_assoc {src a b dst : PseudoTriangulation}
+    (F : CoherentMappings src a) (G : CoherentMappings a b) (H : CoherentMappings b dst) :
+    (F.compose G).compose H = F.compose (G.compose H) :=
+  ext (Mappings.compose_assoc F.wf G.wf H.wf)
+
+end CoherentMappings
 
 namespace PseudoTriangulation
 
