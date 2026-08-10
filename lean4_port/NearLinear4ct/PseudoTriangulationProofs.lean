@@ -4,13 +4,16 @@ import NearLinear4ct.UtilProofs
 import Std.Tactic.Do
 
 /-!
-Tier-1 well-formedness of the combinatorial map.
+Well-formedness of the combinatorial map, in two layers.
 
 `Dart.InBounds` / `PseudoTriangulation.WF` / `PseudoConfiguration.WF` state
 **index bounds only**: every `head` names a vertex, every `rev`/`succ`/`pred`
-names a dart. No rotation-system laws (rev involution, succ/pred inverse) are
-stated -- those are tier-2 and must first be falsified empirically on the
-corpus, since intermediates of the gluing (A.3) may violate them.
+names a dart. Above them, `PseudoTriangulation.Valid` adds the geometric laws
+the A.4 degree-resolution steps rely on and preserve: `rev` is an involution,
+no edge is a graph loop, and boundary corners agree across an edge. Stronger
+rotation-system laws (`succ`/`pred` inverse to each other, rotation closure)
+remain unstated -- they must first be falsified empirically on the corpus,
+since intermediates of the gluing (A.3) may violate them.
 
 The predicates, their executable checkers (`inBoundsCheck`/`wfCheck`) and
 decidability bridges (`_iff`) live beside the structure definitions
@@ -31,6 +34,42 @@ mirrored certificate.
 
 namespace NearLinear4ct
 
+/-! ### `!`-read lemmas for `Array.push`/`Array.set!`
+
+The `?`-read lemmas are `@[grind =]`, but grinding a deep `push`/`set!` chain of
+`!`-reads blows up on the intermediate `let`s. These reduce one write at a time,
+so array-edit proofs (`addBoundaryDarts`, gluing, …) reason locally. -/
+
+@[simp] theorem getElem!_push_lt {α : Type _} [Inhabited α] {a : Array α} {x : α} {f : Nat}
+    (hf : f < a.size) : (a.push x)[f]! = a[f]! := by grind
+
+theorem getElem!_push_size {α : Type _} [Inhabited α] {a : Array α} {x : α} :
+    (a.push x)[a.size]! = x := by grind
+
+theorem getElem!_set!_self {α : Type _} [Inhabited α] {a : Array α} {i : Nat} {x : α}
+    (hi : i < a.size) : (a.set! i x)[i]! = x := by grind [Array.set!]
+
+theorem getElem!_set!_ne {α : Type _} [Inhabited α] {a : Array α} {i : Nat} {x : α} {f : Nat}
+    (hne : i ≠ f) : (a.set! i x)[f]! = a[f]! := by grind [Array.set!]
+
+/-- A `pred`-write leaves `succ` untouched at every index (including its own). -/
+theorem getElem!_set!_pred_succ {a : Array Dart} {i f : Nat} {p : OptIdx} :
+    ((a.set! i {a[i]! with pred := p})[f]!).succ = (a[f]!).succ := by grind [Array.set!]
+
+/-- A `succ`-write leaves `pred` untouched at every index (including its own). -/
+theorem getElem!_set!_succ_pred {a : Array Dart} {i f : Nat} {s : OptIdx} :
+    ((a.set! i {a[i]! with succ := s})[f]!).pred = (a[f]!).pred := by grind [Array.set!]
+
+/-- A field-write leaves `head`/`rev` untouched at every index. -/
+theorem getElem!_set!_pred_head {a : Array Dart} {i f : Nat} {p : OptIdx} :
+    ((a.set! i {a[i]! with pred := p})[f]!).head = (a[f]!).head := by grind [Array.set!]
+theorem getElem!_set!_pred_rev {a : Array Dart} {i f : Nat} {p : OptIdx} :
+    ((a.set! i {a[i]! with pred := p})[f]!).rev = (a[f]!).rev := by grind [Array.set!]
+theorem getElem!_set!_succ_head {a : Array Dart} {i f : Nat} {s : OptIdx} :
+    ((a.set! i {a[i]! with succ := s})[f]!).head = (a[f]!).head := by grind [Array.set!]
+theorem getElem!_set!_succ_rev {a : Array Dart} {i f : Nat} {s : OptIdx} :
+    ((a.set! i {a[i]! with succ := s})[f]!).rev = (a[f]!).rev := by grind [Array.set!]
+
 namespace Dart
 
 /-- `InBounds` weakens along larger index sets. -/
@@ -39,6 +78,13 @@ theorem InBounds.mono {n D n' D' : Nat} {d : Dart}
   grind [InBounds]
 
 end Dart
+
+/-- Pushing an in-bounds dart preserves an array-wide bound. -/
+private theorem push_dart_wf {n D : Nat} {a : Array Dart}
+    (h : ∀ i (hi : i < a.size), (a[i]'hi).InBounds n D)
+    {d : Dart} (hd : d.InBounds n D) :
+    ∀ i (hi : i < (a.push d).size), ((a.push d)[i]'hi).InBounds n D := by
+  grind
 
 namespace Mappings
 
@@ -108,6 +154,56 @@ theorem Coherent.id {src : PseudoTriangulation} (hsrc : src.WF) :
     grind
   obtain ⟨hh, hr, hs, hp⟩ := hsrc.read_inBounds hfd
   grind [Mappings.idx?_initialMappings_vmap, Mappings.idx?_initialMappings_dmap]
+
+/-- **Codomain weakening.** The identity map on `src`'s `(n, d)` indices is
+coherent into any graph `dst` that agrees with `src` on those darts' `head`/`rev`
+and preserves their interior `succ`/`pred` links (boundary links may newly close
+-- the one-way clauses permit it). This is the identity carrier for a graph that
+gains darts/vertices without disturbing the old ones. -/
+theorem Coherent.id_codomain {src dst : PseudoTriangulation} {n d : Nat}
+    (hhead : ∀ f, f < d → (src.darts[f]!).head < n
+      ∧ (dst.darts[f]!).head = (src.darts[f]!).head)
+    (hrev : ∀ f, f < d → (src.darts[f]!).rev < d
+      ∧ (dst.darts[f]!).rev = (src.darts[f]!).rev)
+    (hsucc : ∀ f s, f < d → (src.darts[f]!).succ.get? = Option.some s
+      → s < d ∧ (dst.darts[f]!).succ.get? = Option.some s)
+    (hpred : ∀ f p, f < d → (src.darts[f]!).pred.get? = Option.some p
+      → p < d ∧ (dst.darts[f]!).pred.get? = Option.some p) :
+    (Mappings.initialMappings n d).Coherent src dst := by
+  intro f fStar hf
+  obtain ⟨hfd, rfl⟩ : f < d ∧ f = fStar := by
+    have h := Mappings.idx?_initialMappings_dmap n d f
+    grind
+  obtain ⟨hh, hheq⟩ := hhead f hfd
+  obtain ⟨hr, hreq⟩ := hrev f hfd
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · rw [Mappings.idx?_initialMappings_vmap, if_pos hh, hheq]
+  · rw [Mappings.idx?_initialMappings_dmap, if_pos hr, hreq]
+  · exact fun s hs =>
+      have ⟨hsd, hseq⟩ := hsucc f s hfd hs
+      ⟨s, hseq, by rw [Mappings.idx?_initialMappings_dmap, if_pos hsd]⟩
+  · exact fun p hp =>
+      have ⟨hpd, hpeq⟩ := hpred f p hfd hp
+      ⟨p, hpeq, by rw [Mappings.idx?_initialMappings_dmap, if_pos hpd]⟩
+
+/-- **`dst` extends `src` on `[0, d)`.** The graph gained darts/vertices without
+disturbing the old ones: on the first `d` darts, `head`/`rev` agree (landing in
+`[0, n)`/`[0, d)`) and every interior `succ`/`pred` link is preserved (boundary
+links may newly close). This is exactly what `id_codomain` needs; a graph edit
+establishes it in one step from a field-by-field characterisation of the final
+array against the original. -/
+structure Extends (src dst : PseudoTriangulation) (n d : Nat) : Prop where
+  head : ∀ f, f < d → (src.darts[f]!).head < n ∧ (dst.darts[f]!).head = (src.darts[f]!).head
+  rev : ∀ f, f < d → (src.darts[f]!).rev < d ∧ (dst.darts[f]!).rev = (src.darts[f]!).rev
+  succ : ∀ f s, f < d → (src.darts[f]!).succ.get? = Option.some s →
+    s < d ∧ (dst.darts[f]!).succ.get? = Option.some s
+  pred : ∀ f p, f < d → (src.darts[f]!).pred.get? = Option.some p →
+    p < d ∧ (dst.darts[f]!).pred.get? = Option.some p
+
+/-- The identity map on `[0, d)` is coherent into any extension. -/
+theorem Coherent.id_of_extends {src dst : PseudoTriangulation} {n d : Nat}
+    (h : Extends src dst n d) : (Mappings.initialMappings n d).Coherent src dst :=
+  Coherent.id_codomain h.head h.rev h.succ h.pred
 
 end Mappings
 
@@ -371,6 +467,222 @@ theorem anyDart_lt {pt : PseudoTriangulation} {v e : Nat}
     (h : pt.anyDart v = some e) : e < pt.darts.size := by
   exact findIdx?_lt (by simpa only [anyDart] using h)
 
+/-- The first dart of a vertex opens its rotation: `pred = nil`. -/
+theorem firstDart_pred_isNone {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.firstDart v = some e) : (pt.darts[e]!).pred.isNone := by
+  have he : e < pt.darts.size := firstDart_lt h
+  simp only [getElem!_pos pt.darts e he]
+  grind [Array.findIdx?_eq_some_iff_getElem, firstDart]
+
+/-- The last dart of a vertex closes its rotation: `succ = nil`. -/
+theorem lastDart_succ_isNone {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.lastDart v = some e) : (pt.darts[e]!).succ.isNone := by
+  have he : e < pt.darts.size := lastDart_lt h
+  simp only [getElem!_pos pt.darts e he]
+  grind [Array.findIdx?_eq_some_iff_getElem, lastDart]
+
+/-- The first dart of a vertex is a dart of that vertex. -/
+theorem firstDart_head {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.firstDart v = some e) : (pt.darts[e]!).head = v := by
+  have he : e < pt.darts.size := firstDart_lt h
+  simp only [getElem!_pos pt.darts e he]
+  grind [Array.findIdx?_eq_some_iff_getElem, firstDart]
+
+/-- The last dart of a vertex is a dart of that vertex. -/
+theorem lastDart_head {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.lastDart v = some e) : (pt.darts[e]!).head = v := by
+  have he : e < pt.darts.size := lastDart_lt h
+  simp only [getElem!_pos pt.darts e he]
+  grind [Array.findIdx?_eq_some_iff_getElem, lastDart]
+
+/-- **Valid pseudo-triangulation** -- the geometric layer above bounds-only `WF`:
+`rev` is an involution; no edge is a graph loop (a dart and its reverse have
+distinct heads, the executable `hasLoop` test -- distinct darts may still share a
+head, so this is stronger than `rev e ≠ e`); and boundary corners agree across an
+edge (`pred = nil` at a dart iff `succ = nil` at its reverse). `fromVRotations`
+builds this from the `-1` markers; the A.4 steps must preserve it. Bounds-only
+consumers keep `WF` and take on none of these obligations. -/
+structure Valid (pt : PseudoTriangulation) : Prop where
+  wf : pt.WF
+  rev_rev : ∀ e, e < pt.darts.size → (pt.darts[(pt.darts[e]!).rev]!).rev = e
+  loop_free : ∀ e, e < pt.darts.size →
+    (pt.darts[e]!).head ≠ (pt.darts[(pt.darts[e]!).rev]!).head
+  boundary : ∀ e, e < pt.darts.size →
+    ((pt.darts[e]!).pred.isNone ↔ (pt.darts[(pt.darts[e]!).rev]!).succ.isNone)
+
+/-- The reverse dart stays in range (from bounds). -/
+theorem Valid.rev_lt {pt : PseudoTriangulation} (h : pt.Valid) {e : Nat}
+    (he : e < pt.darts.size) : (pt.darts[e]!).rev < pt.darts.size :=
+  (h.wf.read_inBounds he).rev_lt
+
+/-- No dart is its own reverse (else its edge would be a self-loop). -/
+theorem Valid.rev_ne {pt : PseudoTriangulation} (h : pt.Valid) {e : Nat}
+    (he : e < pt.darts.size) : (pt.darts[e]!).rev ≠ e :=
+  fun heq => h.loop_free e he (congrArg (fun i => (pt.darts[i]!).head) heq).symm
+
+/-- The `succ`/`pred` mirror of `boundary`, from `boundary` at `rev e` and
+`rev_rev` -- so only one boundary direction need be carried. -/
+theorem Valid.boundary' {pt : PseudoTriangulation} (h : pt.Valid) {e : Nat}
+    (he : e < pt.darts.size) :
+    ((pt.darts[e]!).succ.isNone ↔ (pt.darts[(pt.darts[e]!).rev]!).pred.isNone) :=
+  (h.rev_rev e he ▸ h.boundary _ (h.rev_lt he)).symm
+
+/-- **Append a reverse-dart pair.** The enlarged array `arr` agrees with
+`pt.darts` on old indices and adds, at `D`/`D+1`, two darts that are each other's
+reverse, have distinct heads, and are boundary-consistent as a pair (`pred` nil
+at one iff `succ` nil at the other). Old darts' clauses come straight from `h`;
+the pair's from the hypotheses. The array is given abstractly, so the caller's
+`push`s need not be unfolded here. -/
+theorem Valid.pushRevPair {pt : PseudoTriangulation} (h : pt.Valid) {arr : Array Dart}
+    (hwf : (⟨pt.n, arr⟩ : PseudoTriangulation).WF)
+    (hsize : arr.size = pt.darts.size + 2)
+    (hold : ∀ (j : Nat), j < pt.darts.size → arr[j]! = pt.darts[j]!)
+    (hdur : (arr[pt.darts.size]!).rev = pt.darts.size + 1)
+    (hdwr : (arr[pt.darts.size + 1]!).rev = pt.darts.size)
+    (hhead : (arr[pt.darts.size]!).head ≠ (arr[pt.darts.size + 1]!).head)
+    (hb1 : (arr[pt.darts.size]!).pred.isNone ↔ (arr[pt.darts.size + 1]!).succ.isNone)
+    (hb2 : (arr[pt.darts.size + 1]!).pred.isNone ↔ (arr[pt.darts.size]!).succ.isNone) :
+    (⟨pt.n, arr⟩ : PseudoTriangulation).Valid := by
+  refine ⟨hwf, ?_, ?_, ?_⟩ <;> intro e he <;> have he' : e < arr.size := he
+  all_goals have htri : e < pt.darts.size ∨ e = pt.darts.size ∨ e = pt.darts.size + 1 := by omega
+  all_goals grind [Valid, Valid.rev_lt]
+
+/-- **Close a boundary fan.** The four paired writes -- `pred` at `eF`/`eLR`,
+`succ` at `eL`/`eFR`, all to non-nil targets, where `eFR`/`eLR` are the reverses
+of `eF`/`eL` -- take a `Valid` graph to a `Valid` graph. `rev`/`head` are
+untouched, so `rev_rev`/`loop_free` transport directly. For `boundary`, only
+`rev_rev` is needed: an edge whose `pred` corner was written pairs (via
+`rev_rev`) with a `succ` corner that was also written, so both sides are non-nil
+together; every other edge keeps its `h.boundary`. The array is given
+abstractly, so no write order or distinctness reasoning leaks in. -/
+theorem Valid.closeBoundaryFan {pt : PseudoTriangulation} (h : pt.Valid)
+    {arr : Array Dart} {eF eL eFR eLR : Nat}
+    (hwf : (⟨pt.n, arr⟩ : PseudoTriangulation).WF)
+    (hsize : arr.size = pt.darts.size)
+    (hrev : ∀ (j : Nat), (arr[j]!).rev = (pt.darts[j]!).rev)
+    (hhead : ∀ (j : Nat), (arr[j]!).head = (pt.darts[j]!).head)
+    (heF : eF < pt.darts.size) (heL : eL < pt.darts.size)
+    (hFR : (pt.darts[eF]!).rev = eFR) (hLR : (pt.darts[eL]!).rev = eLR)
+    (hpred : ∀ (j : Nat), j ≠ eF → j ≠ eLR → (arr[j]!).pred = (pt.darts[j]!).pred)
+    (hsucc : ∀ (j : Nat), j ≠ eL → j ≠ eFR → (arr[j]!).succ = (pt.darts[j]!).succ)
+    (hwpF : ¬ (arr[eF]!).pred.isNone) (hwpLR : ¬ (arr[eLR]!).pred.isNone)
+    (hwsL : ¬ (arr[eL]!).succ.isNone) (hwsFR : ¬ (arr[eFR]!).succ.isNone) :
+    (⟨pt.n, arr⟩ : PseudoTriangulation).Valid := by
+  refine ⟨hwf, ?_, ?_, ?_⟩ <;> intro e he <;> have he' : e < arr.size := he
+  all_goals have hrr := h.rev_rev e (by omega)
+  all_goals grind [Valid, Valid.rev_lt]
+
+/-- **What `addBoundaryDarts` changed** (A.4.6): the implementation-level patch,
+read off the `push`/`set!` chain once by `addBoundaryDarts_patch`. `dst` appends
+the reverse pair for the new boundary edge at `src.darts.size`/`+ 1` and closes
+the four fan corners `eF`/`eL`/`eFR`/`eLR`; every other field is untouched. The
+closed corners are recorded as non-nil rather than by target, so the fields hold
+even when corners coincide and no distinctness reasoning is needed. Validity and
+coherence are semantic consequences (`BoundaryFanPatch.valid`,
+`BoundaryFanPatch.toExtends`). -/
+structure BoundaryFanPatch (src dst : PseudoTriangulation) (eF eL eFR eLR : Nat) : Prop where
+  wf : dst.WF
+  n_eq : dst.n = src.n
+  size : dst.darts.size = src.darts.size + 2
+  eF_lt : eF < src.darts.size
+  eL_lt : eL < src.darts.size
+  eFR_def : (src.darts[eF]!).rev = eFR
+  eLR_def : (src.darts[eL]!).rev = eLR
+  head_ne : (src.darts[eFR]!).head ≠ (src.darts[eLR]!).head
+  predF_open : (src.darts[eF]!).pred.isNone
+  succL_open : (src.darts[eL]!).succ.isNone
+  read_new1 : dst.darts[src.darts.size]! =
+    ⟨(src.darts[eFR]!).head, src.darts.size + 1, OptIdx.none, OptIdx.some eFR⟩
+  read_new2 : dst.darts[src.darts.size + 1]! =
+    ⟨(src.darts[eLR]!).head, src.darts.size, OptIdx.some eLR, OptIdx.none⟩
+  head_old : ∀ (j : Nat), j < src.darts.size → (dst.darts[j]!).head = (src.darts[j]!).head
+  rev_old : ∀ (j : Nat), j < src.darts.size → (dst.darts[j]!).rev = (src.darts[j]!).rev
+  pred_old : ∀ (j : Nat), j ≠ eF → j ≠ eLR → j < src.darts.size →
+    (dst.darts[j]!).pred = (src.darts[j]!).pred
+  succ_old : ∀ (j : Nat), j ≠ eL → j ≠ eFR → j < src.darts.size →
+    (dst.darts[j]!).succ = (src.darts[j]!).succ
+  predF_closed : ¬ (dst.darts[eF]!).pred.isNone
+  predLR_closed : ¬ (dst.darts[eLR]!).pred.isNone
+  succL_closed : ¬ (dst.darts[eL]!).succ.isNone
+  succFR_closed : ¬ (dst.darts[eFR]!).succ.isNone
+
+/-- A boundary-fan patch preserves validity. The patch is applied as its two
+atomic steps: `Valid.pushRevPair` takes `src` to the intermediate pair-appended
+graph (reconstructed from the `dst` reads), and `Valid.closeBoundaryFan` closes
+the four paired corners on top of it. -/
+theorem BoundaryFanPatch.valid {src dst : PseudoTriangulation} {eF eL eFR eLR : Nat}
+    (hp : BoundaryFanPatch src dst eF eL eFR eLR) (hv : src.Valid) : dst.Valid := by
+  obtain ⟨hwf, hn, hsz, heF, heL, hFRd, hLRd, hhne, _hpO, _hsO, hr1, hr2, hho, hro,
+    hpo, hso, hpFc, hpLRc, hsLc, hsFRc⟩ := hp
+  have hd1 : (dst.darts[src.darts.size]!).InBounds src.n (src.darts.size + 2) :=
+    hsz ▸ hn ▸ hwf.read_inBounds (by omega)
+  have hd2 : (dst.darts[src.darts.size + 1]!).InBounds src.n (src.darts.size + 2) :=
+    hsz ▸ hn ▸ hwf.read_inBounds (by omega)
+  -- The intermediate graph: the source plus the appended reverse pair.
+  have hread : ∀ (j : Nat),
+      ((src.darts.push dst.darts[src.darts.size]!).push dst.darts[src.darts.size + 1]!)[j]!
+        = if j < src.darts.size then src.darts[j]! else dst.darts[j]! := by
+    intro j
+    rcases Nat.lt_trichotomy j src.darts.size with hj | hj | hj
+    · rw [if_pos hj, getElem!_push_lt (by simp; omega), getElem!_push_lt hj]
+    · subst hj
+      rw [if_neg (by omega), getElem!_push_lt (by simp), getElem!_push_size]
+    · by_cases hj1 : j = src.darts.size + 1
+      · subst hj1
+        rw [if_neg (by omega),
+          show src.darts.size + 1 = (src.darts.push dst.darts[src.darts.size]!).size by simp,
+          getElem!_push_size]
+      · rw [if_neg (by omega), getElem!_neg _ _ (by simp; omega),
+          getElem!_neg _ _ (by omega)]
+  have hmv : (⟨src.n, (src.darts.push dst.darts[src.darts.size]!).push
+      dst.darts[src.darts.size + 1]!⟩ : PseudoTriangulation).Valid := by
+    refine hv.pushRevPair ?_ (by simp) (fun j hj => by rw [hread j, if_pos hj]) ?_ ?_ ?_ ?_ ?_
+    · intro i hi
+      exact (push_dart_wf (push_dart_wf
+          (fun j hj => (hv.wf j hj).mono (Nat.le_refl _) (by omega)) hd1) hd2 i hi).mono
+        (Nat.le_refl _) (by simp)
+    · rw [hread _, if_neg (by omega), hr1]
+    · rw [hread _, if_neg (by omega), hr2]
+    · rw [hread (src.darts.size), hread (src.darts.size + 1), if_neg (by omega),
+        if_neg (by omega), hr1, hr2]
+      exact hhne
+    · rw [hread (src.darts.size), hread (src.darts.size + 1), if_neg (by omega),
+        if_neg (by omega), hr1, hr2]
+      simp
+    · rw [hread (src.darts.size), hread (src.darts.size + 1), if_neg (by omega),
+        if_neg (by omega), hr1, hr2]
+  have hfinal : (⟨src.n, dst.darts⟩ : PseudoTriangulation).Valid :=
+    hmv.closeBoundaryFan (fun i hi => hn ▸ hwf i hi) (by simp [hsz])
+      (fun j => by rw [hread j]; split <;> first | rfl | exact hro j ‹_›)
+      (fun j => by rw [hread j]; split <;> first | rfl | exact hho j ‹_›)
+      (by simp; omega) (by simp; omega)
+      (by rw [hread eF, if_pos heF]; exact hFRd)
+      (by rw [hread eL, if_pos heL]; exact hLRd)
+      (fun j hjF hjLR => by rw [hread j]; split <;> first | rfl | exact hpo j hjF hjLR ‹_›)
+      (fun j hjL hjFR => by rw [hread j]; split <;> first | rfl | exact hso j hjL hjFR ‹_›)
+      hpFc hpLRc hsLc hsFRc
+  have hEq : (⟨src.n, dst.darts⟩ : PseudoTriangulation) = dst := by rw [← hn]
+  exact hEq ▸ hfinal
+
+/-- A boundary-fan patch keeps the identity coherent: interior links are never
+disturbed. On a valid source the two closed fan corners were open
+(`Valid.boundary` at `eF`/`eL`), so no interior `succ`/`pred` maps onto them.
+(`extends` is a keyword, hence `toExtends`.) -/
+theorem BoundaryFanPatch.toExtends {src dst : PseudoTriangulation} {eF eL eFR eLR : Nat}
+    (hp : BoundaryFanPatch src dst eF eL eFR eLR) (hv : src.Valid) :
+    Mappings.Extends src dst src.n src.darts.size := by
+  obtain ⟨_hwf, _hn, _hsz, heF, heL, hFRd, hLRd, _hhne, hpO, hsO, _hr1, _hr2, hho, hro,
+    hpo, hso, _hpFc, _hpLRc, _hsLc, _hsFRc⟩ := hp
+  have hsuccFR : (src.darts[eFR]!).succ.isNone := hFRd ▸ (hv.boundary _ heF).mp hpO
+  have hpredLR : (src.darts[eLR]!).pred.isNone := hLRd ▸ (hv.boundary' heL).mp hsO
+  refine ⟨fun f hf => ⟨(hv.wf.read_inBounds hf).head_lt, hho f hf⟩,
+      fun f hf => ⟨(hv.wf.read_inBounds hf).rev_lt, hro f hf⟩,
+      fun f s hf hs => ⟨(hv.wf.read_inBounds hf).succ_lt s hs, ?_⟩,
+      fun f p hf hpr => ⟨(hv.wf.read_inBounds hf).pred_lt p hpr, ?_⟩⟩
+  · rw [hso f (by grind [OptIdx.isNone_iff_get?]) (by grind [OptIdx.isNone_iff_get?]) hf]
+    exact hs
+  · rw [hpo f (by grind [OptIdx.isNone_iff_get?]) (by grind [OptIdx.isNone_iff_get?]) hf]
+    exact hpr
 
 /-! ### Gluing
 
@@ -498,14 +810,6 @@ private theorem LinkKind.set_some_inBounds (k : LinkKind) {d : Dart} {n D j : Na
     (h : d.InBounds n D) (hj : j < D) :
     (k.set d (.some j)).InBounds n D := by
   cases k <;> grind [LinkKind.set, Dart.InBounds, OptIdx.get?_some]
-
-private theorem getElem!_set!_self {xs : Array Dart} {i : Nat} {d : Dart}
-    (hi : i < xs.size) : (xs.set! i d)[i]! = d := by
-  grind [Array.set!]
-
-private theorem getElem!_set!_ne {xs : Array Dart} {i j : Nat} {d : Dart}
-    (hij : i ≠ j) : (xs.set! i d)[j]! = xs[j]! := by
-  grind [Array.set!]
 
 /-- Proof-side common form of `glueSucc` and `gluePred`. -/
 private def LinkKind.glue (k : LinkKind) (darts : Array Dart)
@@ -1535,6 +1839,38 @@ theorem dartIdentification_wf {pc : PseudoConfiguration} (hpc : pc.WF)
         ∧ ∀ o, st.fst = some o → o = none⌝
   all_goals mleave
   all_goals grind [PseudoConfiguration.WF, PseudoConfiguration.new]
+
+/-- The mapping and graph `dartIdentification` returns are exactly
+`freeHomomorphism`'s: the degree reconciliation writes only `degreesStar`, so it
+touches neither the quotient graph nor the maps. -/
+theorem dartIdentification_graph_maps {pc : PseudoConfiguration}
+    {dartPairs : Array (Nat × Nat)} {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
+    pc'.toPseudoTriangulation = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1
+      ∧ m = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2 := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some (z, mp) =>
+        z.toPseudoTriangulation = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1
+          ∧ mp = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2
+  mvcgen
+  case inv1 => exact ⇓⟨_xs, st⟩ => ⌜∀ o, st.fst = some o → o = none⌝
+  all_goals mleave
+  all_goals grind [PseudoConfiguration.new]
+
+/-- **Certified coherence for `dartIdentification` (A.4.1/A.4.3).** The quotient
+map is a well-formed, structurally-coherent mapping from the input graph into the
+identified one -- the gluing branch's carrier. -/
+theorem dartIdentification_coherentMappings {pc : PseudoConfiguration} (hpc : pc.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pc.darts.size ∧ p.2 < pc.darts.size)
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
+    ∃ C : CoherentMappings pc.toPseudoTriangulation pc'.toPseudoTriangulation, C.maps = m := by
+  obtain ⟨hgraph, hmap⟩ := dartIdentification_graph_maps hrun
+  refine ⟨⟨m, ?_, ?_⟩, rfl⟩
+  · rw [hmap, hgraph]; exact (PseudoTriangulation.freeHomomorphism_wf hpc.1 hpairs rfl).2.1
+  · rw [hmap, hgraph]; exact (PseudoTriangulation.freeHomomorphism_coherent hpc.1 hpairs rfl).1
 end
 
 section
@@ -1554,14 +1890,42 @@ theorem singleOutLowerDegree_wf {pc : PseudoConfiguration} (hpc : pc.WF)
       ⌜∀ x, st.fst = some (some x) → x.1.WF ∧ x.2.WF⌝
   all_goals mleave
   all_goals grind [PseudoConfiguration.WF, PseudoConfiguration.new]
-end
 
-/-- Pushing an in-bounds dart preserves an array-wide bound. -/
-private theorem push_dart_wf {n D : Nat} {a : Array Dart}
-    (h : ∀ i (hi : i < a.size), (a[i]'hi).InBounds n D)
-    {d : Dart} (hd : d.InBounds n D) :
-    ∀ i (hi : i < (a.push d).size), ((a.push d)[i]'hi).InBounds n D := by
-  grind
+/-- **Degree splits leave the graph fixed (A.4.9).** `singleOutLowerDegree`
+rewrites only degree ranges, so both children share the input's triangulation --
+an existing `CoherentMappings` into `pc` transports to each child unchanged. -/
+theorem singleOutLowerDegree_graph {pc : PseudoConfiguration} {z1 z2 : PseudoConfiguration}
+    (hrun : pc.singleOutLowerDegree = some (z1, z2)) :
+    z1.toPseudoTriangulation = pc.toPseudoTriangulation
+      ∧ z2.toPseudoTriangulation = pc.toPseudoTriangulation := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some (z1, z2) => z1.toPseudoTriangulation = (⟨pc.n, pc.darts⟩ : PseudoTriangulation)
+        ∧ z2.toPseudoTriangulation = ⟨pc.n, pc.darts⟩
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨_xs, st⟩ =>
+      ⌜∀ z1 z2, st.fst = some (some (z1, z2))
+        → z1.toPseudoTriangulation = (⟨pc.n, pc.darts⟩ : PseudoTriangulation)
+          ∧ z2.toPseudoTriangulation = ⟨pc.n, pc.darts⟩⌝
+  all_goals mleave
+  all_goals grind [PseudoConfiguration.new]
+
+/-- Degree splits rewrite one range, so the degree array keeps its size. -/
+theorem singleOutLowerDegree_degrees {pc : PseudoConfiguration} {z1 z2 : PseudoConfiguration}
+    (hrun : pc.singleOutLowerDegree = some (z1, z2)) :
+    z1.degrees.size = pc.degrees.size ∧ z2.degrees.size = pc.degrees.size := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some (z1, z2) => z1.degrees.size = pc.degrees.size ∧ z2.degrees.size = pc.degrees.size
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨_xs, st⟩ =>
+      ⌜∀ z1 z2, st.fst = some (some (z1, z2))
+        → z1.degrees.size = pc.degrees.size ∧ z2.degrees.size = pc.degrees.size⌝
+  all_goals mleave
+  all_goals grind [PseudoConfiguration.new, Array.size_setIfInBounds]
+end
 
 /-- Rewriting one dart's link to an in-range target preserves an array-wide
 bound: the written dart inherits its other fields from the overwritten one. -/
@@ -1575,6 +1939,52 @@ private theorem set_link_wf (k : PseudoTriangulation.LinkKind) {n D : Nat}
     grind [PseudoTriangulation.LinkKind.set, Dart.InBounds,
       OptIdx.get?_some, OptIdx.get?_none]
 
+/-- The whole boundary-fan chain keeps every index in bounds: the appended pair
+points at existing vertices and at each other, and the four link rewrites target
+existing darts. The one bounds proof over the `push`/`set!` chain, shared by
+`addBoundaryDarts_wf` and `addBoundaryDarts_patch`. The chain is given as
+per-step equations (discharged by `rfl` at the use sites), which keeps every
+definitional comparison one write deep. -/
+private theorem boundaryFan_chain_wf {n : Nat} {a a1 a2 a3 a4 a5 a6 : Array Dart}
+    {eF eL eFR eLR u w : Nat}
+    (h : ∀ i (hi : i < a.size), (a[i]'hi).InBounds n a.size)
+    (hu : u < n) (hw : w < n) (heF : eF < a.size) (heL : eL < a.size)
+    (heFR : eFR < a.size) (heLR : eLR < a.size)
+    (e1 : a1 = a.push ⟨u, a.size + 1, OptIdx.none, OptIdx.some eFR⟩)
+    (e2 : a2 = a1.push ⟨w, a.size, OptIdx.some eLR, OptIdx.none⟩)
+    (e3 : a3 = a2.set! eF { a2[eF]! with pred := OptIdx.some eL })
+    (e4 : a4 = a3.set! eL { a3[eL]! with succ := OptIdx.some eF })
+    (e5 : a5 = a4.set! eFR { a4[eFR]! with succ := OptIdx.some a.size })
+    (e6 : a6 = a5.set! eLR { a5[eLR]! with pred := OptIdx.some (a.size + 1) }) :
+    ∀ i (hi : i < a6.size), (a6[i]'hi).InBounds n a6.size := by
+  have hsz : a6.size = a.size + 2 := by simp [e6, e5, e4, e3, e2, e1]
+  have hd0 : a.size < a6.size := by omega
+  have hd1 : a.size + 1 < a6.size := by omega
+  have hFR' : eFR < a6.size := by omega
+  have hLR' : eLR < a6.size := by omega
+  have hteF : eF < a6.size := by omega
+  have hteL : eL < a6.size := by omega
+  have h0 : ∀ i (hi : i < a.size), (a[i]'hi).InBounds n a6.size :=
+    fun i hi => (h i hi).mono (Nat.le_refl _) (by omega)
+  have h1 : ∀ i (hi : i < a1.size), (a1[i]'hi).InBounds n a6.size := by
+    rw [e1]
+    exact push_dart_wf h0 ⟨hu, hd1, fun j hj => absurd hj (by simp),
+      fun j hj => Option.some.inj hj ▸ hFR'⟩
+  have h2 : ∀ i (hi : i < a2.size), (a2[i]'hi).InBounds n a6.size := by
+    rw [e2]
+    exact push_dart_wf h1 ⟨hw, hd0, fun j hj => Option.some.inj hj ▸ hLR',
+      fun j hj => absurd hj (by simp)⟩
+  have h3 : ∀ i (hi : i < a3.size), (a3[i]'hi).InBounds n a6.size := by
+    rw [e3]; exact set_link_wf .pred h2 (p := eF) (t := eL) hteL
+  have h4 : ∀ i (hi : i < a4.size), (a4[i]'hi).InBounds n a6.size := by
+    rw [e4]; exact set_link_wf .succ h3 (p := eL) (t := eF) hteF
+  have h5 : ∀ i (hi : i < a5.size), (a5[i]'hi).InBounds n a6.size := by
+    rw [e5]; exact set_link_wf .succ h4 (p := eFR) (t := a.size) hd0
+  rw [e6]
+  intro i hi
+  exact (set_link_wf .pred h5 (p := eLR) (t := a.size + 1) hd1 i hi).mono
+    (Nat.le_refl _) (Nat.le_of_eq (congrArg Array.size e6))
+
 section
 set_option linter.tacticCheckInstances false
 /-- `addBoundaryDarts` (A.4.6) preserves well-formedness: the two boundary
@@ -1586,61 +1996,228 @@ theorem addBoundaryDarts_wf {pc : PseudoConfiguration} (hpc : pc.WF) {v : Nat}
   apply Id.of_wp_run_eq hrun fun
     | none => True
     | some x => x.WF
-  mvcgen
+  mvcgen -trivial
   all_goals mleave
   case vc2.isFalse =>
+    rename_i eF eL eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
     -- Here `u ≠ w`, so the graph is nonempty and every read lands.
     have hsz : pc.darts.size ≠ 0 := by
       intro hzero
       have hdd : (default : Dart) = ⟨0, 0, OptIdx.none, OptIdx.none⟩ := rfl
       grind
-    have hfirst : (pc.firstDart v).get! < pc.darts.size :=
+    have hfirst : eF < pc.darts.size :=
       get!_lt_of_some_lt (fun e he => PseudoTriangulation.firstDart_lt he)
         (Nat.pos_of_ne_zero hsz)
-    have hlast : (pc.lastDart v).get! < pc.darts.size :=
+    have hlast : eL < pc.darts.size :=
       get!_lt_of_some_lt (fun e he => PseudoTriangulation.lastDart_lt he)
         (Nat.pos_of_ne_zero hsz)
-    have hfrev : pc.darts[(pc.firstDart v).get!]!.rev < pc.darts.size :=
-      (hpc.1.read_inBounds hfirst).rev_lt
-    have hlrev : pc.darts[(pc.lastDart v).get!]!.rev < pc.darts.size :=
-      (hpc.1.read_inBounds hlast).rev_lt
-    have hu : pc.darts[pc.darts[(pc.firstDart v).get!]!.rev]!.head < pc.n :=
-      (hpc.1.read_inBounds hfrev).head_lt
-    have hw : pc.darts[pc.darts[(pc.lastDart v).get!]!.rev]!.head < pc.n :=
-      (hpc.1.read_inBounds hlrev).head_lt
-    rename_i eF eL eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
-    have hD : a0.size + 2 = a6.size := by unfold a6 a5 a4 a3 a2 a1; simp
-    have hdUW : dUW = a0.size := rfl
-    have hdWU : dWU = a0.size + 1 := rfl
-    have heFR : eFR < a0.size := hfrev
-    have heLR : eLR < a0.size := hlrev
-    have hdUWlt : dUW < a6.size := by omega
-    have hdWUlt : dWU < a6.size := by omega
-    have old_lt {i : Nat} (hi : i < a0.size) : i < a6.size := by omega
-    have h0 : ∀ i (hi : i < a0.size), (a0[i]'hi).InBounds pc.n a6.size :=
-      fun i hi => (hpc.1 i hi).mono (Nat.le_refl _) (by omega)
-    have h1 : ∀ i (hi : i < a1.size), (a1[i]'hi).InBounds pc.n a6.size :=
-      push_dart_wf h0 ⟨hu, hdWUlt, fun j hj => absurd hj (by simp),
-        fun j hj => Option.some.inj hj ▸ old_lt heFR⟩
-    -- Keep each proved state opaque, so the next write unfolds only one step.
-    clear_value a1
-    have h2 : ∀ i (hi : i < a2.size), (a2[i]'hi).InBounds pc.n a6.size :=
-      push_dart_wf h1 ⟨hw, hdUWlt, fun j hj => Option.some.inj hj ▸ old_lt heLR,
-        fun j hj => absurd hj (by simp)⟩
-    clear_value a2
-    have h3 : ∀ i (hi : i < a3.size), (a3[i]'hi).InBounds pc.n a6.size :=
-      set_link_wf .pred h2 (p := eF) (t := eL) (old_lt hlast)
-    clear_value a3
-    have h4 : ∀ i (hi : i < a4.size), (a4[i]'hi).InBounds pc.n a6.size :=
-      set_link_wf .succ h3 (p := eL) (t := eF) (old_lt hfirst)
-    clear_value a4
-    have h5 : ∀ i (hi : i < a5.size), (a5[i]'hi).InBounds pc.n a6.size :=
-      set_link_wf .succ h4 (p := eFR) (t := dUW) hdUWlt
-    clear_value a5
+    have hfrev : eFR < pc.darts.size := (hpc.1.read_inBounds hfirst).rev_lt
+    have hlrev : eLR < pc.darts.size := (hpc.1.read_inBounds hlast).rev_lt
+    have hu : u < pc.n := (hpc.1.read_inBounds hfrev).head_lt
+    have hw : w < pc.n := (hpc.1.read_inBounds hlrev).head_lt
+    have e1 : a1 = a0.push ⟨u, a0.size + 1, OptIdx.none, OptIdx.some eFR⟩ := rfl
+    have e2 : a2 = a1.push ⟨w, a0.size, OptIdx.some eLR, OptIdx.none⟩ := rfl
+    have e3 : a3 = a2.set! eF { a2[eF]! with pred := OptIdx.some eL } := rfl
+    have e4 : a4 = a3.set! eL { a3[eL]! with succ := OptIdx.some eF } := rfl
+    have e5 : a5 = a4.set! eFR { a4[eFR]! with succ := OptIdx.some a0.size } := rfl
+    have e6 : a6 = a5.set! eLR { a5[eLR]! with pred := OptIdx.some (a0.size + 1) } := rfl
+    clear_value a1 a2 a3 a4 a5 a6
     have h6 : ∀ i (hi : i < a6.size), (a6[i]'hi).InBounds pc.n a6.size :=
-      set_link_wf .pred h5 (p := eLR) (t := dWU) hdWUlt
+      boundaryFan_chain_wf hpc.1 hu hw hfirst hlast hfrev hlrev e1 e2 e3 e4 e5 e6
     exact ⟨h6, hpc.2⟩
+
+/-- **The implementation patch of `addBoundaryDarts` (A.4.6):** the one theorem
+that follows the `push`/`set!` chain. It reads the chain off into
+`BoundaryFanPatch` facts; validity and coherence follow purely
+(`BoundaryFanPatch.valid`, `BoundaryFanPatch.toExtends`). -/
+theorem addBoundaryDarts_patch {pc : PseudoConfiguration}
+    (hwf : pc.toPseudoTriangulation.WF) {v : Nat}
+    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
+    {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
+    ∃ eF eL eFR eLR, PseudoTriangulation.BoundaryFanPatch
+      pc.toPseudoTriangulation pc'.toPseudoTriangulation eF eL eFR eLR := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some x => ∃ eF eL eFR eLR, PseudoTriangulation.BoundaryFanPatch
+        pc.toPseudoTriangulation x.toPseudoTriangulation eF eL eFR eLR
+  mvcgen -trivial
+  all_goals mleave
+  case vc2.isFalse =>
+    have hFsome : pc.firstDart v = some (pc.firstDart v).get! := by
+      cases h : pc.firstDart v with | none => exact absurd hfd (by simp [h]) | some e => rfl
+    have hLsome : pc.lastDart v = some (pc.lastDart v).get! := by
+      cases h : pc.lastDart v with | none => exact absurd hld (by simp [h]) | some e => rfl
+    rename_i eF eL eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
+    have hfirst : eF < pc.darts.size := PseudoTriangulation.firstDart_lt hFsome
+    have hlast : eL < pc.darts.size := PseudoTriangulation.lastDart_lt hLsome
+    have hfrev : eFR < pc.darts.size := (hwf.read_inBounds hfirst).rev_lt
+    have hlrev : eLR < pc.darts.size := (hwf.read_inBounds hlast).rev_lt
+    have hu : u < pc.n := (hwf.read_inBounds hfrev).head_lt
+    have hw : w < pc.n := (hwf.read_inBounds hlrev).head_lt
+    have hne' : u ≠ w := fun h => absurd (by simp [h]) hne
+    -- Reads through the chain: the old region and the two appended darts.
+    have r2 : ∀ {j : Nat}, j < pc.darts.size → a2[j]! = pc.darts[j]! := fun {j} hj => by
+      unfold a2 a1 a0
+      rw [getElem!_push_lt (by simp [Array.size_push]; omega), getElem!_push_lt hj]
+    have hsz2 : a2.size = pc.darts.size + 2 := by unfold a2 a1 a0; simp
+    have ha3s : a3.size = a2.size := by unfold a3; simp
+    have ha4s : a4.size = a2.size := by unfold a4 a3; simp
+    have ha5s : a5.size = a2.size := by unfold a5 a4 a3; simp
+    have hsize6 : a6.size = a2.size := by unfold a6 a5 a4 a3; simp
+    have hgUW : a2[pc.darts.size]! = (⟨u, dWU, OptIdx.none, OptIdx.some eFR⟩ : Dart) := by
+      unfold a2 a1 a0
+      rw [getElem!_push_lt (by simp [Array.size_push])]
+      exact getElem!_push_size
+    have hgWU : a2[pc.darts.size + 1]! = (⟨w, dUW, OptIdx.some eLR, OptIdx.none⟩ : Dart) := by
+      unfold a2 a1 a0
+      rw [show pc.darts.size + 1
+            = (pc.darts.push (⟨u, dWU, OptIdx.none, OptIdx.some eFR⟩ : Dart)).size by
+          simp [Array.size_push]]
+      exact getElem!_push_size
+    have hn1 : a6[pc.darts.size]! = (⟨u, dWU, OptIdx.none, OptIdx.some eFR⟩ : Dart) := by
+      unfold a6; rw [getElem!_set!_ne (Nat.ne_of_lt hlrev)]
+      unfold a5; rw [getElem!_set!_ne (Nat.ne_of_lt hfrev)]
+      unfold a4; rw [getElem!_set!_ne (Nat.ne_of_lt hlast)]
+      unfold a3; rw [getElem!_set!_ne (Nat.ne_of_lt hfirst)]
+      exact hgUW
+    have hn2 : a6[pc.darts.size + 1]! = (⟨w, dUW, OptIdx.some eLR, OptIdx.none⟩ : Dart) := by
+      unfold a6; rw [getElem!_set!_ne (Nat.ne_of_lt (by omega))]
+      unfold a5; rw [getElem!_set!_ne (Nat.ne_of_lt (by omega))]
+      unfold a4; rw [getElem!_set!_ne (Nat.ne_of_lt (by omega))]
+      unfold a3; rw [getElem!_set!_ne (Nat.ne_of_lt (by omega))]
+      exact hgWU
+    -- The final array against `a2`: four link writes, `rev`/`head` untouched.
+    have hrev6 : ∀ (j : Nat), (a6[j]!).rev = (a2[j]!).rev := fun j => by
+      unfold a6; rw [getElem!_set!_pred_rev]; unfold a5; rw [getElem!_set!_succ_rev]
+      unfold a4; rw [getElem!_set!_succ_rev]; unfold a3; rw [getElem!_set!_pred_rev]
+    have hhead6 : ∀ (j : Nat), (a6[j]!).head = (a2[j]!).head := fun j => by
+      unfold a6; rw [getElem!_set!_pred_head]; unfold a5; rw [getElem!_set!_succ_head]
+      unfold a4; rw [getElem!_set!_succ_head]; unfold a3; rw [getElem!_set!_pred_head]
+    have hpred6 : ∀ (j : Nat), j ≠ eF → j ≠ eLR → (a6[j]!).pred = (a2[j]!).pred :=
+      fun j hjF hjLR => by
+        unfold a6; rw [getElem!_set!_ne (Ne.symm hjLR)]; unfold a5; rw [getElem!_set!_succ_pred]
+        unfold a4; rw [getElem!_set!_succ_pred]; unfold a3; rw [getElem!_set!_ne (Ne.symm hjF)]
+    have hsucc6 : ∀ (j : Nat), j ≠ eL → j ≠ eFR → (a6[j]!).succ = (a2[j]!).succ :=
+      fun j hjL hjFR => by
+        unfold a6; rw [getElem!_set!_pred_succ]; unfold a5; rw [getElem!_set!_ne (Ne.symm hjFR)]
+        unfold a4; rw [getElem!_set!_ne (Ne.symm hjL)]; unfold a3; rw [getElem!_set!_pred_succ]
+    -- The four fan corners are closed, however the edited darts overlap.
+    have hwpF : ¬ (a6[eF]!).pred.isNone := by
+      by_cases hc : eLR = eF
+      · unfold a6; rw [hc, getElem!_set!_self (by rw [ha5s, hsz2]; omega)]; simp
+      · unfold a6; rw [getElem!_set!_ne hc]
+        unfold a5; rw [getElem!_set!_succ_pred]
+        unfold a4; rw [getElem!_set!_succ_pred]
+        unfold a3; rw [getElem!_set!_self (by rw [hsz2]; omega)]
+        simp
+    have hwsL : ¬ (a6[eL]!).succ.isNone := by
+      unfold a6; rw [getElem!_set!_pred_succ]
+      by_cases hc : eFR = eL
+      · unfold a5; rw [hc, getElem!_set!_self (by rw [ha4s, hsz2]; omega)]; simp
+      · unfold a5; rw [getElem!_set!_ne hc]
+        unfold a4; rw [getElem!_set!_self (by rw [ha3s, hsz2]; omega)]
+        simp
+    have hwpLR : ¬ (a6[eLR]!).pred.isNone := by
+      unfold a6; rw [getElem!_set!_self (by rw [ha5s, hsz2]; omega)]; simp
+    have hwsFR : ¬ (a6[eFR]!).succ.isNone := by
+      unfold a6; rw [getElem!_set!_pred_succ]
+      unfold a5; rw [getElem!_set!_self (by rw [ha4s, hsz2]; omega)]; simp
+    have e1 : a1 = a0.push ⟨u, a0.size + 1, OptIdx.none, OptIdx.some eFR⟩ := rfl
+    have e2 : a2 = a1.push ⟨w, a0.size, OptIdx.some eLR, OptIdx.none⟩ := rfl
+    have e3 : a3 = a2.set! eF { a2[eF]! with pred := OptIdx.some eL } := rfl
+    have e4 : a4 = a3.set! eL { a3[eL]! with succ := OptIdx.some eF } := rfl
+    have e5 : a5 = a4.set! eFR { a4[eFR]! with succ := OptIdx.some a0.size } := rfl
+    have e6 : a6 = a5.set! eLR { a5[eLR]! with pred := OptIdx.some (a0.size + 1) } := rfl
+    clear_value a1 a2 a3 a4 a5 a6
+    have hwf6 : ∀ i (hi : i < a6.size), (a6[i]'hi).InBounds pc.n a6.size :=
+      boundaryFan_chain_wf hwf hu hw hfirst hlast hfrev hlrev e1 e2 e3 e4 e5 e6
+    refine ⟨eF, eL, eFR, eLR, ?_⟩
+    show PseudoTriangulation.BoundaryFanPatch pc.toPseudoTriangulation ⟨pc.n, a6⟩ eF eL eFR eLR
+    exact
+      { wf := hwf6
+        n_eq := rfl
+        size := by rw [hsize6, hsz2]
+        eF_lt := hfirst
+        eL_lt := hlast
+        eFR_def := rfl
+        eLR_def := rfl
+        head_ne := hne'
+        predF_open := PseudoTriangulation.firstDart_pred_isNone hFsome
+        succL_open := PseudoTriangulation.lastDart_succ_isNone hLsome
+        read_new1 := hn1
+        read_new2 := hn2
+        head_old := fun j hj => (hhead6 j).trans (congrArg Dart.head (r2 hj))
+        rev_old := fun j hj => (hrev6 j).trans (congrArg Dart.rev (r2 hj))
+        pred_old := fun j hjF hjLR hj => (hpred6 j hjF hjLR).trans (congrArg Dart.pred (r2 hj))
+        succ_old := fun j hjL hjFR hj => (hsucc6 j hjL hjFR).trans (congrArg Dart.succ (r2 hj))
+        predF_closed := hwpF
+        predLR_closed := hwpLR
+        succL_closed := hwsL
+        succFR_closed := hwsFR }
 end
+
+/-- **Certified step for `addBoundaryDarts` (A.4.6/A.4.8):** on a valid input the
+enlarged graph is valid and the identity map is coherent into it. The
+implementation patch supplies the facts; the semantic layer does the rest. -/
+theorem addBoundaryDarts_spec {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid) {v : Nat}
+    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
+    {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
+    pc'.toPseudoTriangulation.Valid ∧
+      (Mappings.initialMappings pc.n pc.darts.size).Coherent
+        pc.toPseudoTriangulation pc'.toPseudoTriangulation := by
+  obtain ⟨eF, eL, eFR, eLR, hp⟩ := addBoundaryDarts_patch hv.wf hfd hld hrun
+  exact ⟨hp.valid hv, Mappings.Coherent.id_of_extends (hp.toExtends hv)⟩
+
+/-- `addBoundaryDarts` preserves `Valid` (A.4.6). -/
+theorem addBoundaryDarts_valid {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid) {v : Nat}
+    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
+    {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
+    pc'.toPseudoTriangulation.Valid :=
+  (addBoundaryDarts_spec hv hfd hld hrun).1
+
+/-- On a valid input the identity map is coherent into the enlarged graph
+(A.4.8). -/
+theorem addBoundaryDarts_coherent {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid) {v : Nat}
+    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
+    {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
+    (Mappings.initialMappings pc.n pc.darts.size).Coherent
+      pc.toPseudoTriangulation pc'.toPseudoTriangulation :=
+  (addBoundaryDarts_spec hv hfd hld hrun).2
+
+/-- **Loop invariant for `resolveDegreeIssues` (A.4.4).** Every queued or emitted
+entry is a *valid* configuration reached from `origin` by a certified mapping:
+`Valid` carries the geometry the A.4 steps need, and the `CoherentMappings`
+records the homomorphism from the origin -- the two compose by construction. -/
+structure ResolveEntry (origin : PseudoConfiguration)
+    (entry : PseudoConfiguration × Mappings) : Prop where
+  valid : entry.1.toPseudoTriangulation.Valid
+  degrees_wf : entry.1.degrees.size = entry.1.n
+  mapping : ∃ C : CoherentMappings origin.toPseudoTriangulation entry.1.toPseudoTriangulation,
+    C.maps = entry.2
+
+/-- The seed entry: `origin` mapped to itself by the identity (A.4.4 line 3). -/
+theorem ResolveEntry.initial {origin : PseudoConfiguration}
+    (hv : origin.toPseudoTriangulation.Valid) (hd : origin.degrees.size = origin.n) :
+    ResolveEntry origin (origin, Mappings.initialMappings origin.n origin.darts.size) where
+  valid := hv
+  degrees_wf := hd
+  mapping := ⟨CoherentMappings.id hv.wf, rfl⟩
+
+/-- **Degree-split transport (A.4.9).** `singleOutLowerDegree` only subdivides a
+range, leaving the graph and mapping untouched, so both children inherit the
+entry. -/
+theorem ResolveEntry.singleOut {origin pc z1 z2 : PseudoConfiguration} {maps : Mappings}
+    (h : ResolveEntry origin (pc, maps)) (hrun : pc.singleOutLowerDegree = some (z1, z2)) :
+    ResolveEntry origin (z1, maps) ∧ ResolveEntry origin (z2, maps) := by
+  obtain ⟨hg1, hg2⟩ := singleOutLowerDegree_graph hrun
+  obtain ⟨hd1, hd2⟩ := singleOutLowerDegree_degrees hrun
+  have hn1 : z1.n = pc.n := congrArg PseudoTriangulation.n hg1
+  have hn2 : z2.n = pc.n := congrArg PseudoTriangulation.n hg2
+  exact ⟨⟨hg1 ▸ h.valid, by rw [hd1, h.degrees_wf, hn1], hg1 ▸ h.mapping⟩,
+    ⟨hg2 ▸ h.valid, by rw [hd2, h.degrees_wf, hn2], hg2 ▸ h.mapping⟩⟩
 
 /-- An empty graph has no incident darts (so an over-incident vertex forces a
 nonempty graph). -/
