@@ -757,6 +757,14 @@ theorem root_unite_cases {uf : Unionfind} (hwf : uf.WF) {x y a b : Nat}
       exact Or.inr (Or.inr ⟨h'', hbx⟩)
     · exact Or.inl (((if_neg hax).symm.trans h').trans (if_neg hbx))
 
+end Unionfind
+
+/-! ### The counting toolkit
+
+Generic list-level counting, summing, and pigeonhole lemmas used by the
+certification proofs. Independent of the union-find structure. -/
+namespace Counting
+
 /-- A duplicate-free list injects into any list containing its members. -/
 theorem length_le_of_nodup_subset {α : Type} :
     ∀ {l l' : List α}, l.Nodup → (∀ a ∈ l, a ∈ l') → l.length ≤ l'.length := by
@@ -909,7 +917,7 @@ theorem lt_of_inj_on_missing (g : Nat → Nat) {m n x₀ : Nat}
     · exact hx₀
     · obtain ⟨j, hj, rfl⟩ := List.mem_map.mp hx'
       exact hg j (List.mem_range.mp hj)
-  exact Nat.lt_of_succ_le (by simpa using nodup_lt_length_le n _ hnd hlt)
+  exact Nat.lt_of_succ_le (by simpa using Unionfind.nodup_lt_length_le n _ hnd hlt)
 
 /-- Replacing one entry's weight shifts a range sum by exactly the
 difference, stated addition-only. -/
@@ -948,6 +956,43 @@ theorem countP_flip {p p' : Nat → Bool} {j : Nat} (hpj : p j = true)
   intro n hj
   induction n <;> grind [List.range_succ, List.countP_congr]
 
+/-- Flipping two counted entries to uncounted drops `countP` over the range
+by exactly two. Unlike `countP_flip`, agreement is only required inside the
+range, so the caller can pass real predicates that differ past `n`; the
+out-of-range clamping lives here. -/
+theorem countP_flip2 {p p' : Nat → Bool} {j k : Nat} (hjk : j ≠ k)
+    (hpj : p j = true) (hpj' : p' j = false)
+    (hpk : p k = true) (hpk' : p' k = false) :
+    ∀ n, j < n → k < n → (∀ i, i < n → i ≠ j → i ≠ k → p i = p' i) →
+      (List.range n).countP p' + 2 = (List.range n).countP p := by
+  intro n hj hk hagree
+  have hcongr : (List.range n).countP p' = (List.range n).countP
+      (fun i => if i = j then false else if i = k then false else p i) := by
+    refine List.countP_congr ?_
+    intro i hi
+    have hilt : i < n := List.mem_range.mp hi
+    by_cases hij : i = j
+    · subst hij
+      simp [hpj']
+    · by_cases hik : i = k
+      · subst hik
+        simp [hpk', hij]
+      · simp [hij, hik, (hagree i hilt hij hik).symm]
+  have hflipk := countP_flip (p := fun i => if i = j then false else p i)
+    (p' := fun i => if i = j then false else if i = k then false else p i)
+    (j := k)
+    (by simp [Ne.symm hjk, hpk])
+    (by simp [Ne.symm hjk])
+    (fun i hik => by by_cases hij : i = j <;> simp [hij, hik]) n hk
+  have hflipj := countP_flip (p := p)
+    (p' := fun i => if i = j then false else p i) (j := j)
+    hpj (by simp) (fun i hij => by simp [hij]) n hj
+  omega
+
+end Counting
+
+namespace Unionfind
+
 /-- **The measure decrease**: uniting two distinct in-range classes strictly
 drops the root count -- the write turns exactly one root (`root x`) into an
 interior node. -/
@@ -956,7 +1001,7 @@ theorem numRoots_unite_lt {uf : Unionfind} (hwf : uf.WF) {x y : Nat}
     (uf.unite x y).numRoots < uf.numRoots := by
   obtain ⟨hrxn, hrxlt⟩ := hwf.root_spec hx
   obtain ⟨hryn, hrylt⟩ := hwf.root_spec hy
-  have hkey := countP_flip (p := fun j => uf.parents[j]!.isNone)
+  have hkey := Counting.countP_flip (p := fun j => uf.parents[j]!.isNone)
     (p' := fun j => (uf.parents.set! (uf.root x) (.some (uf.root y)))[j]!.isNone)
     (j := uf.root x) (by simp [hrxn])
     (by rw [set!_self (uf.unionfind_invariant.1 ▸ hrxlt)]; simp)
