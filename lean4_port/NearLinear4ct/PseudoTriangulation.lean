@@ -177,6 +177,87 @@ def lastDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
 def anyDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
   pt.darts.findIdx? fun d => d.head == v
 
+/-- Whether `succ` and `pred` are mutually inverse where present (the
+paper's M3). Both directions are scanned, so a one-sided link is caught even
+when its partner is absent. -/
+def linkInverseCheck (pt : PseudoTriangulation) : Bool := Id.run do
+  for i in [0:pt.darts.size] do
+    match (pt.darts[i]!).succ with
+    | .some e => if (pt.darts[e]!).pred != .some i then return false
+    | .none => pure ()
+    match (pt.darts[i]!).pred with
+    | .some e => if (pt.darts[e]!).succ != .some i then return false
+    | .none => pure ()
+  return true
+
+/-- Whether `succ` and `pred` stay within their dart's vertex (the paper's
+M4). -/
+def linkHeadCheck (pt : PseudoTriangulation) : Bool := Id.run do
+  for i in [0:pt.darts.size] do
+    let d := pt.darts[i]!
+    match d.succ with
+    | .some e => if (pt.darts[e]!).head != d.head then return false
+    | .none => pure ()
+    match d.pred with
+    | .some e => if (pt.darts[e]!).head != d.head then return false
+    | .none => pure ()
+  return true
+
+/-- Vertices violating the paper's M6: each vertex has exactly one incidence
+list -- cyclic when inner (no open corner), acyclic with a unique open corner
+on each side when boundary. Reported per vertex, since intermediate states
+may be locally malformed while the vertex under repair is the only one that
+matters. The walk is fuelled by the dart count, so malformed links cannot
+loop it; walks that leave the vertex are violations regardless of `M4`. -/
+def incidenceListErrors (pt : PseudoTriangulation) : Array Nat := Id.run do
+  let nInc := pt.nIncidentDarts
+  let mut predOpen := Array.replicate pt.n 0
+  let mut succOpen := Array.replicate pt.n 0
+  for d in pt.darts do
+    if d.pred.isNone then predOpen := predOpen.set! d.head (predOpen[d.head]! + 1)
+    if d.succ.isNone then succOpen := succOpen.set! d.head (succOpen[d.head]! + 1)
+  let mut bad : Array Nat := #[]
+  for v in [0:pt.n] do
+    if nInc[v]! == 0 then
+      if predOpen[v]! != 0 || succOpen[v]! != 0 then bad := bad.push v
+      continue
+    if predOpen[v]! != succOpen[v]! || predOpen[v]! > 1 then
+      bad := bad.push v
+      continue
+    let isB := predOpen[v]! == 1
+    let start? := if isB then pt.firstDart v else pt.anyDart v
+    match start? with
+    | none => bad := bad.push v
+    | some s =>
+      let mut cur := s
+      let mut count := 1
+      let mut closed := false
+      let mut stray := false
+      for _ in [0:pt.darts.size] do
+        match (pt.darts[cur]!).succ with
+        | .none =>
+          closed := isB
+          break
+        | .some nxt =>
+          if nxt == s then
+            closed := !isB
+            break
+          if (pt.darts[nxt]!).head != v then
+            stray := true
+            break
+          cur := nxt
+          count := count + 1
+      if stray || !closed || count != nInc[v]! then bad := bad.push v
+  return bad
+
+/-- All-vertices form of `incidenceListErrors` (the paper's M6). -/
+def incidenceListCheck (pt : PseudoTriangulation) : Bool :=
+  pt.incidenceListErrors.isEmpty
+
+/-- All three rotation-system laws (the paper's M3/M4/M6) at once. -/
+def rotationLawsCheck (pt : PseudoTriangulation) : Bool :=
+  pt.linkInverseCheck && pt.linkHeadCheck && pt.incidenceListCheck
+
 /-- Follow `succ` `k` times from `e`; `none` if a boundary is hit. -/
 def sucKTimes (pt : PseudoTriangulation) (e k : Nat) : Option Nat := Id.run do
   let mut curr := e

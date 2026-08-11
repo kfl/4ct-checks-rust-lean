@@ -634,6 +634,92 @@ def malformedInputTests (c : Counter) : IO Unit := do
   expect c "fixSingleDegreeIssue none on broken rotation walk"
     (rotBreak.fixSingleDegreeIssue 0 == none)
 
+/-- Fuelled shadow of the `resolveDegreeIssues` BFS that surfaces every
+intermediate configuration (the executable only returns the emitted ones). -/
+def collectResolveStates (fuel : Nat) (work : List PseudoConfiguration)
+    (acc : Array PseudoConfiguration) : Array PseudoConfiguration :=
+  match fuel, work with
+  | 0, _ => acc
+  | _, [] => acc
+  | fuel + 1, pc :: rest =>
+    if pc.innerSubdegreeError then collectResolveStates fuel rest acc
+    else match pc.vertexSingleDegreeIssue with
+      | some v =>
+        match pc.fixSingleDegreeIssue v with
+        | some (z, _) => collectResolveStates fuel (z :: rest) (acc.push z)
+        | none => collectResolveStates fuel rest acc
+      | none =>
+        match pc.singleOutLowerDegree with
+        | some (z1, z2) =>
+          collectResolveStates fuel (z1 :: z2 :: rest) ((acc.push z1).push z2)
+        | none => collectResolveStates fuel rest acc
+
+/-- Falsification sweep for the rotation laws (the paper's M3/M4/M6) over
+locally generated objects: enumerated wheels as initial objects, gluing
+quotients with every `resolveDegreeIssues` intermediate, and direct
+boundary-fan edits. Violations print per-vertex diagnostics. -/
+def rotationLawTests (c : Counter) : IO Unit := do
+  let report (name : String) (pt : PseudoTriangulation) : IO Bool := do
+    let m3 := pt.linkInverseCheck
+    let m4 := pt.linkHeadCheck
+    let m6bad := pt.incidenceListErrors
+    if !(m3 && m4 && m6bad.isEmpty) then
+      IO.eprintln s!"LAWS - {name}: M3={m3} M4={m4} M6 bad vertices={m6bad}"
+      return false
+    return true
+  -- Initial objects: every enumerated wheel of centre degree 5 and 6.
+  let mut initBad := 0
+  let mut initCount := 0
+  for d in [5, 6] do
+    for cw in CartWheel.enumWheels d do
+      initCount := initCount + 1
+      unless (← report s!"wheel d={d}" cw.toPseudoTriangulation) do
+        initBad := initBad + 1
+  expect c s!"rotation laws on {initCount} initial wheels" (initBad == 0)
+  -- Quotients and resolve intermediates: glue sampled wheel pairs and check
+  -- the identified graph plus every shadow-BFS state.
+  let wheels := CartWheel.enumWheels 5
+  let mut glueBad := 0
+  let mut glueCount := 0
+  let mut glueRuns := 0
+  for i in [0:4] do
+    let cw0 := wheels[i]!
+    let cw1 := wheels[(i + 7) % wheels.size]!
+    let sz0 := cw0.toPseudoConfiguration.darts.size
+    let pc := PseudoConfiguration.disjointUnion cw0.toPseudoConfiguration
+      cw1.toPseudoConfiguration
+    for d0 in [0:sz0] do
+      for d1 in [0:cw1.toPseudoConfiguration.darts.size] do
+        match pc.dartIdentification #[(d0, d1 + sz0)] with
+        | none => pure ()
+        | some (z, _) =>
+          glueRuns := glueRuns + 1
+          for st in (collectResolveStates 200 [z] #[z]) do
+            glueCount := glueCount + 1
+            unless (← report s!"glue i={i} d0={d0} d1={d1}" st.toPseudoTriangulation) do
+              glueBad := glueBad + 1
+  expect c s!"rotation laws on {glueCount} states from {glueRuns} successful glues"
+    (glueBad == 0 && glueRuns > 0)
+  -- Boundary-fan edits, exercised directly on wheel rims.
+  let mut fanBad := 0
+  let mut fanCount := 0
+  for i in [0:40] do
+    let pc := wheels[i]!.toPseudoConfiguration
+    for v in [0:pc.n] do
+      match pc.addBoundaryDarts v with
+      | none => pure ()
+      | some z =>
+        fanCount := fanCount + 1
+        unless (← report s!"fan i={i} v={v}" z.toPseudoTriangulation) do
+          fanBad := fanBad + 1
+  expect c s!"rotation laws on {fanCount} boundary-fan edits" (fanBad == 0)
+  -- Checker sanity: the deliberately malformed inputs must be rejected.
+  let noFirst := PseudoConfiguration.new 1
+    #[⟨0, 1, OptIdx.none, OptIdx.some 1⟩, ⟨0, 0, OptIdx.some 0, OptIdx.some 0⟩]
+    #[⟨1, 1⟩]
+  expect c "checkers reject malformed links"
+    (!noFirst.toPseudoTriangulation.rotationLawsCheck)
+
 def main : IO UInt32 := do
   let c ← IO.mkRef 0
   degreeTests c
@@ -647,6 +733,7 @@ def main : IO UInt32 := do
   combineCartwheelTests c
   getObjectsTest c
   malformedInputTests c
+  rotationLawTests c
   let failures ← c.get
   if failures == 0 then
     IO.println "all tests passed"

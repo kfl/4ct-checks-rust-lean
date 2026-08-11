@@ -736,6 +736,27 @@ theorem root_unite_same {uf : Unionfind} (hwf : uf.WF)
   · simp [Unionfind.unite, hne]
   · exact root_unite_of_ne_same hwf hx hy hne
 
+/-- Inversion for `unite`: a class equality afterwards either held before or
+pairs the two united classes. -/
+theorem root_unite_cases {uf : Unionfind} (hwf : uf.WF) {x y a b : Nat}
+    (hx : x < uf.n) (hy : y < uf.n) (ha : a < uf.n) (hb : b < uf.n)
+    (hne : uf.root x ≠ uf.root y)
+    (h : (uf.unite x y).root a = (uf.unite x y).root b) :
+    uf.root a = uf.root b ∨
+      (uf.root a = uf.root x ∧ uf.root b = uf.root y) ∨
+      (uf.root a = uf.root y ∧ uf.root b = uf.root x) := by
+  have h' := (root_unite_of_ne hwf hx hy ha hne).symm.trans
+    (h.trans (root_unite_of_ne hwf hx hy hb hne))
+  by_cases hax : uf.root a = uf.root x
+  · by_cases hbx : uf.root b = uf.root x
+    · exact Or.inl (hax.trans hbx.symm)
+    · have h'' : uf.root y = uf.root b := ((if_pos hax).symm.trans h').trans (if_neg hbx)
+      exact Or.inr (Or.inl ⟨hax, h''.symm⟩)
+  · by_cases hbx : uf.root b = uf.root x
+    · have h'' : uf.root a = uf.root y := ((if_neg hax).symm.trans h').trans (if_pos hbx)
+      exact Or.inr (Or.inr ⟨h'', hbx⟩)
+    · exact Or.inl (((if_neg hax).symm.trans h').trans (if_neg hbx))
+
 /-- Flipping one counted entry to uncounted drops `countP` over the range by
 exactly one. -/
 private theorem countP_flip {p p' : Nat → Bool} {j : Nat} (hpj : p j = true)
