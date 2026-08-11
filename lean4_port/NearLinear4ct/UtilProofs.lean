@@ -757,9 +757,192 @@ theorem root_unite_cases {uf : Unionfind} (hwf : uf.WF) {x y a b : Nat}
       exact Or.inr (Or.inr ⟨h'', hbx⟩)
     · exact Or.inl (((if_neg hax).symm.trans h').trans (if_neg hbx))
 
+/-- A duplicate-free list injects into any list containing its members. -/
+theorem length_le_of_nodup_subset {α : Type} :
+    ∀ {l l' : List α}, l.Nodup → (∀ a ∈ l, a ∈ l') → l.length ≤ l'.length := by
+  intro l
+  induction l with
+  | nil =>
+    intro l' _ _
+    exact Nat.zero_le _
+  | cons a t ih =>
+    intro l' hn hsub
+    haveI := Classical.typeDecidableEq α
+    have hat := List.nodup_cons.mp hn
+    have ha : a ∈ l' := hsub a (List.mem_cons_self ..)
+    have hsub' : ∀ x ∈ t, x ∈ l'.erase a := fun x hx =>
+      (List.mem_erase_of_ne fun (hxa : x = a) => hat.1 (hxa ▸ hx)).mpr
+        (hsub x (List.mem_cons_of_mem a hx))
+    have hlen := List.length_erase_of_mem ha
+    have hpos := List.length_pos_of_mem ha
+    have hih := ih hat.2 hsub'
+    simp only [List.length_cons]
+    omega
+
+/-- Two duplicate-free lists with the same members have the same length. -/
+theorem length_eq_of_nodup_iff {α : Type} {l l' : List α}
+    (h : l.Nodup) (h' : l'.Nodup) (hm : ∀ x, x ∈ l ↔ x ∈ l') :
+    l.length = l'.length :=
+  Nat.le_antisymm (length_le_of_nodup_subset h fun a ha => (hm a).mp ha)
+    (length_le_of_nodup_subset h' fun a ha => (hm a).mpr ha)
+
+/-- `Nodup` survives an injective map. -/
+theorem nodup_map_of_inj {α β : Type} {f : α → β}
+    (hf : ∀ a b, f a = f b → a = b) {l : List α} (h : l.Nodup) :
+    (l.map f).Nodup :=
+  List.pairwise_map.mpr (h.imp fun hab hfeq => hab (hf _ _ hfeq))
+
+/-- `countP` by positions: a list's count is its index range's count. -/
+theorem list_countP_range {α : Type} [Inhabited α] (p : α → Bool) :
+    ∀ l : List α, l.countP p = (List.range l.length).countP fun i => p l[i]!
+  | [] => rfl
+  | a :: t => by
+    rw [List.countP_cons, list_countP_range p t, List.length_cons,
+      List.range_succ_eq_map, List.countP_cons, List.countP_map]
+    have hread : ∀ i, i < t.length → t[i]! = (a :: t)[i + 1]! := by
+      intro i hi
+      rw [getElem!_pos t i hi, getElem!_pos (a :: t) (i + 1) (by simpa using hi)]
+      rfl
+    have hcongr : (List.range t.length).countP (fun i => p t[i]!) =
+        (List.range t.length).countP ((fun i => p (a :: t)[i]!) ∘ (· + 1)) := by
+      refine List.countP_congr ?_
+      intro i hi
+      simp only [Function.comp]
+      rw [hread i (List.mem_range.mp hi)]
+    rw [hcongr]
+    have hzero : (a :: t)[(0 : Nat)]! = a := by
+      rw [getElem!_pos (a :: t) 0 (by simp)]
+      rfl
+    rw [hzero]
+
+/-- `countP` as an indicator sum, aligning count and sum reasoning. -/
+theorem countP_eq_sum_map (P : Nat → Bool) :
+    ∀ l : List Nat, l.countP P = (l.map fun a => if P a then 1 else 0).sum := by
+  intro l
+  induction l with
+  | nil => rfl
+  | cons a t ih =>
+    rw [List.countP_cons, List.map_cons, List.sum_cons, ih]
+    by_cases h : P a
+    · simp [h]
+      omega
+    · simp [h]
+
+/-- Pointwise bound between mapped sums. -/
+theorem sum_map_le_sum_map {f g : Nat → Nat} :
+    ∀ l : List Nat, (∀ i ∈ l, f i ≤ g i) → (l.map f).sum ≤ (l.map g).sum := by
+  intro l
+  induction l with
+  | nil =>
+    intro _
+    exact Nat.le_refl _
+  | cons a t ih =>
+    intro h
+    simp only [List.map_cons, List.sum_cons]
+    have h1 := ih fun i hi => h i (List.mem_cons_of_mem a hi)
+    have h2 := h a (List.mem_cons_self ..)
+    omega
+
+/-- A duplicate-free list's mapped sum is bounded by any superset's. -/
+theorem sum_map_le_of_nodup_subset (f : Nat → Nat) :
+    ∀ {l l' : List Nat}, l.Nodup → (∀ x ∈ l, x ∈ l') →
+      (l.map f).sum ≤ (l'.map f).sum := by
+  intro l
+  induction l with
+  | nil =>
+    intro l' _ _
+    exact Nat.zero_le _
+  | cons a t ih =>
+    intro l' hnd hsub
+    have hat := List.nodup_cons.mp hnd
+    have ha : a ∈ l' := hsub a (List.mem_cons_self ..)
+    have hsum : (l'.map f).sum = ((a :: l'.erase a).map f).sum :=
+      List.Perm.sum_nat ((List.perm_cons_erase ha).map f)
+    have hsub' : ∀ x ∈ t, x ∈ l'.erase a := fun x hx =>
+      (List.mem_erase_of_ne fun (hxa : x = a) => hat.1 (hxa ▸ hx)).mpr
+        (hsub x (List.mem_cons_of_mem a hx))
+    have hih := ih hat.2 hsub'
+    rw [List.map_cons, List.sum_cons, hsum, List.map_cons, List.sum_cons]
+    omega
+
+/-- The range image of an injection-on-a-range is duplicate-free. -/
+theorem nodup_map_range_of_inj (g : Nat → Nat) {m : Nat}
+    (hinj : ∀ j j', j < m → j' < m → g j = g j' → j = j') :
+    ((List.range m).map g).Nodup := by
+  refine List.pairwise_iff_getElem.mpr ?_
+  intro i j hi hj hij heq
+  have hi' : i < m := by simpa using hi
+  have hj' : j < m := by simpa using hj
+  have hgij : g i = g j := by
+    simpa [List.getElem_map, List.getElem_range] using heq
+  exact absurd (hinj i j hi' hj' hgij) (by omega)
+
+/-- Summing through an injection into a larger index range. -/
+theorem sum_le_of_inj_on (g : Nat → Nat) {m n : Nat} {f' f : Nat → Nat}
+    (hg : ∀ j, j < m → g j < n)
+    (hinj : ∀ j j', j < m → j' < m → g j = g j' → j = j')
+    (hle : ∀ j, j < m → f' j ≤ f (g j)) :
+    ((List.range m).map f').sum ≤ ((List.range n).map f).sum := by
+  calc ((List.range m).map f').sum
+      ≤ ((List.range m).map fun j => f (g j)).sum :=
+        sum_map_le_sum_map _ fun i hi => hle i (List.mem_range.mp hi)
+    _ = (((List.range m).map g).map f).sum := congrArg List.sum (List.map_map ..).symm
+    _ ≤ ((List.range n).map f).sum :=
+        sum_map_le_of_nodup_subset f (nodup_map_range_of_inj g hinj) fun x hx => by
+          obtain ⟨j, hj, rfl⟩ := List.mem_map.mp hx
+          exact List.mem_range.mpr (hg j (List.mem_range.mp hj))
+
+/-- The strict pigeonhole: an injection on a range that misses a point of
+the codomain forces a strictly smaller domain. -/
+theorem lt_of_inj_on_missing (g : Nat → Nat) {m n x₀ : Nat}
+    (hg : ∀ j, j < m → g j < n)
+    (hinj : ∀ j j', j < m → j' < m → g j = g j' → j = j')
+    (hx₀ : x₀ < n) (hmiss : ∀ j, j < m → g j ≠ x₀) : m < n := by
+  have hnd : (x₀ :: (List.range m).map g).Nodup := by
+    refine List.nodup_cons.mpr ⟨?_, nodup_map_range_of_inj g hinj⟩
+    intro hmem
+    obtain ⟨j, hj, hjx⟩ := List.mem_map.mp hmem
+    exact hmiss j (List.mem_range.mp hj) hjx
+  have hlt : ∀ x ∈ x₀ :: (List.range m).map g, x < n := by
+    intro x hx
+    rcases List.mem_cons.mp hx with rfl | hx'
+    · exact hx₀
+    · obtain ⟨j, hj, rfl⟩ := List.mem_map.mp hx'
+      exact hg j (List.mem_range.mp hj)
+  exact Nat.lt_of_succ_le (by simpa using nodup_lt_length_le n _ hnd hlt)
+
+/-- Replacing one entry's weight shifts a range sum by exactly the
+difference, stated addition-only. -/
+theorem sum_map_range_flip {f f' : Nat → Nat} {j : Nat}
+    (hagree : ∀ i, i ≠ j → f i = f' i) :
+    ∀ n, j < n →
+      ((List.range n).map f').sum + f j = ((List.range n).map f).sum + f' j := by
+  intro n
+  induction n with
+  | zero =>
+    intro h
+    exact absurd h (by omega)
+  | succ k ih =>
+    intro hj
+    rw [List.range_succ, List.map_append, List.sum_append,
+      List.map_append, List.sum_append]
+    by_cases hjk : j = k
+    · subst hjk
+      have hsum : ((List.range j).map f').sum = ((List.range j).map f).sum := by
+        refine congrArg List.sum (List.map_congr_left ?_)
+        intro i hi
+        have hij : i < j := List.mem_range.mp hi
+        exact (hagree i (by omega)).symm
+      simp only [List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, hsum]
+      omega
+    · have hk : f k = f' k := hagree k fun h => hjk h.symm
+      have hih := ih (by omega)
+      simp only [List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, hk]
+      omega
+
 /-- Flipping one counted entry to uncounted drops `countP` over the range by
 exactly one. -/
-private theorem countP_flip {p p' : Nat → Bool} {j : Nat} (hpj : p j = true)
+theorem countP_flip {p p' : Nat → Bool} {j : Nat} (hpj : p j = true)
     (hpj' : p' j = false) (hagree : ∀ i, i ≠ j → p i = p' i) :
     ∀ n, j < n → (List.range n).countP p' + 1 = (List.range n).countP p := by
   intro n hj

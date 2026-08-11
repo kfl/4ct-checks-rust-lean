@@ -121,6 +121,49 @@ theorem active_head {α} {q q' : Queue α} {x : α}
     (hp : q.pop? = some (x, q')) : Active q x :=
   ⟨q.head, Nat.le_refl _, (Queue.pop?_some hp).1⟩
 
+/-- Sum a weight over the active entries, front to back. The termination
+measure when entries weigh differently -- `live` is the constant-weight
+case. -/
+def sumOf (q : Queue α) (f : α → Nat) : Nat :=
+  ((q.items.toList.drop q.head).map f).sum
+
+/-- `push` adds the new entry's weight. -/
+theorem sumOf_push {α} {q : Queue α} {x : α} (f : α → Nat) :
+    (q.push x).sumOf f = q.sumOf f + f x := by
+  have hle : q.head ≤ q.items.toList.length := by
+    rw [Array.length_toList]
+    exact q.queue_invariant
+  show (((q.items.push x).toList.drop q.head).map f).sum = _
+  rw [Array.toList_push, List.drop_append_of_le_length hle, List.map_append,
+    List.sum_append]
+  rfl
+
+/-- A successful `pop?` splits off the front entry's weight. -/
+theorem sumOf_pop {α} {q q' : Queue α} {x : α} (f : α → Nat)
+    (h : q.pop? = some (x, q')) : q.sumOf f = f x + q'.sumOf f := by
+  obtain ⟨hx, hi, hh⟩ := Queue.pop?_some h
+  have hlt : q.head < q.items.toList.length := by
+    rw [Array.length_toList]
+    exact (Array.getElem?_eq_some_iff.mp hx).1
+  have hxval : q.items.toList[q.head]'hlt = x := by
+    have hx' : q.items.toList[q.head]? = some x := by
+      rw [Array.getElem?_toList]
+      exact hx
+    exact Option.some.inj ((List.getElem?_eq_getElem hlt).symm.trans hx')
+  show ((q.items.toList.drop q.head).map f).sum =
+    f x + ((q'.items.toList.drop q'.head).map f).sum
+  rw [List.drop_eq_getElem_cons hlt, List.map_cons, List.sum_cons, hxval, hi, hh]
+
+/-- An exhausted queue weighs nothing. -/
+theorem sumOf_of_isEmpty {α} {q : Queue α} (f : α → Nat)
+    (h : q.isEmpty = true) : q.sumOf f = 0 := by
+  have hge : q.items.toList.length ≤ q.head := by
+    rw [Array.length_toList]
+    simpa [Queue.isEmpty] using h
+  show ((q.items.toList.drop q.head).map f).sum = 0
+  rw [List.drop_eq_nil_of_le hge]
+  rfl
+
 /-- On an empty queue nothing is active. -/
 theorem not_active_of_isEmpty {α} {q : Queue α} (h : q.isEmpty = true)
     (p : α) : ¬ Active q p := by

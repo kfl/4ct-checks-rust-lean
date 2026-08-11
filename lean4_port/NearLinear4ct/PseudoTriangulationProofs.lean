@@ -55,6 +55,17 @@ theorem getElem!_set!_self {α : Type _} [Inhabited α] {a : Array α} {i : Nat}
 theorem getElem!_set!_ne {α : Type _} [Inhabited α] {a : Array α} {i : Nat} {x : α} {f : Nat}
     (hne : i ≠ f) : (a.set! i x)[f]! = a[f]! := by grind [Array.set!]
 
+theorem size_set! {α : Type _} {a : Array α} {i : Nat} {x : α} :
+    (a.set! i x).size = a.size := by grind [Array.set!]
+
+theorem getElem!_modify_self {α : Type _} [Inhabited α] {a : Array α} {i : Nat}
+    {f : α → α} (hi : i < a.size) : (a.modify i f)[i]! = f a[i]! := by
+  grind [Array.getElem_modify]
+
+theorem getElem!_modify_ne {α : Type _} [Inhabited α] {a : Array α} {i j : Nat}
+    {f : α → α} (hne : i ≠ j) : (a.modify i f)[j]! = a[j]! := by
+  grind [Array.getElem_modify]
+
 /-- A `pred`-write leaves `succ` untouched at every index (including its own). -/
 theorem getElem!_set!_pred_succ {a : Array Dart} {i f : Nat} {p : OptIdx} :
     ((a.set! i {a[i]! with pred := p})[f]!).succ = (a[f]!).succ := by grind [Array.set!]
@@ -483,6 +494,13 @@ theorem lastDart_succ_isNone {pt : PseudoTriangulation} {v e : Nat}
   have he : e < pt.darts.size := lastDart_lt h
   simp only [getElem!_pos pt.darts e he]
   grind [Array.findIdx?_eq_some_iff_getElem, lastDart]
+
+/-- Any found dart is a dart of that vertex. -/
+theorem anyDart_head {pt : PseudoTriangulation} {v e : Nat}
+    (h : pt.anyDart v = some e) : (pt.darts[e]!).head = v := by
+  have he : e < pt.darts.size := anyDart_lt h
+  simp only [getElem!_pos pt.darts e he]
+  grind [Array.findIdx?_eq_some_iff_getElem, anyDart]
 
 /-- The first dart of a vertex is a dart of that vertex. -/
 theorem firstDart_head {pt : PseudoTriangulation} {v e : Nat}
@@ -2981,6 +2999,768 @@ theorem addBoundaryDarts_rotational {pc : PseudoConfiguration}
   obtain ⟨eF, eL, eFR, eLR, hp⟩ := addBoundaryDarts_patch hv.wf hrun
   exact hp.rotational hv hr
 
+/-! ### The Sections 9.3-9.4 termination potential
+
+`resolveDegreeIssues` terminates because every arm of its loop body shrinks
+a per-state potential: a boundary closure trades its two new darts for one
+net open corner, an identification strictly shrinks the dart count, and a
+degree split strictly shrinks the total range slack. The worklist measure
+sums `3 ^ potential` over the active entries, so the split arm's two pushes
+still shrink the queue total. -/
+
+/-- Open `pred` corners of the dart array. A boundary closure removes one
+net corner; gluing only ever closes corners. -/
+private def openPredCorners (pt : PseudoTriangulation) : Nat :=
+  (List.range pt.darts.size).countP fun i => (pt.darts[i]!).pred.isNone
+
+/-- Total degree-range slack. A split pins one vertex's range strictly. -/
+private def degreeSlack (pc : PseudoConfiguration) : Nat :=
+  ((List.range pc.degrees.size).map fun v =>
+    (pc.degrees[v]!).upper - (pc.degrees[v]!).lower).sum
+
+/-- The per-state potential, additive: each arm strictly decreases it -- a
+split shrinks the slack, an identification shrinks the dart count with the
+other terms non-increasing, and a boundary closure trades its two new darts
+against three weighted units of the closed corner. -/
+private def statePotential (pc : PseudoConfiguration) : Nat :=
+  degreeSlack pc + pc.darts.size + 3 * openPredCorners pc.toPseudoTriangulation
+
+/-- The worklist measure over active entries. The exponential entry weight
+is what lets a split replace one entry by two of smaller potential and still
+shrink the total. -/
+private def resolveMeasure (q : Queue (PseudoConfiguration × Mappings)) : Nat :=
+  q.sumOf fun e => 3 ^ statePotential e.1
+
+/-- Choose a fiber representative for every quotient dart. -/
+private theorem freeHomomorphism_fiber_choice {pt : PseudoTriangulation} (hpt : pt.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps)) :
+    ∃ g : Nat → Nat, (∀ c, c < ptStar.darts.size →
+        g c < pt.darts.size ∧ maps.dmap.idx? (g c) = Option.some c) ∧
+      ∀ c c', c < ptStar.darts.size → c' < ptStar.darts.size →
+        g c = g c' → c = c' := by
+  have hspec := PseudoTriangulation.freeHomomorphism_spec hpt hpairs hrun
+  refine ⟨fun c => if hc : c < ptStar.darts.size
+      then (hspec.dmap_surj c hc).choose else 0, ?_, ?_⟩
+  · intro c hc
+    simp only [dif_pos hc]
+    exact (hspec.dmap_surj c hc).choose_spec
+  · intro c c' hc hc' heq
+    have h1 : maps.dmap.idx? (if hc : c < ptStar.darts.size
+        then (hspec.dmap_surj c hc).choose else 0) = Option.some c := by
+      rw [dif_pos hc]
+      exact (hspec.dmap_surj c hc).choose_spec.2
+    have h2 : maps.dmap.idx? (if h : c' < ptStar.darts.size
+        then (hspec.dmap_surj c' h).choose else 0) = Option.some c' := by
+      rw [dif_pos hc']
+      exact (hspec.dmap_surj c' hc').choose_spec.2
+    exact Option.some.inj (h1.symm.trans ((congrArg maps.dmap.idx? heq).trans h2))
+
+/-- **Identifying a distinct pair strictly shrinks the dart count**: the
+fiber choice injects the quotient darts into the source darts and misses one
+of the identified pair. -/
+private theorem freeHomomorphism_size_lt {pt : PseudoTriangulation} (hpt : pt.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps))
+    {e f : Nat} (hef : (e, f) ∈ dartPairs) (hne : e ≠ f) :
+    ptStar.darts.size < pt.darts.size := by
+  have hspec := PseudoTriangulation.freeHomomorphism_spec hpt hpairs hrun
+  have hcol : maps.dmap.idx? e = maps.dmap.idx? f := hspec.seeds (e, f) hef
+  obtain ⟨g, hg, hinj⟩ := freeHomomorphism_fiber_choice hpt hpairs hrun
+  by_cases hin : ∃ c, c < ptStar.darts.size ∧ g c = e
+  · obtain ⟨c₀, hc₀, hgc₀⟩ := hin
+    refine Unionfind.lt_of_inj_on_missing g (fun j hj => (hg j hj).1) hinj
+      (show f < pt.darts.size from (hpairs (e, f) hef).2) ?_
+    intro j hj hgf
+    have h1 : maps.dmap.idx? f = Option.some j := hgf ▸ (hg j hj).2
+    have h2 : maps.dmap.idx? e = Option.some c₀ := hgc₀ ▸ (hg c₀ hc₀).2
+    have hcj : c₀ = j := Option.some.inj ((h2.symm.trans hcol).trans h1)
+    exact hne (hgc₀.symm.trans ((congrArg g hcj).trans hgf))
+  · refine Unionfind.lt_of_inj_on_missing g (fun j hj => (hg j hj).1) hinj
+      (hpairs (e, f) hef).1 ?_
+    intro j hj hge
+    exact hin ⟨j, hj, hge⟩
+
+/-- **The quotient never opens a `pred` corner**: an open quotient dart
+pulls back to an open fiber representative through coherence. -/
+private theorem freeHomomorphism_openPred_le {pt : PseudoTriangulation} (hpt : pt.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps)) :
+    openPredCorners ptStar ≤ openPredCorners pt := by
+  have hspec := PseudoTriangulation.freeHomomorphism_spec hpt hpairs hrun
+  obtain ⟨g, hg, hinj⟩ := freeHomomorphism_fiber_choice hpt hpairs hrun
+  unfold openPredCorners
+  rw [Unionfind.countP_eq_sum_map, Unionfind.countP_eq_sum_map]
+  refine Unionfind.sum_le_of_inj_on g (fun j hj => (hg j hj).1) hinj ?_
+  intro j hj
+  by_cases hopen : (ptStar.darts[j]!).pred.isNone
+  · have hsrc : (pt.darts[g j]!).pred.isNone = true := by
+      cases hp : (pt.darts[g j]!).pred.get? with
+      | none =>
+        rw [OptIdx.isNone_eq, hp]
+        rfl
+      | some p =>
+        obtain ⟨-, -, -, hpredc⟩ := hspec.coherent (g j) j (hg j hj).2
+        obtain ⟨t, ht, -⟩ := hpredc p hp
+        have hfalse : (ptStar.darts[j]!).pred.isNone = false := by
+          rw [OptIdx.isNone_eq, ht]
+          rfl
+        exact nomatch (hfalse.symm.trans hopen)
+    simp [hopen, hsrc]
+  · simp [hopen]
+
+/-- The legacy range's iteration list, normalised. -/
+private theorem range_toList (n : Nat) : ([0:n].toList) = List.range' 0 n 1 := by
+  show List.range' 0 ((n - 0 + 1 - 1) / 1) 1 = List.range' 0 n 1
+  congr 1
+  omega
+
+/-- A range cursor's element is its position. -/
+private theorem range_cursor_facts {n : Nat} {pref suff : List Nat} {cur : Nat}
+    (h : [0:n].toList = pref ++ cur :: suff) :
+    cur = pref.length ∧ pref.length < n := by
+  have h' : List.range' 0 n 1 = pref ++ cur :: suff := (range_toList n).symm.trans h
+  have hlen' : n = pref.length + (suff.length + 1) := by
+    simpa using congrArg List.length h'
+  have hplt : pref.length < n := by omega
+  have hget : (List.range' 0 n 1)[pref.length]? = some cur := by
+    rw [h', List.getElem?_append_right (Nat.le_refl _)]
+    simp
+  have hval := List.getElem?_range' (s := 0) (step := 1) hplt
+  have hcur := Option.some.inj (hget.symm.trans hval)
+  omega
+
+section
+set_option linter.tacticCheckInstances false
+/-- **The executable walk is the semantic walk** (`sucKTimes` runs
+`DartGraph.succWalk`), so the page-32 distinctness lemmas apply to the
+identified pair. -/
+private theorem sucKTimes_spec {pt : PseudoTriangulation} (hwf : pt.WF)
+    {e : Nat} (he : e < pt.darts.size) {k : Nat} {r : Option Nat}
+    (hrun : pt.sucKTimes e k = r) :
+    r = (DartGraph.succWalk (pt.dartGraph hwf) k ⟨e, he⟩).map Fin.val := by
+  apply Id.of_wp_run_eq hrun fun r =>
+    r = (DartGraph.succWalk (pt.dartGraph hwf) k ⟨e, he⟩).map Fin.val
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨xs, st⟩ =>
+      ⌜(∀ o, st.fst = some o → o = none ∧
+          (DartGraph.succWalk (pt.dartGraph hwf) k ⟨e, he⟩).map Fin.val = none) ∧
+        (xs.suffix ≠ [] → st.fst = none) ∧
+        (st.fst = none →
+          ∃ hc : st.snd < pt.darts.size,
+            (DartGraph.succWalk (pt.dartGraph hwf) k ⟨e, he⟩).map Fin.val =
+              (DartGraph.succWalk (pt.dartGraph hwf) (k - xs.prefix.length)
+                ⟨st.snd, hc⟩).map Fin.val ∧
+            xs.prefix.length ≤ k)⌝
+  all_goals mleave
+  case vc1.step.h_1 =>
+    rename_i pref cur suff hcursor b curr hmatch hinv
+    obtain ⟨hcurq, hplt⟩ := range_cursor_facts hcursor
+    have hb : b.fst = none := hinv.2.1 (by simp)
+    obtain ⟨hc, htrack, hle⟩ := hinv.2.2 hb
+    have hget : (pt.darts[b.snd]!).succ.get? = Option.none := by
+      have hx : (pt.darts[b.snd]!).succ = OptIdx.none := hmatch
+      rw [hx]
+      rfl
+    have hwalknone : (DartGraph.succWalk (pt.dartGraph hwf) k ⟨e, he⟩).map Fin.val =
+        none := by
+      rw [htrack, show k - pref.length = (k - pref.length - 1) + 1 from by omega]
+      simp only [DartGraph.succWalk,
+        PseudoTriangulation.dartGraph_succ_eq_none hwf (d := ⟨b.snd, hc⟩) hget]
+      rfl
+    exact ⟨fun o h => ⟨(Option.some.inj h).symm, hwalknone⟩,
+      fun h => absurd rfl h, fun h => nomatch h⟩
+  case vc2.step.h_2 =>
+    rename_i pref cur suff hcursor b curr nxt hmatch hinv
+    obtain ⟨hcurq, hplt⟩ := range_cursor_facts hcursor
+    have hb : b.fst = none := hinv.2.1 (by simp)
+    obtain ⟨hc, htrack, hle⟩ := hinv.2.2 hb
+    have hget : (pt.darts[b.snd]!).succ.get? = Option.some nxt := by
+      have hx : (pt.darts[b.snd]!).succ = OptIdx.some nxt := hmatch
+      rw [hx]
+      rfl
+    have hnxt : nxt < pt.darts.size := (hwf.read_inBounds hc).succ_lt nxt hget
+    refine ⟨(fun o h => nomatch h), fun _ => trivial, hnxt, ?_, ?_⟩
+    · rw [htrack, show k - pref.length = (k - (pref ++ [cur]).length) + 1 from by
+        simp only [List.length_append, List.length_cons, List.length_nil]
+        omega]
+      simp only [DartGraph.succWalk,
+        PseudoTriangulation.dartGraph_succ_eq_some hwf (d := ⟨b.snd, hc⟩) hget]
+    · simp only [List.length_append, List.length_cons, List.length_nil]
+      omega
+  case vc3.pre =>
+    exact ⟨(fun o h => nomatch h), fun _ => trivial, he, rfl, Nat.zero_le k⟩
+  case vc4.post.success.h_1 =>
+    rename_i r hreg hinv
+    obtain ⟨hc, htrack, -⟩ := hinv.2.2 hreg
+    have hfull : ([0:k].toList).length = k := by
+      rw [range_toList]
+      exact List.length_range'
+    have h0 : k - ([0:k].toList).length = 0 := by
+      rw [hfull]
+      omega
+    rw [htrack, h0]
+    rfl
+  case vc5.post.success.h_2 =>
+    rename_i r o hreg hinv
+    obtain ⟨ho, hnone⟩ := hinv.1 o hreg
+    subst ho
+    exact hnone.symm
+end
+
+/-- Bridge a functional `idx?` fact to the executable's `idx!` read. -/
+private theorem idx!_of_idx? {mm : IndexMap} {v j : Nat} (hv : v < mm.size)
+    (h : mm.idx? v = Option.some j) : (mm[v]!).idx! = j := by
+  have h' : (mm[v]'hv).get? = Option.some j := (IndexMap.idx?_pos hv).symm.trans h
+  rw [getElem!_pos mm v hv]
+  exact OptIdx.idx!_of_get?_some h'
+
+section
+set_option linter.tacticCheckInstances false
+/-- **What a reported degree issue is**: an in-range vertex with a fixed
+degree, either over-incident or exactly at its boundary count. -/
+theorem vertexSingleDegreeIssue_spec {pc : PseudoConfiguration} {v : Nat}
+    (hrun : pc.vertexSingleDegreeIssue = some v) :
+    v < pc.n ∧ (pc.degrees[v]!).fixed = true ∧
+      ((pc.degrees[v]!).lower < pc.nIncidentDarts[v]! ∨
+        (pc.isBoundary[v]! = true ∧
+          pc.nIncidentDarts[v]! = (pc.degrees[v]!).lower)) := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some w => w < pc.n ∧ (pc.degrees[w]!).fixed = true ∧
+        ((pc.degrees[w]!).lower < pc.nIncidentDarts[w]! ∨
+          (pc.isBoundary[w]! = true ∧
+            pc.nIncidentDarts[w]! = (pc.degrees[w]!).lower))
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨_xs, st⟩ =>
+      ⌜∀ w, st.fst = some (some w) → w < pc.n ∧ (pc.degrees[w]!).fixed = true ∧
+        ((pc.degrees[w]!).lower < pc.nIncidentDarts[w]! ∨
+          (pc.isBoundary[w]! = true ∧
+            pc.nIncidentDarts[w]! = (pc.degrees[w]!).lower))⌝
+  all_goals mleave
+  all_goals grind
+
+/-- The incidence histogram counts the darts at each vertex. -/
+private theorem nIncidentDarts_spec {pt : PseudoTriangulation} (hwf : pt.WF)
+    {cnt : Array Nat} (hrun : pt.nIncidentDarts = cnt) :
+    cnt.size = pt.n ∧ ∀ u, u < pt.n →
+      cnt[u]! = pt.darts.toList.countP fun d => d.head == u := by
+  apply Id.of_wp_run_eq hrun fun cnt =>
+    cnt.size = pt.n ∧ ∀ u, u < pt.n →
+      cnt[u]! = pt.darts.toList.countP fun d => d.head == u
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨xs, st⟩ =>
+      ⌜st.size = pt.n ∧ ∀ u, u < pt.n →
+        st[u]! = xs.prefix.countP fun d => d.head == u⌝
+  all_goals mleave
+  case vc1.step =>
+    rename_i pref d suff hcursor st hinv
+    obtain ⟨hsize, hcount⟩ := hinv
+    have hd : pt.darts[pref.length]! = d :=
+      PseudoTriangulation.getElem!_of_toList_eq_append_cons hcursor
+    have hplen : pref.length < pt.darts.size := by
+      have hlen' : pt.darts.toList.length = pref.length + (suff.length + 1) := by
+        simpa using congrArg List.length hcursor
+      have hsz : pt.darts.toList.length = pt.darts.size := Array.length_toList
+      omega
+    have hdb : d.head < pt.n := by
+      have hh := (hwf.read_inBounds hplen).head_lt
+      exact hd ▸ hh
+    refine ⟨by rw [Array.size_modify]; exact hsize, ?_⟩
+    intro u hu
+    rw [List.countP_append]
+    by_cases hdu : d.head = u
+    · subst hdu
+      rw [getElem!_modify_self (a := st) (f := (· + 1)) (by omega),
+        hcount d.head hu, show ([d].countP fun x => x.head == d.head) = 1 from by simp]
+    · rw [show ([d].countP fun x => x.head == u) = 0 from by simp [hdu],
+        getElem!_modify_ne hdu, hcount u hu]
+      omega
+  case vc2.pre =>
+    refine ⟨by simp, ?_⟩
+    intro u hu
+    rw [getElem!_pos _ u (by simpa using hu), Array.getElem_replicate]
+    rfl
+  case vc3.post.success =>
+    rename_i r hinv
+    exact hinv
+end
+
+/-- The histogram entry at a vertex is its incidence list's length. -/
+private theorem nIncidentDarts_eq_length {pt : PseudoTriangulation} (hwf : pt.WF)
+    {vf : Fin pt.n} {l : List (Fin pt.darts.size)}
+    (hl : DartGraph.IncidenceList (pt.dartGraph hwf) vf l) :
+    pt.nIncidentDarts[vf.val]! = l.length := by
+  obtain ⟨hsz, hcount⟩ := nIncidentDarts_spec hwf rfl
+  rw [hcount vf.val vf.isLt, Unionfind.list_countP_range]
+  have hread : ∀ i, i < pt.darts.size → pt.darts.toList[i]! = pt.darts[i]! := by
+    intro i hilt
+    rw [getElem!_pos _ i (by simpa using hilt), getElem!_pos _ i hilt]
+    exact Array.getElem_toList _
+  have hcongr : (List.range pt.darts.toList.length).countP
+      (fun i => (pt.darts.toList[i]!).head == vf.val) =
+      (List.range pt.darts.size).countP
+        (fun i => (pt.darts[i]!).head == vf.val) := by
+    rw [show pt.darts.toList.length = pt.darts.size from Array.length_toList]
+    refine List.countP_congr ?_
+    intro i hi
+    rw [hread i (List.mem_range.mp hi)]
+  rw [hcongr, List.countP_eq_length_filter]
+  have hlen : ((List.range pt.darts.size).filter
+      (fun i => (pt.darts[i]!).head == vf.val)).length = (l.map Fin.val).length := by
+    refine Unionfind.length_eq_of_nodup_iff
+      (List.filter_sublist.nodup List.nodup_range)
+      (Unionfind.nodup_map_of_inj (fun a b h => Fin.ext h) hl.nodup) ?_
+    intro x
+    constructor
+    · intro hx
+      obtain ⟨hxr, hxp⟩ := List.mem_filter.mp hx
+      have hxlt : x < pt.darts.size := List.mem_range.mp hxr
+      have hhead : (pt.darts[x]!).head = vf.val := by simpa using hxp
+      exact List.mem_map.mpr ⟨⟨x, hxlt⟩, (hl.mem_iff _).mpr (Fin.ext hhead), rfl⟩
+    · intro hx
+      obtain ⟨d0, hd0, rfl⟩ := List.mem_map.mp hx
+      have hh := (hl.mem_iff d0).mp hd0
+      refine List.mem_filter.mpr ⟨List.mem_range.mpr d0.isLt, ?_⟩
+      simpa using congrArg Fin.val hh
+  rw [hlen, List.length_map]
+
+/-- **What the degree-reconciliation loop guarantees** (proof-only): every
+quotient class's range keeps the seed clamp (`positive`), every source
+vertex's range passed its non-disjointness check (`upper_pos`), and each
+class range lies inside every fiber member's range (`contained`). One
+concrete bridge proves this; slack bounds and the fixed-`[0,0]`
+impossibility are semantic consequences. Class nonemptiness would need
+source nonemptiness and waits for the degree-validity layer. -/
+private structure DegreeReconciliation (src : Array Degree) (vmap : IndexMap)
+    (dst : Array Degree) : Prop where
+  class_lt : ∀ v, v < src.size → (vmap[v]!).idx! < dst.size
+  surj : ∀ c, c < dst.size → ∃ v, v < src.size ∧ (vmap[v]!).idx! = c
+  positive : ∀ c, c < dst.size → 1 ≤ (dst[c]!).lower
+  upper_pos : ∀ v, v < src.size → 1 ≤ (src[v]!).upper
+  contained : ∀ v, v < src.size →
+    Degree.includes (src[v]!) (dst[(vmap[v]!).idx!]!) = true
+
+/-- A fixed range that survived reconciliation is positive: its upper bound
+met a clamped class, and fixedness copies that to the lower bound. -/
+private theorem DegreeReconciliation.fixed_lower_pos {src : Array Degree}
+    {vmap : IndexMap} {dst : Array Degree} (h : DegreeReconciliation src vmap dst)
+    {v : Nat} (hv : v < src.size) (hfix : (src[v]!).fixed = true) :
+    1 ≤ (src[v]!).lower := by
+  have h1 := h.upper_pos v hv
+  have hfx : (src[v]!).lower = (src[v]!).upper := by
+    simpa [Degree.fixed] using hfix
+  omega
+
+/-- **Total slack never grows across a reconciliation**: each class range
+lies inside its fiber representative's range, and distinct classes have
+distinct representatives. -/
+private theorem DegreeReconciliation.slack_le {src : Array Degree}
+    {vmap : IndexMap} {dst : Array Degree}
+    (h : DegreeReconciliation src vmap dst) :
+    ((List.range dst.size).map fun c => (dst[c]!).upper - (dst[c]!).lower).sum ≤
+      ((List.range src.size).map fun v => (src[v]!).upper - (src[v]!).lower).sum := by
+  have hper : ∀ c, c < dst.size → ∃ w, w < src.size ∧ ((vmap[w]!).idx! = c) ∧
+      (dst[c]!).upper - (dst[c]!).lower ≤ (src[w]!).upper - (src[w]!).lower := by
+    intro c hc
+    obtain ⟨w, hw, hcls⟩ := h.surj c hc
+    have hinc : (src[w]!).lower ≤ (dst[c]!).lower ∧
+        (dst[c]!).upper ≤ (src[w]!).upper := by
+      simpa [Degree.includes, hcls] using h.contained w hw
+    exact ⟨w, hw, hcls, by omega⟩
+  obtain ⟨g, hg⟩ : ∃ g : Nat → Nat, ∀ c, c < dst.size →
+      g c < src.size ∧ ((vmap[g c]!).idx! = c) ∧
+      (dst[c]!).upper - (dst[c]!).lower ≤
+        (src[g c]!).upper - (src[g c]!).lower := by
+    refine ⟨fun c => if hc : c < dst.size then (hper c hc).choose else 0, ?_⟩
+    intro c hc
+    simp only [dif_pos hc]
+    exact (hper c hc).choose_spec
+  have hinj : ∀ c c', c < dst.size → c' < dst.size → g c = g c' → c = c' := by
+    intro c c' hc hc' heq
+    exact (hg c hc).2.1.symm.trans
+      ((congrArg (fun x => ((vmap[x]!)).idx!) heq).trans (hg c' hc').2.1)
+  exact Unionfind.sum_le_of_inj_on g (fun c hc => (hg c hc).1) hinj
+    (fun c hc => (hg c hc).2.2)
+
+section
+set_option linter.tacticCheckInstances false
+/-- **The concrete reconciliation bridge**: a successful `dartIdentification`
+run reconciles the degrees along the vertex quotient. -/
+private theorem dartIdentification_reconciliation {pc : PseudoConfiguration}
+    (hpc : pc.WF) {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pc.darts.size ∧ p.2 < pc.darts.size)
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
+    pc'.degrees.size = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n ∧
+      DegreeReconciliation pc.degrees
+        (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2.vmap pc'.degrees := by
+  obtain ⟨hS, hmw, hvt, hdt⟩ :=
+    PseudoTriangulation.freeHomomorphism_wf hpc.1 hpairs
+      (ptStar := (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1)
+      (maps := (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2) rfl
+  obtain ⟨hvsurj, -, -⟩ :=
+    PseudoTriangulation.freeHomomorphism_quotient hpc.1 hpairs
+      (ptStar := (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1)
+      (maps := (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2) rfl
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some (z, mp) =>
+        z.degrees.size = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n ∧
+          DegreeReconciliation pc.degrees
+            (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2.vmap z.degrees
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨xs, st⟩ =>
+      ⌜(∀ o, st.fst = some o → o = none) ∧
+        (xs.suffix ≠ [] → st.fst = none) ∧
+        (st.fst = none →
+          st.snd.size = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n ∧
+          (∀ c, c < st.snd.size → 1 ≤ (st.snd[c]!).lower) ∧
+          (∀ v', v' < xs.prefix.length → 1 ≤ (pc.degrees[v']!).upper) ∧
+          ∀ v', v' < xs.prefix.length →
+            Degree.includes (pc.degrees[v']!)
+              (st.snd[((pc.toPseudoTriangulation.freeHomomorphism
+                dartPairs).2.vmap[v']!).idx!]!) = true)⌝
+  all_goals mleave
+  case vc2.step.isTrue =>
+    exact ⟨fun o h => (Option.some.inj h).symm, fun h => absurd rfl h, fun h => nomatch h⟩
+  case vc3.step.isFalse =>
+    rename_i hloop pref cur suff hcursor b degreesStar vStar jp hdisj hinv
+    obtain ⟨hcur, hplt⟩ := range_cursor_facts hcursor
+    have hb : b.fst = none := hinv.2.1 (by simp)
+    obtain ⟨hsize, hpos, hup, hcont⟩ := hinv.2.2 hb
+    have hclslt : ((pc.toPseudoTriangulation.freeHomomorphism
+        dartPairs).2.vmap[cur]!).idx! <
+        (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n :=
+      IndexMap.idx!_lt_of_total hmw.vmap_wf hvt (by omega)
+    have hvsz : ((pc.toPseudoTriangulation.freeHomomorphism
+        dartPairs).2.vmap[cur]!).idx! < b.snd.size := by omega
+    have hnd : ¬ ((b.snd[((pc.toPseudoTriangulation.freeHomomorphism
+          dartPairs).2.vmap[cur]!).idx!]!).upper < (pc.degrees[cur]!).lower ∨
+        (pc.degrees[cur]!).upper < (b.snd[((pc.toPseudoTriangulation.freeHomomorphism
+          dartPairs).2.vmap[cur]!).idx!]!).lower) := by
+      simpa [Degree.disjoint] using hdisj
+    have hposStar := hpos _ hvsz
+    have hposStarA : 1 ≤ degreesStar[vStar]!.lower := hposStar
+    have hndA : ¬ (degreesStar[vStar]!.upper < (pc.degrees[cur]!).lower ∨
+        (pc.degrees[cur]!).upper < degreesStar[vStar]!.lower) := hnd
+    have hlen2 : (pref ++ [cur]).length = pref.length + 1 := by simp
+    refine ⟨(fun o h => nomatch h), fun _ => trivial, ?_, ?_, ?_, ?_⟩
+    · rw [size_set!]
+      exact hsize
+    · intro c hc
+      have hc' : c < b.snd.size := by
+        simpa [size_set!] using hc
+      by_cases hcv : c = ((pc.toPseudoTriangulation.freeHomomorphism
+          dartPairs).2.vmap[cur]!).idx!
+      · subst hcv
+        rw [getElem!_set!_self hvsz]
+        simp only [Degree.intersection]
+        omega
+      · rw [getElem!_set!_ne fun h => hcv h.symm]
+        exact hpos c hc'
+    · intro v' hv'
+      by_cases hlast : v' = pref.length
+      · subst hlast
+        rw [← hcur]
+        omega
+      · exact hup v' (by omega)
+    · intro v' hv'
+      by_cases hlast : v' = pref.length
+      · subst hlast
+        rw [← hcur, getElem!_set!_self hvsz]
+        simp only [Degree.includes, Degree.intersection, Bool.and_eq_true,
+          decide_eq_true_eq]
+        omega
+      · have hold := hcont v' (by omega)
+        have holdinc : (pc.degrees[v']!).lower ≤
+            (b.snd[((pc.toPseudoTriangulation.freeHomomorphism
+              dartPairs).2.vmap[v']!).idx!]!).lower ∧
+            (b.snd[((pc.toPseudoTriangulation.freeHomomorphism
+              dartPairs).2.vmap[v']!).idx!]!).upper ≤ (pc.degrees[v']!).upper := by
+          simpa [Degree.includes] using hold
+        by_cases hcv : ((pc.toPseudoTriangulation.freeHomomorphism
+            dartPairs).2.vmap[v']!).idx! =
+            ((pc.toPseudoTriangulation.freeHomomorphism dartPairs).2.vmap[cur]!).idx!
+        · have holdinc' := hcv ▸ holdinc
+          have holdincA : (pc.degrees[v']!).lower ≤ degreesStar[vStar]!.lower ∧
+              degreesStar[vStar]!.upper ≤ (pc.degrees[v']!).upper := holdinc'
+          rw [hcv, getElem!_set!_self hvsz]
+          simp only [Degree.includes, Degree.intersection, Bool.and_eq_true,
+            decide_eq_true_eq]
+          omega
+        · rw [getElem!_set!_ne fun h => hcv h.symm]
+          exact hold
+  case vc4.isFalse.pre =>
+    refine ⟨(fun o h => nomatch h), ?_, ?_, ?_, ?_, ?_⟩
+    · exact fun _ => trivial
+    · exact Array.size_replicate
+    · intro c hc
+      have hc' : c < (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n := by
+        simpa using hc
+      rw [getElem!_pos _ c (by simpa using hc'), Array.getElem_replicate]
+      exact Nat.le_refl 1
+    · intro v' hv'
+      exact absurd hv' (by simp)
+    · intro v' hv'
+      exact absurd hv' (by simp)
+  case vc5.isFalse.post.success.h_1 =>
+    rename_i hloop r hreg hinv
+    obtain ⟨hsize, hpos, hup, hcont⟩ := hinv.2.2 hreg
+    have hfull : ([0:pc.n].toList).length = pc.n := by
+      rw [range_toList]
+      exact List.length_range'
+    have hdsz : pc.degrees.size = pc.n := hpc.2
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+    · simpa [PseudoConfiguration.new] using hsize
+    · intro v hv
+      have := IndexMap.idx!_lt_of_total hmw.vmap_wf hvt (show v < pc.n by omega)
+      simp only [PseudoConfiguration.new]
+      omega
+    · intro c hc
+      have hc' : c < (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.n := by
+        have hcr : c < r.snd.size := by simpa [PseudoConfiguration.new] using hc
+        omega
+      obtain ⟨i, hi, hidx⟩ := hvsurj c hc'
+      have hii : i < (pc.toPseudoTriangulation.freeHomomorphism
+          dartPairs).2.vmap.size := by
+        rw [hmw.vmap_wf.size_eq]
+        exact hi
+      exact ⟨i, by omega, idx!_of_idx? hii hidx⟩
+    · intro c hc
+      simp only [PseudoConfiguration.new]
+      exact hpos c (by simpa [PseudoConfiguration.new] using hc)
+    · intro v hv
+      exact hup v (by omega)
+    · intro v hv
+      simpa [PseudoConfiguration.new] using hcont v (by omega)
+  case vc6.isFalse.post.success.h_2 =>
+    rename_i hloop r a hreg hinv
+    have ha := hinv.1 a hreg
+    subst ha
+    trivial
+end
+
+/-- The quotient never grows the total slack: construct the reconciliation
+carrier and read off its numeric consequence. -/
+private theorem dartIdentification_slack_le {pc : PseudoConfiguration} (hpc : pc.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pc.darts.size ∧ p.2 < pc.darts.size)
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
+    degreeSlack pc' ≤ degreeSlack pc := by
+  obtain ⟨-, hrec⟩ := dartIdentification_reconciliation hpc hpairs hrun
+  unfold degreeSlack
+  exact hrec.slack_le
+
+/-- `addBoundaryDarts` keeps the degree array. -/
+private theorem addBoundaryDarts_degrees {pc : PseudoConfiguration} {v : Nat}
+    {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
+    pc'.degrees = pc.degrees := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some z => z.degrees = pc.degrees
+  mvcgen
+
+section
+set_option linter.tacticCheckInstances false
+/-- What a successful split did: the first slack vertex is pinned to its
+lowest degree in one child and to the rest of the range in the other. -/
+private theorem singleOutLowerDegree_split {pc : PseudoConfiguration}
+    {z1 z2 : PseudoConfiguration}
+    (hrun : pc.singleOutLowerDegree = some (z1, z2)) :
+    ∃ v, v < pc.n ∧ (pc.degrees[v]!).lower < (pc.degrees[v]!).upper ∧
+      z1.degrees = pc.degrees.set! v
+        ⟨(pc.degrees[v]!).lower, (pc.degrees[v]!).lower⟩ ∧
+      z2.degrees = pc.degrees.set! v
+        ⟨(pc.degrees[v]!).lower + 1, (pc.degrees[v]!).upper⟩ := by
+  apply Id.of_wp_run_eq hrun fun
+    | none => True
+    | some (z1, z2) =>
+        ∃ v, v < pc.n ∧ (pc.degrees[v]!).lower < (pc.degrees[v]!).upper ∧
+          z1.degrees = pc.degrees.set! v
+            ⟨(pc.degrees[v]!).lower, (pc.degrees[v]!).lower⟩ ∧
+          z2.degrees = pc.degrees.set! v
+            ⟨(pc.degrees[v]!).lower + 1, (pc.degrees[v]!).upper⟩
+  mvcgen
+  case inv1 =>
+    exact ⇓⟨_xs, st⟩ =>
+      ⌜∀ p, st.fst = some (some p) →
+        ∃ v, v < pc.n ∧ (pc.degrees[v]!).lower < (pc.degrees[v]!).upper ∧
+          p.1.degrees = pc.degrees.set! v
+            ⟨(pc.degrees[v]!).lower, (pc.degrees[v]!).lower⟩ ∧
+          p.2.degrees = pc.degrees.set! v
+            ⟨(pc.degrees[v]!).lower + 1, (pc.degrees[v]!).upper⟩⌝
+  all_goals mleave
+  all_goals grind [PseudoConfiguration.new]
+end
+
+/-- The boundary-fan patch closes two open `pred` corners (`eF` and `eLR`)
+and opens one (the second new dart): one net corner disappears. -/
+private theorem boundaryFanPatch_openPred {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat}
+    (hp : PseudoTriangulation.BoundaryFanPatch src dst eF eL eFR eLR)
+    (hv : src.Valid) :
+    openPredCorners dst + 1 = openPredCorners src := by
+  have heLR : eLR < src.darts.size :=
+    hp.eLR_def ▸ (hv.wf.read_inBounds hp.eL_lt).rev_lt
+  have hrevLR : (src.darts[eLR]!).rev = eL := hp.eLR_def ▸ hv.rev_rev eL hp.eL_lt
+  have hpLR : (src.darts[eLR]!).pred.isNone = true := by
+    refine (hv.boundary eLR heLR).mpr ?_
+    rw [hrevLR]
+    exact hp.succL_open
+  have hpF : (src.darts[eF]!).pred.isNone = true := hp.predF_open
+  have hne : eF ≠ eLR := by
+    intro h
+    have h2 : (src.darts[eL]!).head ≠ (src.darts[eLR]!).head := by
+      simpa only [hp.eLR_def] using hv.loop_free eL hp.eL_lt
+    exact h2 (hp.head_eq.symm.trans (congrArg (fun j => (src.darts[j]!).head) h))
+  have hdF : (dst.darts[eF]!).pred.isNone = false := by
+    simpa using hp.predF_closed
+  have hdLR : (dst.darts[eLR]!).pred.isNone = false := by
+    rw [hp.pred_eLR]
+    rfl
+  have hdNew1 : (dst.darts[src.darts.size]!).pred.isNone = false := by
+    rw [hp.read_new1]
+    rfl
+  have hdNew2 : (dst.darts[src.darts.size + 1]!).pred.isNone = true := by
+    rw [hp.read_new2]
+    rfl
+  have hexp : openPredCorners dst = (List.range src.darts.size).countP
+      (fun i => (dst.darts[i]!).pred.isNone) + 1 := by
+    unfold openPredCorners
+    rw [hp.size, List.range_succ, List.countP_append, List.range_succ,
+      List.countP_append]
+    simp [hdNew1, hdNew2]
+  have hcongr : (List.range src.darts.size).countP
+        (fun i => (dst.darts[i]!).pred.isNone) =
+      (List.range src.darts.size).countP
+        (fun i => if i = eF then false else if i = eLR then false
+          else (src.darts[i]!).pred.isNone) := by
+    refine List.countP_congr ?_
+    intro i hi
+    have hilt : i < src.darts.size := List.mem_range.mp hi
+    by_cases hiF : i = eF
+    · subst hiF
+      simp [hdF]
+    · by_cases hiLR : i = eLR
+      · subst hiLR
+        simp [hdLR, hiF]
+      · simp only [if_neg hiF, if_neg hiLR]
+        rw [hp.pred_old i hiF hiLR hilt]
+  have hflip2 := Unionfind.countP_flip
+    (p := fun i => if i = eF then false else (src.darts[i]!).pred.isNone)
+    (p' := fun i => if i = eF then false else if i = eLR then false
+      else (src.darts[i]!).pred.isNone)
+    (j := eLR)
+    (by simp only [Ne.symm hne, if_false]; exact hpLR)
+    (by simp [Ne.symm hne])
+    (fun i hi => by
+      by_cases hiF : i = eF
+      · simp [hiF]
+      · simp [hiF, hi])
+    src.darts.size heLR
+  have hflip1 := Unionfind.countP_flip
+    (p := fun i => (src.darts[i]!).pred.isNone)
+    (p' := fun i => if i = eF then false else (src.darts[i]!).pred.isNone)
+    (j := eF) hpF (by simp) (fun i hi => by simp [hi]) src.darts.size hp.eF_lt
+  have hsrc : openPredCorners src = (List.range src.darts.size).countP
+      (fun i => (src.darts[i]!).pred.isNone) := rfl
+  omega
+
+/-- **The boundary closure strictly shrinks the potential**: two new darts
+against three weighted units of the closed corner, at unchanged slack. -/
+private theorem addBoundaryDarts_potential {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid) {v : Nat}
+    {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
+    statePotential pc' < statePotential pc := by
+  obtain ⟨eF, eL, eFR, eLR, hp⟩ := addBoundaryDarts_patch hv.wf hrun
+  have hopen := boundaryFanPatch_openPred hp hv
+  have hslack : degreeSlack pc' = degreeSlack pc := by
+    unfold degreeSlack
+    rw [addBoundaryDarts_degrees hrun]
+  have hsize : pc'.toPseudoTriangulation.darts.size =
+      pc.toPseudoTriangulation.darts.size + 2 := hp.size
+  unfold statePotential
+  rw [hslack]
+  omega
+
+/-- **A degree split strictly shrinks both children's potentials**: the
+graph is untouched and the split vertex's slack drops to `0` and `w - 1`. -/
+private theorem singleOutLowerDegree_potential {pc : PseudoConfiguration}
+    (hd : pc.degrees.size = pc.n) {z1 z2 : PseudoConfiguration}
+    (hrun : pc.singleOutLowerDegree = some (z1, z2)) :
+    statePotential z1 < statePotential pc ∧ statePotential z2 < statePotential pc := by
+  obtain ⟨hg1, hg2⟩ := singleOutLowerDegree_graph hrun
+  obtain ⟨v, hvn, hlt, hz1, hz2⟩ := singleOutLowerDegree_split hrun
+  have hvd : v < pc.degrees.size := by omega
+  have hs1 : degreeSlack z1 +
+      ((pc.degrees[v]!).upper - (pc.degrees[v]!).lower) = degreeSlack pc := by
+    have hflip := Unionfind.sum_map_range_flip
+      (f := fun i => (pc.degrees[i]!).upper - (pc.degrees[i]!).lower)
+      (f' := fun i => ((pc.degrees.set! v
+          ⟨(pc.degrees[v]!).lower, (pc.degrees[v]!).lower⟩)[i]!).upper -
+        ((pc.degrees.set! v
+          ⟨(pc.degrees[v]!).lower, (pc.degrees[v]!).lower⟩)[i]!).lower)
+      (j := v)
+      (fun i hi => by rw [getElem!_set!_ne fun h => hi h.symm])
+      pc.degrees.size hvd
+    have hfv : ((pc.degrees.set! v
+        ⟨(pc.degrees[v]!).lower, (pc.degrees[v]!).lower⟩)[v]!).upper -
+        ((pc.degrees.set! v
+          ⟨(pc.degrees[v]!).lower, (pc.degrees[v]!).lower⟩)[v]!).lower = 0 := by
+      rw [getElem!_set!_self hvd]
+      simp
+    unfold degreeSlack
+    rw [hz1, size_set!]
+    omega
+  have hs2 : degreeSlack z2 +
+      ((pc.degrees[v]!).upper - (pc.degrees[v]!).lower) = degreeSlack pc +
+      ((pc.degrees[v]!).upper - ((pc.degrees[v]!).lower + 1)) := by
+    have hflip := Unionfind.sum_map_range_flip
+      (f := fun i => (pc.degrees[i]!).upper - (pc.degrees[i]!).lower)
+      (f' := fun i => ((pc.degrees.set! v
+          ⟨(pc.degrees[v]!).lower + 1, (pc.degrees[v]!).upper⟩)[i]!).upper -
+        ((pc.degrees.set! v
+          ⟨(pc.degrees[v]!).lower + 1, (pc.degrees[v]!).upper⟩)[i]!).lower)
+      (j := v)
+      (fun i hi => by rw [getElem!_set!_ne fun h => hi h.symm])
+      pc.degrees.size hvd
+    have hfv : ((pc.degrees.set! v
+        ⟨(pc.degrees[v]!).lower + 1, (pc.degrees[v]!).upper⟩)[v]!).upper -
+        ((pc.degrees.set! v
+          ⟨(pc.degrees[v]!).lower + 1, (pc.degrees[v]!).upper⟩)[v]!).lower =
+        (pc.degrees[v]!).upper - ((pc.degrees[v]!).lower + 1) := by
+      rw [getElem!_set!_self hvd]
+    unfold degreeSlack
+    rw [hz2, size_set!]
+    omega
+  have hD1 : z1.toPseudoTriangulation.darts.size =
+      pc.toPseudoTriangulation.darts.size := by rw [hg1]
+  have hO1 : openPredCorners z1.toPseudoTriangulation =
+      openPredCorners pc.toPseudoTriangulation := by rw [hg1]
+  have hD2 : z2.toPseudoTriangulation.darts.size =
+      pc.toPseudoTriangulation.darts.size := by rw [hg2]
+  have hO2 : openPredCorners z2.toPseudoTriangulation =
+      openPredCorners pc.toPseudoTriangulation := by rw [hg2]
+  constructor
+  · unfold statePotential
+    rw [hD1, hO1]
+    omega
+  · unfold statePotential
+    rw [hD2, hO2]
+    omega
+
 /-- **Loop invariant for `resolveDegreeIssues` (A.4.4).** Every queued or emitted
 entry is a *valid, rotational* configuration reached from `origin` by a
 certified mapping: `Valid` carries the geometry the A.4 steps need, the
@@ -3032,6 +3812,8 @@ private theorem fixIssue_over_run {pc : PseudoConfiguration} (hpc : pc.WF)
     {pc' : PseudoConfiguration} {m : Mappings}
     (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) :
     ∃ e f, e < pc.darts.size ∧ f < pc.darts.size ∧
+      (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v) = some e ∧
+      pc.sucKTimes e (pc.degrees[v]!).lower = some f ∧
       pc.dartIdentification #[(e, f)] = some (pc', m) := by
   rcases hE : (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v) with _ | e
   · exact nomatch (show (none : Option (PseudoConfiguration × Mappings)) =
@@ -3045,7 +3827,7 @@ private theorem fixIssue_over_run {pc : PseudoConfiguration} (hpc : pc.WF)
     · exact nomatch (show (none : Option (PseudoConfiguration × Mappings)) =
         some (pc', m) from by
           simpa only [fixSingleDegreeIssue, if_pos h1, hE, hF] using hrun)
-    · exact ⟨e, f, he, PseudoTriangulation.sucKTimes_lt hpc.1 he hF,
+    · exact ⟨e, f, he, PseudoTriangulation.sucKTimes_lt hpc.1 he hF, rfl, hF,
         by simpa only [fixSingleDegreeIssue, if_pos h1, hE, hF] using hrun⟩
 
 /-- `fixSingleDegreeIssue` (A.4.7) preserves well-formedness: the
@@ -3055,7 +3837,7 @@ theorem fixSingleDegreeIssue_wf {pc : PseudoConfiguration} (hpc : pc.WF)
     {v : Nat} {pc' : PseudoConfiguration} {m : Mappings}
     (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) : pc'.WF := by
   by_cases h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!
-  · obtain ⟨e, f, he, hf, hrun'⟩ := fixIssue_over_run hpc h1 hrun
+  · obtain ⟨e, f, he, hf, -, -, hrun'⟩ := fixIssue_over_run hpc h1 hrun
     exact dartIdentification_wf hpc (by grind) hrun'
   · by_cases h2 : (pc.isBoundary[v]!
         && pc.nIncidentDarts[v]! == (pc.degrees[v]!).lower) = true
@@ -3093,7 +3875,7 @@ theorem fixSingleDegreeIssue_spec {pc : PseudoConfiguration}
   have hdeg : pc'.degrees.size = pc'.n := (fixSingleDegreeIssue_wf hpc hrun).2
   by_cases h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!
   · -- Over-incidence: identify the selected dart pair (A.4.1).
-    obtain ⟨e, f, he, hf, hrun'⟩ := fixIssue_over_run hpc h1 hrun
+    obtain ⟨e, f, he, hf, -, -, hrun'⟩ := fixIssue_over_run hpc h1 hrun
     exact ⟨dartIdentification_valid hv (by grind) hrun', hdeg,
       dartIdentification_coherentMappings hpc (by grind) hrun'⟩
   · by_cases h2 : (pc.isBoundary[v]!
@@ -3138,7 +3920,7 @@ theorem fixSingleDegreeIssue_rotational {pc : PseudoConfiguration}
     (pc'.toPseudoTriangulation.dartGraph hS).Rotational := by
   have hpc : pc.WF := ⟨hv.wf, hd⟩
   by_cases h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!
-  · obtain ⟨e, f, he, hf, hrun'⟩ := fixIssue_over_run hpc h1 hrun
+  · obtain ⟨e, f, he, hf, -, -, hrun'⟩ := fixIssue_over_run hpc h1 hrun
     exact dartIdentification_rotational hv.wf (by grind) hrun' hS hr
   · by_cases h2 : (pc.isBoundary[v]!
         && pc.nIncidentDarts[v]! == (pc.degrees[v]!).lower) = true
@@ -3152,6 +3934,71 @@ theorem fixSingleDegreeIssue_rotational {pc : PseudoConfiguration}
             simpa only [fixSingleDegreeIssue, if_neg h1, if_pos h2, hA] using hrun))
           subst hr1
           exact addBoundaryDarts_rotational hv hA hS hr
+    · exact absurd hrun (by
+        simp only [fixSingleDegreeIssue, if_neg h1, if_neg h2]
+        exact fun hp => nomatch
+          (show (none : Option (PseudoConfiguration × Mappings)) = some (pc', m) from hp))
+
+/-- **`fixSingleDegreeIssue` strictly shrinks the potential** at a reported
+issue vertex: the over-incidence arm identifies two distinct darts of the
+vertex's rotation (distinct by the page-32 walk argument, with a positive
+step count from the reconciliation), and the boundary arm closes the fan. -/
+private theorem fixSingleDegreeIssue_potential {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid) (hd : pc.degrees.size = pc.n)
+    (hr : (pc.toPseudoTriangulation.dartGraph hv.wf).Rotational)
+    {v : Nat} (hvn : v < pc.n) (hfix : (pc.degrees[v]!).fixed = true)
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) :
+    statePotential pc' < statePotential pc := by
+  have hpc : pc.WF := ⟨hv.wf, hd⟩
+  by_cases h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!
+  · obtain ⟨e, f, he, hf, hsel, hwalk, hrun'⟩ := fixIssue_over_run hpc h1 hrun
+    obtain ⟨hsz', hrec⟩ := dartIdentification_reconciliation hpc (by grind) hrun'
+    have hk1 : 1 ≤ (pc.degrees[v]!).lower := hrec.fixed_lower_pos (by omega) hfix
+    have hheadE : (pc.darts[e]!).head = v := by
+      by_cases hb : pc.isBoundary[v]! = true
+      · exact PseudoTriangulation.firstDart_head (by simpa [hb] using hsel)
+      · exact PseudoTriangulation.anyDart_head (by simpa [hb] using hsel)
+    obtain ⟨l, hl⟩ := hr.incidence ⟨v, hvn⟩
+    have hmem : (⟨e, he⟩ : Fin pc.darts.size) ∈ l := (hl.mem_iff _).mpr (Fin.ext hheadE)
+    have hinc : pc.nIncidentDarts[v]! = l.length :=
+      nIncidentDarts_eq_length hv.wf (vf := ⟨v, hvn⟩) hl
+    have hwalkS := sucKTimes_spec hv.wf he (k := (pc.degrees[v]!).lower) hwalk
+    obtain ⟨df, hdf, hdfval⟩ := Option.map_eq_some_iff.mp hwalkS.symm
+    have hne : df ≠ (⟨e, he⟩ : Fin pc.darts.size) :=
+      DartGraph.IncidenceList.succWalk_ne hl hmem (by omega) (by omega) hdf
+    have hnef : e ≠ f := fun h =>
+      hne (Fin.ext (hdfval.trans h.symm))
+    obtain ⟨hgraph, hmap, -⟩ := dartIdentification_graph_maps hrun'
+    have hDlt := freeHomomorphism_size_lt hpc.1 (by grind)
+      (ptStar := (pc.toPseudoTriangulation.freeHomomorphism #[(e, f)]).1)
+      (maps := (pc.toPseudoTriangulation.freeHomomorphism #[(e, f)]).2) rfl
+      (by simp) hnef
+    have hD2 : pc'.toPseudoTriangulation.darts.size =
+        (pc.toPseudoTriangulation.freeHomomorphism #[(e, f)]).1.darts.size :=
+      congrArg (fun t => t.darts.size) hgraph
+    have hOle := freeHomomorphism_openPred_le hpc.1 (by grind)
+      (ptStar := (pc.toPseudoTriangulation.freeHomomorphism #[(e, f)]).1)
+      (maps := (pc.toPseudoTriangulation.freeHomomorphism #[(e, f)]).2) rfl
+    have hO2 : openPredCorners pc'.toPseudoTriangulation =
+        openPredCorners (pc.toPseudoTriangulation.freeHomomorphism #[(e, f)]).1 :=
+      congrArg openPredCorners hgraph
+    have hSle : degreeSlack pc' ≤ degreeSlack pc :=
+      dartIdentification_slack_le hpc (by grind) hrun'
+    unfold statePotential
+    omega
+  · by_cases h2 : (pc.isBoundary[v]!
+        && pc.nIncidentDarts[v]! == (pc.degrees[v]!).lower) = true
+    · cases hA : pc.addBoundaryDarts v with
+      | none =>
+          exact nomatch (show (none : Option (PseudoConfiguration × Mappings)) =
+            some (pc', m) from by
+              simpa only [fixSingleDegreeIssue, if_neg h1, if_pos h2, hA] using hrun)
+      | some pcA =>
+          have hr1 : pcA = pc' := congrArg Prod.fst (Option.some.inj (by
+            simpa only [fixSingleDegreeIssue, if_neg h1, if_pos h2, hA] using hrun))
+          subst hr1
+          exact addBoundaryDarts_potential hv hA
     · exact absurd hrun (by
         simp only [fixSingleDegreeIssue, if_neg h1, if_neg h2]
         exact fun hp => nomatch
