@@ -136,6 +136,18 @@ theorem isSome_toFun {m : IndexMap} (h : m.WF dom codom) (ht : m.Total) (i : Fin
 def toTotalFun (m : IndexMap) (h : m.WF dom codom) (ht : m.Total) (i : Fin dom) :
     Fin codom := (m.toFun h i).get (isSome_toFun h ht i)
 
+/-- `toTotalFun` under `Fin.val` is `idx?`: every total-decode theorem is a
+transport of an `idx?` theorem. -/
+theorem idx?_toTotalFun {m : IndexMap} (hwf : m.WF dom codom)
+    (htot : m.Total) (i : Fin dom) :
+    m.idx? i.val = Option.some (m.toTotalFun hwf htot i).val := by
+  have hv := toFun_val hwf i
+  have hs := isSome_toFun hwf htot i
+  rcases ho : m.toFun hwf i with _ | j
+  · exact absurd (ho ▸ hs) (by simp)
+  · rw [← hv, ho]
+    simp [toTotalFun, ho]
+
 /-- `Option (Fin _)` values are determined by their `val` images (the transport
 tool for the decode theorems). -/
 private theorem option_fin_val_inj {k : Nat} {a b : Option (Fin k)}
@@ -203,6 +215,16 @@ theorem Mappings.initialMappings_dmap_wf (n d : Nat) : (Mappings.initialMappings
 theorem Mappings.initialMappings_wf (n d : Nat) :
     (Mappings.initialMappings n d).WF n d n d :=
   ⟨initialMappings_vmap_wf n d, initialMappings_dmap_wf n d⟩
+
+/-- Well-formedness weakens along a larger codomain. -/
+theorem IndexMap.WF.mono_codom {m : IndexMap} {dom codom codom' : Nat}
+    (h : m.WF dom codom) (hc : codom ≤ codom') : m.WF dom codom' :=
+  ⟨h.size_eq, fun i hi j hj => Nat.lt_of_lt_of_le (h.bounded i hi j hj) hc⟩
+
+/-- Mapping well-formedness weakens along larger target index sets. -/
+theorem Mappings.WF.mono {ms : Mappings} {n d n' d' n'' d'' : Nat}
+    (h : ms.WF n d n' d') (hn : n' ≤ n'') (hd : d' ≤ d'') : ms.WF n d n'' d'' :=
+  ⟨h.vmap_wf.mono_codom hn, h.dmap_wf.mono_codom hd⟩
 
 theorem Mappings.initialMappings_vmap_total (n d : Nat) : (Mappings.initialMappings n d).vmap.Total := by
   simpa [Mappings.initialMappings] using

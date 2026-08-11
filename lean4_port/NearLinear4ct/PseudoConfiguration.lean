@@ -406,10 +406,11 @@ def vertexSingleDegreeIssue (pc : PseudoConfiguration) : Option Nat := Id.run do
   return none
 
 /-- Close a boundary fan at `v` by adding the two darts of a new edge
-(A.4.8). `none` on a boundary error (`u == w`). -/
+(A.4.8). `none` on a boundary error (`u == w`) or when `v` has no boundary
+darts to close between. -/
 def addBoundaryDarts (pc : PseudoConfiguration) (v : Nat) : Option PseudoConfiguration := Id.run do
-  let eFirst := (pc.firstDart v).get!
-  let eLast := (pc.lastDart v).get!
+  let some eFirst := pc.firstDart v | return none
+  let some eLast := pc.lastDart v | return none
   let eFirstRev := (pc.darts[eFirst]!).rev
   let eLastRev := (pc.darts[eLast]!).rev
   let u := (pc.darts[eFirstRev]!).head
@@ -434,9 +435,12 @@ def fixSingleDegreeIssue (pc : PseudoConfiguration) (v : Nat) :
   let isB := pc.isBoundary
   let inc := nIncident[v]!
   if (pc.degrees[v]!).lower < inc then
-    let e := (if isB[v]! then pc.firstDart v else pc.anyDart v).get!
-    let f := (pc.sucKTimes e (pc.degrees[v]!).lower).get!
-    pc.dartIdentification #[(e, f)]
+    match (if isB[v]! then pc.firstDart v else pc.anyDart v) with
+    | some e =>
+      match pc.sucKTimes e (pc.degrees[v]!).lower with
+      | some f => pc.dartIdentification #[(e, f)]
+      | none => none
+    | none => none
   else if isB[v]! && inc == (pc.degrees[v]!).lower then
     match pc.addBoundaryDarts v with
     | some pc' => some (pc', Mappings.initialMappings pc.n pc.darts.size)

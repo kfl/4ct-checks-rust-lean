@@ -608,6 +608,32 @@ def getObjectsTest (c : Counter) : IO Unit :=
 -- The Degree algebra laws are proved universally as theorems in
 -- `NearLinear4ct/Degree.lean` (stronger than the finite grid they replaced).
 
+/-- Option-safe degree fixes: absent boundary or rotation darts answer `none`
+instead of `get!`-defaulting into arbitrary darts. These inputs are
+deliberately malformed; the tests pin the defensive behaviour only. -/
+def malformedInputTests (c : Counter) : IO Unit := do
+  -- `v = 0` has a `succ`-open dart but no `pred`-open one: `firstDart` is
+  -- absent, so both the fan close and the boundary-guided fix refuse.
+  let noFirst := PseudoConfiguration.new 1
+    #[⟨0, 1, OptIdx.none, OptIdx.some 1⟩, ⟨0, 0, OptIdx.some 0, OptIdx.some 0⟩]
+    #[⟨1, 1⟩]
+  expect c "addBoundaryDarts none on absent firstDart"
+    (noFirst.addBoundaryDarts 0 == none)
+  expect c "fixSingleDegreeIssue none on absent firstDart"
+    (noFirst.fixSingleDegreeIssue 0 == none)
+  -- `pred`-open dart present but no `succ`-open one: `lastDart` is absent.
+  let noLast := PseudoConfiguration.new 1
+    #[⟨0, 1, OptIdx.some 1, OptIdx.none⟩, ⟨0, 0, OptIdx.some 0, OptIdx.some 0⟩]
+    #[⟨1, 1⟩]
+  expect c "addBoundaryDarts none on absent lastDart"
+    (noLast.addBoundaryDarts 0 == none)
+  -- The rotation walk hits an open corner before `lower` steps.
+  let rotBreak := PseudoConfiguration.new 1
+    #[⟨0, 1, OptIdx.none, OptIdx.none⟩, ⟨0, 0, OptIdx.some 1, OptIdx.some 1⟩]
+    #[⟨1, 1⟩]
+  expect c "fixSingleDegreeIssue none on broken rotation walk"
+    (rotBreak.fixSingleDegreeIssue 0 == none)
+
 def main : IO UInt32 := do
   let c ← IO.mkRef 0
   degreeTests c
@@ -620,6 +646,7 @@ def main : IO UInt32 := do
   cartwheelTests c
   combineCartwheelTests c
   getObjectsTest c
+  malformedInputTests c
   let failures ← c.get
   if failures == 0 then
     IO.println "all tests passed"

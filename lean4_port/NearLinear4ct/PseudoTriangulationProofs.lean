@@ -1,4 +1,5 @@
 import NearLinear4ct.Configuration
+import NearLinear4ct.DartGraph
 import NearLinear4ct.MappingProofs
 import NearLinear4ct.UtilProofs
 import Std.Tactic.Do
@@ -527,50 +528,91 @@ theorem Valid.boundary' {pt : PseudoTriangulation} (h : pt.Valid) {e : Nat}
     ((pt.darts[e]!).succ.isNone ↔ (pt.darts[(pt.darts[e]!).rev]!).pred.isNone) :=
   (h.rev_rev e he ▸ h.boundary _ (h.rev_lt he)).symm
 
-/-- **Append a reverse-dart pair.** The enlarged array `arr` agrees with
-`pt.darts` on old indices and adds, at `D`/`D+1`, two darts that are each other's
-reverse, have distinct heads, and are boundary-consistent as a pair (`pred` nil
-at one iff `succ` nil at the other). Old darts' clauses come straight from `h`;
-the pair's from the hypotheses. The array is given abstractly, so the caller's
-`push`s need not be unfolded here. -/
-theorem Valid.pushRevPair {pt : PseudoTriangulation} (h : pt.Valid) {arr : Array Dart}
-    (hwf : (⟨pt.n, arr⟩ : PseudoTriangulation).WF)
-    (hsize : arr.size = pt.darts.size + 2)
-    (hold : ∀ (j : Nat), j < pt.darts.size → arr[j]! = pt.darts[j]!)
-    (hdur : (arr[pt.darts.size]!).rev = pt.darts.size + 1)
-    (hdwr : (arr[pt.darts.size + 1]!).rev = pt.darts.size)
-    (hhead : (arr[pt.darts.size]!).head ≠ (arr[pt.darts.size + 1]!).head)
-    (hb1 : (arr[pt.darts.size]!).pred.isNone ↔ (arr[pt.darts.size + 1]!).succ.isNone)
-    (hb2 : (arr[pt.darts.size + 1]!).pred.isNone ↔ (arr[pt.darts.size]!).succ.isNone) :
-    (⟨pt.n, arr⟩ : PseudoTriangulation).Valid := by
-  refine ⟨hwf, ?_, ?_, ?_⟩ <;> intro e he <;> have he' : e < arr.size := he
-  all_goals have htri : e < pt.darts.size ∨ e = pt.darts.size ∨ e = pt.darts.size + 1 := by omega
-  all_goals grind [Valid, Valid.rev_lt]
+/-! ### The semantic view
 
-/-- **Close a boundary fan.** The four paired writes -- `pred` at `eF`/`eLR`,
-`succ` at `eL`/`eFR`, all to non-nil targets, where `eFR`/`eLR` are the reverses
-of `eF`/`eL` -- take a `Valid` graph to a `Valid` graph. `rev`/`head` are
-untouched, so `rev_rev`/`loop_free` transport directly. For `boundary`, only
-`rev_rev` is needed: an edge whose `pred` corner was written pairs (via
-`rev_rev`) with a `succ` corner that was also written, so both sides are non-nil
-together; every other edge keeps its `h.boundary`. The array is given
-abstractly, so no write order or distinctness reasoning leaks in. -/
-theorem Valid.closeBoundaryFan {pt : PseudoTriangulation} (h : pt.Valid)
-    {arr : Array Dart} {eF eL eFR eLR : Nat}
-    (hwf : (⟨pt.n, arr⟩ : PseudoTriangulation).WF)
-    (hsize : arr.size = pt.darts.size)
-    (hrev : ∀ (j : Nat), (arr[j]!).rev = (pt.darts[j]!).rev)
-    (hhead : ∀ (j : Nat), (arr[j]!).head = (pt.darts[j]!).head)
-    (heF : eF < pt.darts.size) (heL : eL < pt.darts.size)
-    (hFR : (pt.darts[eF]!).rev = eFR) (hLR : (pt.darts[eL]!).rev = eLR)
-    (hpred : ∀ (j : Nat), j ≠ eF → j ≠ eLR → (arr[j]!).pred = (pt.darts[j]!).pred)
-    (hsucc : ∀ (j : Nat), j ≠ eL → j ≠ eFR → (arr[j]!).succ = (pt.darts[j]!).succ)
-    (hwpF : ¬ (arr[eF]!).pred.isNone) (hwpLR : ¬ (arr[eLR]!).pred.isNone)
-    (hwsL : ¬ (arr[eL]!).succ.isNone) (hwsFR : ¬ (arr[eFR]!).succ.isNone) :
-    (⟨pt.n, arr⟩ : PseudoTriangulation).Valid := by
-  refine ⟨hwf, ?_, ?_, ?_⟩ <;> intro e he <;> have he' : e < arr.size := he
-  all_goals have hrr := h.rev_rev e (by omega)
-  all_goals grind [Valid, Valid.rev_lt]
+`dartGraph` reads a well-formed graph as a typed `DartGraph`: `WF` turns raw
+indices into `Fin`s and the `OptIdx` sentinels into genuine `Option`s. Proofs
+use the projection lemmas below, never the definition. -/
+
+/-- The typed semantic view of a well-formed graph. -/
+def dartGraph (pt : PseudoTriangulation) (hwf : pt.WF) :
+    DartGraph (Fin pt.n) (Fin pt.darts.size) where
+  head d := ⟨(pt.darts[d.val]!).head, (hwf.read_inBounds d.isLt).head_lt⟩
+  rev d := ⟨(pt.darts[d.val]!).rev, (hwf.read_inBounds d.isLt).rev_lt⟩
+  succ d := match hs : (pt.darts[d.val]!).succ.get? with
+    | .none => none
+    | .some s => some ⟨s, (hwf.read_inBounds d.isLt).succ_lt s hs⟩
+  pred d := match hq : (pt.darts[d.val]!).pred.get? with
+    | .none => none
+    | .some p => some ⟨p, (hwf.read_inBounds d.isLt).pred_lt p hq⟩
+
+@[simp] theorem dartGraph_head {pt : PseudoTriangulation} (hwf : pt.WF)
+    (d : Fin pt.darts.size) :
+    ((pt.dartGraph hwf).head d).val = (pt.darts[d.val]!).head := rfl
+
+@[simp] theorem dartGraph_rev {pt : PseudoTriangulation} (hwf : pt.WF)
+    (d : Fin pt.darts.size) :
+    ((pt.dartGraph hwf).rev d).val = (pt.darts[d.val]!).rev := rfl
+
+theorem dartGraph_succ_get? {pt : PseudoTriangulation} (hwf : pt.WF)
+    (d : Fin pt.darts.size) :
+    ((pt.dartGraph hwf).succ d).map Fin.val = (pt.darts[d.val]!).succ.get? := by
+  simp only [dartGraph]
+  split <;> rename_i hs <;> simpa using hs.symm
+
+theorem dartGraph_pred_get? {pt : PseudoTriangulation} (hwf : pt.WF)
+    (d : Fin pt.darts.size) :
+    ((pt.dartGraph hwf).pred d).map Fin.val = (pt.darts[d.val]!).pred.get? := by
+  simp only [dartGraph]
+  split <;> rename_i hq <;> simpa using hq.symm
+
+@[simp] theorem dartGraph_succ_isNone {pt : PseudoTriangulation} (hwf : pt.WF)
+    (d : Fin pt.darts.size) :
+    ((pt.dartGraph hwf).succ d).isNone = (pt.darts[d.val]!).succ.isNone := by
+  rw [OptIdx.isNone_eq, ← dartGraph_succ_get? hwf d, Option.isNone_map]
+
+@[simp] theorem dartGraph_pred_isNone {pt : PseudoTriangulation} (hwf : pt.WF)
+    (d : Fin pt.darts.size) :
+    ((pt.dartGraph hwf).pred d).isNone = (pt.darts[d.val]!).pred.isNone := by
+  rw [OptIdx.isNone_eq, ← dartGraph_pred_get? hwf d, Option.isNone_map]
+
+theorem dartGraph_succ_eq_none {pt : PseudoTriangulation} (hwf : pt.WF)
+    {d : Fin pt.darts.size} (h : (pt.darts[d.val]!).succ.get? = .none) :
+    (pt.dartGraph hwf).succ d = none :=
+  Option.map_eq_none_iff.mp ((dartGraph_succ_get? hwf d).trans h)
+
+theorem dartGraph_pred_eq_none {pt : PseudoTriangulation} (hwf : pt.WF)
+    {d : Fin pt.darts.size} (h : (pt.darts[d.val]!).pred.get? = .none) :
+    (pt.dartGraph hwf).pred d = none :=
+  Option.map_eq_none_iff.mp ((dartGraph_pred_get? hwf d).trans h)
+
+theorem dartGraph_succ_eq_some {pt : PseudoTriangulation} (hwf : pt.WF)
+    {d : Fin pt.darts.size} {p : Nat} (h : (pt.darts[d.val]!).succ.get? = .some p) :
+    (pt.dartGraph hwf).succ d = some ⟨p, (hwf.read_inBounds d.isLt).succ_lt p h⟩ := by
+  obtain ⟨a, ha, hval⟩ := Option.map_eq_some_iff.mp ((dartGraph_succ_get? hwf d).trans h)
+  exact ha.trans (congrArg some (Fin.ext hval))
+
+theorem dartGraph_pred_eq_some {pt : PseudoTriangulation} (hwf : pt.WF)
+    {d : Fin pt.darts.size} {p : Nat} (h : (pt.darts[d.val]!).pred.get? = .some p) :
+    (pt.dartGraph hwf).pred d = some ⟨p, (hwf.read_inBounds d.isLt).pred_lt p h⟩ := by
+  obtain ⟨a, ha, hval⟩ := Option.map_eq_some_iff.mp ((dartGraph_pred_get? hwf d).trans h)
+  exact ha.trans (congrArg some (Fin.ext hval))
+
+/-- Concrete validity gives the semantic laws of the view. -/
+theorem Valid.toDartGraph {pt : PseudoTriangulation} (h : pt.Valid) :
+    (pt.dartGraph h.wf).Valid where
+  rev_rev d := Fin.ext (by simpa using h.rev_rev d.val d.isLt)
+  loop_free d hEq := h.loop_free d.val d.isLt (by simpa using congrArg Fin.val hEq)
+  boundary d := by simpa using h.boundary d.val d.isLt
+
+/-- Semantic validity of the view gives back concrete validity. -/
+theorem Valid.ofDartGraph {pt : PseudoTriangulation} (hwf : pt.WF)
+    (h : (pt.dartGraph hwf).Valid) : pt.Valid where
+  wf := hwf
+  rev_rev e he := by simpa using congrArg Fin.val (h.rev_rev ⟨e, he⟩)
+  loop_free e he hEq := h.loop_free ⟨e, he⟩ (Fin.ext (by simpa using hEq))
+  boundary e he := by simpa using h.boundary ⟨e, he⟩
+
 
 /-- **What `addBoundaryDarts` changed** (A.4.6): the implementation-level patch,
 read off the `push`/`set!` chain once by `addBoundaryDarts_patch`. `dst` appends
@@ -606,63 +648,144 @@ structure BoundaryFanPatch (src dst : PseudoTriangulation) (eF eL eFR eLR : Nat)
   succL_closed : ¬ (dst.darts[eL]!).succ.isNone
   succFR_closed : ¬ (dst.darts[eFR]!).succ.isNone
 
-/-- A boundary-fan patch preserves validity. The patch is applied as its two
-atomic steps: `Valid.pushRevPair` takes `src` to the intermediate pair-appended
-graph (reconstructed from the `dst` reads), and `Valid.closeBoundaryFan` closes
-the four paired corners on top of it. -/
+/-- The dart relabelling of a boundary-fan patch: `dst`'s index space is the
+old index space plus the two appended tags. -/
+def BoundaryFanPatch.dartEquiv {src dst : PseudoTriangulation} {eF eL eFR eLR : Nat}
+    (hp : BoundaryFanPatch src dst eF eL eFR eLR) :
+    TypeEquiv (Fin dst.darts.size) (Sum (Fin src.darts.size) (Fin 2)) :=
+  (TypeEquiv.finCast hp.size).trans (TypeEquiv.finAddTwo src.darts.size)
+
+/-- The relabelled semantic view of the patched graph. -/
+def BoundaryFanPatch.dstView {src dst : PseudoTriangulation} {eF eL eFR eLR : Nat}
+    (hp : BoundaryFanPatch src dst eF eL eFR eLR) :
+    DartGraph (Fin src.n) (Sum (Fin src.darts.size) (Fin 2)) :=
+  (dst.dartGraph hp.wf).relabel (TypeEquiv.finCast hp.n_eq) hp.dartEquiv
+
+@[simp] theorem BoundaryFanPatch.dartEquiv_symm_inl {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat} (hp : BoundaryFanPatch src dst eF eL eFR eLR)
+    (x : Fin src.darts.size) :
+    ((hp.dartEquiv.symm).toFun (Sum.inl x)).val = x.val := rfl
+
+@[simp] theorem BoundaryFanPatch.dartEquiv_symm_inr0 {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat} (hp : BoundaryFanPatch src dst eF eL eFR eLR) :
+    ((hp.dartEquiv.symm).toFun (Sum.inr 0)).val = src.darts.size := rfl
+
+@[simp] theorem BoundaryFanPatch.dartEquiv_symm_inr1 {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat} (hp : BoundaryFanPatch src dst eF eL eFR eLR) :
+    ((hp.dartEquiv.symm).toFun (Sum.inr 1)).val = src.darts.size + 1 := rfl
+
+theorem BoundaryFanPatch.dartEquiv_inl {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat} (hp : BoundaryFanPatch src dst eF eL eFR eLR)
+    (j : Fin dst.darts.size) (h : j.val < src.darts.size) :
+    hp.dartEquiv.toFun j = Sum.inl ⟨j.val, h⟩ :=
+  TypeEquiv.finAddTwo_inl _ h
+
+theorem BoundaryFanPatch.dartEquiv_inr0 {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat} (hp : BoundaryFanPatch src dst eF eL eFR eLR)
+    (j : Fin dst.darts.size) (h : j.val = src.darts.size) :
+    hp.dartEquiv.toFun j = Sum.inr 0 :=
+  TypeEquiv.finAddTwo_inr0 _ h
+
+theorem BoundaryFanPatch.dartEquiv_inr1 {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat} (hp : BoundaryFanPatch src dst eF eL eFR eLR)
+    (j : Fin dst.darts.size) (h : j.val = src.darts.size + 1) :
+    hp.dartEquiv.toFun j = Sum.inr 1 :=
+  TypeEquiv.finAddTwo_inr1 _ h
+
+/-- Interior links transport through the dart bijection: `get?`-equal reads
+map to `Sum.inl`-related typed links. -/
+private theorem BoundaryFanPatch.link_map {src dst : PseudoTriangulation}
+    {eF eL eFR eLR : Nat} (hp : BoundaryFanPatch src dst eF eL eFR eLR)
+    {o₁ : Option (Fin dst.darts.size)} {o₂ : Option (Fin src.darts.size)}
+    (h : o₁.map Fin.val = o₂.map Fin.val) :
+    o₁.map hp.dartEquiv.toFun = o₂.map (Sum.inl (β := Fin 2)) := by
+  cases o₂ with
+  | none =>
+    have h' : o₁.map Fin.val = none := by simpa using h
+    rw [Option.map_eq_none_iff.mp h']
+    rfl
+  | some f =>
+    obtain ⟨g, hg, hval⟩ := Option.map_eq_some_iff.mp (by simpa using h)
+    rw [hg, Option.map_some, Option.map_some]
+    exact congrArg some
+      ((hp.dartEquiv_inl g (hval.symm ▸ f.isLt)).trans (congrArg Sum.inl (Fin.ext hval)))
+
+/-- **The concrete patch, semantically.** All `Fin`/`Sum` transport lives here:
+the patch fields translate one-for-one into `IsBoundaryFanPatch` on the typed
+views. Fields are re-read only through the `dartGraph` projections -- the
+implementation trace (`mvcgen`, the `push`/`set!` chain) is never reopened. -/
+theorem BoundaryFanPatch.toDartGraph {src dst : PseudoTriangulation} {eF eL eFR eLR : Nat}
+    (hp : BoundaryFanPatch src dst eF eL eFR eLR) (hsrc : src.WF) :
+    DartGraph.IsBoundaryFanPatch (src.dartGraph hsrc) hp.dstView
+      ⟨eF, hp.eF_lt⟩ ⟨eL, hp.eL_lt⟩
+      ⟨eFR, hp.eFR_def ▸ (hsrc.read_inBounds hp.eF_lt).rev_lt⟩
+      ⟨eLR, hp.eLR_def ▸ (hsrc.read_inBounds hp.eL_lt).rev_lt⟩ := by
+  refine
+    { eFR_def := Fin.ext (by simpa using hp.eFR_def)
+      eLR_def := Fin.ext (by simpa using hp.eLR_def)
+      head_ne := fun hEq => hp.head_ne (by simpa using congrArg Fin.val hEq)
+      predF_open := by simpa using hp.predF_open
+      succL_open := by simpa using hp.succL_open
+      rev_new1 := hp.dartEquiv_inr1 _ (by
+        rw [dartGraph_rev, hp.dartEquiv_symm_inr0, congrArg Dart.rev hp.read_new1])
+      rev_new2 := hp.dartEquiv_inr0 _ (by
+        rw [dartGraph_rev, hp.dartEquiv_symm_inr1, congrArg Dart.rev hp.read_new2])
+      head_new1 := Fin.ext (by simpa [dstView] using congrArg Dart.head hp.read_new1)
+      head_new2 := Fin.ext (by simpa [dstView] using congrArg Dart.head hp.read_new2)
+      succ_new1 := by
+        simpa [dstView, Option.isNone_map]
+          using congrArg (fun d => d.succ.isNone) hp.read_new1
+      pred_new1 := by simp [dstView, Option.isNone_map, hp.read_new1]
+      succ_new2 := by simp [dstView, Option.isNone_map, hp.read_new2]
+      pred_new2 := by
+        simpa [dstView, Option.isNone_map]
+          using congrArg (fun d => d.pred.isNone) hp.read_new2
+      head_old := fun x => Fin.ext (by simpa [dstView] using hp.head_old x.val x.isLt)
+      rev_old := ?_
+      pred_old := ?_
+      succ_old := ?_
+      predF_closed := fun hc => hp.predF_closed (by
+        simpa [dstView, Option.isNone_map] using hc)
+      predLR_closed := fun hc => hp.predLR_closed (by
+        simpa [dstView, Option.isNone_map] using hc)
+      succL_closed := fun hc => hp.succL_closed (by
+        simpa [dstView, Option.isNone_map] using hc)
+      succFR_closed := fun hc => hp.succFR_closed (by
+        simpa [dstView, Option.isNone_map] using hc) }
+  · -- rev_old: old reverses are preserved through the relabelling
+    intro x
+    simp only [dstView, DartGraph.relabel_rev]
+    refine (hp.dartEquiv_inl _ ?_).trans (congrArg Sum.inl (Fin.ext ?_))
+    · rw [dartGraph_rev, hp.dartEquiv_symm_inl x, hp.rev_old x.val x.isLt]
+      exact (hsrc.read_inBounds x.isLt).rev_lt
+    · exact hp.rev_old x.val x.isLt
+  · -- pred_old: interior pred links map through `Sum.inl`
+    intro x hxF hxLR
+    simp only [dstView, DartGraph.relabel_pred]
+    refine hp.link_map ?_
+    rw [dartGraph_pred_get?, dartGraph_pred_get?, hp.dartEquiv_symm_inl x]
+    exact congrArg OptIdx.get?
+      (hp.pred_old x.val (fun hc => hxF (Fin.ext hc)) (fun hc => hxLR (Fin.ext hc)) x.isLt)
+  · -- succ_old: interior succ links map through `Sum.inl`
+    intro x hxL hxFR
+    simp only [dstView, DartGraph.relabel_succ]
+    refine hp.link_map ?_
+    rw [dartGraph_succ_get?, dartGraph_succ_get?, hp.dartEquiv_symm_inl x]
+    exact congrArg OptIdx.get?
+      (hp.succ_old x.val (fun hc => hxL (Fin.ext hc)) (fun hc => hxFR (Fin.ext hc)) x.isLt)
+
+/-- A boundary-fan patch preserves validity: transport to the semantic views,
+apply the semantic preservation theorem (`IsBoundaryFanPatch.valid`), and come
+back. No intermediate array state is reconstructed. -/
 theorem BoundaryFanPatch.valid {src dst : PseudoTriangulation} {eF eL eFR eLR : Nat}
-    (hp : BoundaryFanPatch src dst eF eL eFR eLR) (hv : src.Valid) : dst.Valid := by
-  obtain ⟨hwf, hn, hsz, heF, heL, hFRd, hLRd, hhne, _hpO, _hsO, hr1, hr2, hho, hro,
-    hpo, hso, hpFc, hpLRc, hsLc, hsFRc⟩ := hp
-  have hd1 : (dst.darts[src.darts.size]!).InBounds src.n (src.darts.size + 2) :=
-    hsz ▸ hn ▸ hwf.read_inBounds (by omega)
-  have hd2 : (dst.darts[src.darts.size + 1]!).InBounds src.n (src.darts.size + 2) :=
-    hsz ▸ hn ▸ hwf.read_inBounds (by omega)
-  -- The intermediate graph: the source plus the appended reverse pair.
-  have hread : ∀ (j : Nat),
-      ((src.darts.push dst.darts[src.darts.size]!).push dst.darts[src.darts.size + 1]!)[j]!
-        = if j < src.darts.size then src.darts[j]! else dst.darts[j]! := by
-    intro j
-    rcases Nat.lt_trichotomy j src.darts.size with hj | hj | hj
-    · rw [if_pos hj, getElem!_push_lt (by simp; omega), getElem!_push_lt hj]
-    · subst hj
-      rw [if_neg (by omega), getElem!_push_lt (by simp), getElem!_push_size]
-    · by_cases hj1 : j = src.darts.size + 1
-      · subst hj1
-        rw [if_neg (by omega),
-          show src.darts.size + 1 = (src.darts.push dst.darts[src.darts.size]!).size by simp,
-          getElem!_push_size]
-      · rw [if_neg (by omega), getElem!_neg _ _ (by simp; omega),
-          getElem!_neg _ _ (by omega)]
-  have hmv : (⟨src.n, (src.darts.push dst.darts[src.darts.size]!).push
-      dst.darts[src.darts.size + 1]!⟩ : PseudoTriangulation).Valid := by
-    refine hv.pushRevPair ?_ (by simp) (fun j hj => by rw [hread j, if_pos hj]) ?_ ?_ ?_ ?_ ?_
-    · intro i hi
-      exact (push_dart_wf (push_dart_wf
-          (fun j hj => (hv.wf j hj).mono (Nat.le_refl _) (by omega)) hd1) hd2 i hi).mono
-        (Nat.le_refl _) (by simp)
-    · rw [hread _, if_neg (by omega), hr1]
-    · rw [hread _, if_neg (by omega), hr2]
-    · rw [hread (src.darts.size), hread (src.darts.size + 1), if_neg (by omega),
-        if_neg (by omega), hr1, hr2]
-      exact hhne
-    · rw [hread (src.darts.size), hread (src.darts.size + 1), if_neg (by omega),
-        if_neg (by omega), hr1, hr2]
-      simp
-    · rw [hread (src.darts.size), hread (src.darts.size + 1), if_neg (by omega),
-        if_neg (by omega), hr1, hr2]
-  have hfinal : (⟨src.n, dst.darts⟩ : PseudoTriangulation).Valid :=
-    hmv.closeBoundaryFan (fun i hi => hn ▸ hwf i hi) (by simp [hsz])
-      (fun j => by rw [hread j]; split <;> first | rfl | exact hro j ‹_›)
-      (fun j => by rw [hread j]; split <;> first | rfl | exact hho j ‹_›)
-      (by simp; omega) (by simp; omega)
-      (by rw [hread eF, if_pos heF]; exact hFRd)
-      (by rw [hread eL, if_pos heL]; exact hLRd)
-      (fun j hjF hjLR => by rw [hread j]; split <;> first | rfl | exact hpo j hjF hjLR ‹_›)
-      (fun j hjL hjFR => by rw [hread j]; split <;> first | rfl | exact hso j hjL hjFR ‹_›)
-      hpFc hpLRc hsLc hsFRc
-  have hEq : (⟨src.n, dst.darts⟩ : PseudoTriangulation) = dst := by rw [← hn]
-  exact hEq ▸ hfinal
+    (hp : BoundaryFanPatch src dst eF eL eFR eLR) (hv : src.Valid) : dst.Valid :=
+  have hd := (hp.toDartGraph hv.wf).valid hv.toDartGraph
+  have hd2 : (((dst.dartGraph hp.wf).relabel (TypeEquiv.finCast hp.n_eq) hp.dartEquiv).relabel
+      (TypeEquiv.finCast hp.n_eq).symm hp.dartEquiv.symm).Valid :=
+    hd.relabel (TypeEquiv.finCast hp.n_eq).symm hp.dartEquiv.symm
+  Valid.ofDartGraph hp.wf
+    (DartGraph.relabel_symm_relabel (TypeEquiv.finCast hp.n_eq) hp.dartEquiv
+      (dst.dartGraph hp.wf) ▸ hd2)
 
 /-- A boundary-fan patch keeps the identity coherent: interior links are never
 disturbed. On a valid source the two closed fan corners were open
@@ -829,7 +952,10 @@ private def LinkKind.glue (k : LinkKind) (darts : Array Dart)
 
 /-- Semantic invariant for A.3. Each original dart is coherent with the
 current representative dart; pending adjacency identifications are interpreted
-through `PendingEq`. The seed field records that all requested pairs remain
+through `PendingEq`. `link_of`/`link_from` pair forward coherence with reverse
+provenance: original adjacency links survive to the representative, and every
+representative link descends from some original in the class -- the gluing
+never invents links. The seed field records that all requested pairs remain
 connected even after their queue entries are popped. -/
 private structure GlueCoherent (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
     (darts : Array Dart) (ufV ufD : Unionfind) (q : Queue (Nat × Nat)) : Prop where
@@ -838,9 +964,12 @@ private structure GlueCoherent (pt : PseudoTriangulation) (dartPairs : Array (Na
     ufV.root (pt.darts[i]!).head = ufV.root (darts[ufD.root i]!).head
   rev : ∀ i, i < pt.darts.size →
     PendingEq ufD q (pt.darts[i]!).rev (darts[ufD.root i]!).rev
-  link : ∀ (k : LinkKind) i, i < pt.darts.size → ∀ s,
+  link_of : ∀ (k : LinkKind) i, i < pt.darts.size → ∀ s,
     (k.get (pt.darts[i]!)).get? = Option.some s →
     ∃ t, (k.get (darts[ufD.root i]!)).get? = Option.some t ∧ PendingEq ufD q s t
+  link_from : ∀ (k : LinkKind) i, i < pt.darts.size →
+    ¬ (k.get (darts[ufD.root i]!)).isNone →
+    ∃ j, j < pt.darts.size ∧ ufD.root j = ufD.root i ∧ ¬ (k.get (pt.darts[j]!)).isNone
   seeds : ∀ p ∈ dartPairs, PendingEq ufD q p.1 p.2
 
 @[simp] private theorem root_new {n i : Nat} (hi : i < n) :
@@ -864,6 +993,8 @@ private theorem GlueCoherent.init {pt : PseudoTriangulation} (hpt : pt.WF)
   · intro k i hi s hs
     have hslt := LinkKind.get_lt (hpt.read_inBounds hi) hs
     exact ⟨s, by simpa only [root_new hi] using hs, .root hslt hslt rfl⟩
+  · intro k i hi hnn
+    exact ⟨i, hi, rfl, by simpa only [root_new hi] using hnn⟩
   · intro p hp
     obtain ⟨hp₁, hp₂⟩ := hpairs p hp
     exact .queued hp₁ hp₂ (Queue.active_ofArray_of_mem hp)
@@ -878,8 +1009,9 @@ private theorem GlueCoherent.pop_same {pt : PseudoTriangulation}
     simpa [Unionfind.same] using hsame
   exact ⟨h.head_eq, h.head,
     fun i hi => (h.rev i hi).pop_same hpop hef,
-    fun k i hi s hs => (h.link k i hi s hs).imp fun t ht =>
+    fun k i hi s hs => (h.link_of k i hi s hs).imp fun t ht =>
       ⟨ht.1, ht.2.pop_same hpop hef⟩,
+    h.link_from,
     fun p hp => (h.seeds p hp).pop_same hpop hef⟩
 
 /-- The packed-state form of the loop's mutable tuple `⟨darts, q, ufD, ufV⟩`. -/
@@ -1064,6 +1196,33 @@ private theorem LinkKind.glue_other {k l : LinkKind} (hkl : k ≠ l)
     l.get ((k.glue darts q eStar fStar).1[i]!) = l.get (darts[i]!) := by
   cases k <;> cases l <;> grind [LinkKind.glue, LinkKind.get, LinkKind.set]
 
+/-- Reverse provenance of one generic link merge: a link present after the
+merge was already present at the same representative, or was copied from the
+removed root onto the surviving one. Holds for either observed link field. -/
+private theorem LinkKind.glue_from {darts : Array Dart}
+    {q : Queue (Nat × Nat)} {eStar fStar r : Nat} (k l : LinkKind)
+    (_hf : fStar < darts.size)
+    (h : ¬ (l.get ((k.glue darts q eStar fStar).1[r]!)).isNone) :
+    ¬ (l.get (darts[r]!)).isNone ∨ (r = fStar ∧ ¬ (l.get (darts[eStar]!)).isNone) := by
+  rcases heq : k.get (darts[eStar]!) with _ | e'
+  · exact Or.inl (by simpa only [LinkKind.glue, heq] using h)
+  · rcases hfeq : k.get (darts[fStar]!) with _ | f'
+    · -- The copy case: the write lands at `fStar` and only touches field `k`.
+      have h' : ¬ (l.get ((darts.set! fStar
+          (k.set (darts[fStar]!) (.some e')))[r]!)).isNone := by
+        simpa only [LinkKind.glue, heq, hfeq] using h
+      by_cases hrf : r = fStar
+      · subst hrf
+        cases k <;> cases l
+        · exact Or.inr ⟨rfl, by simp [heq]⟩
+        · exact Or.inl (by
+            simpa only [LinkKind.get, LinkKind.set, getElem!_set!_succ_pred] using h')
+        · exact Or.inl (by
+            simpa only [LinkKind.get, LinkKind.set, getElem!_set!_pred_succ] using h')
+        · exact Or.inr ⟨rfl, by simp [heq]⟩
+      · exact Or.inl (by simpa only [getElem!_set!_ne (Ne.symm hrf)] using h')
+    · exact Or.inl (by simpa only [LinkKind.glue, heq, hfeq] using h)
+
 /-- Lemma 9.4's common `P ∈ {succ, pred}` merge argument when the source
 class is the one whose representative becomes a child. -/
 private theorem LinkKind.glue_left {pt : PseudoTriangulation} {darts : Array Dart}
@@ -1162,6 +1321,29 @@ private theorem glueBoth_link {pt : PseudoTriangulation} {darts : Array Dart}
             darts q eStar fStar r)).trans hru
       exact LinkKind.pred.glue_root ((glueSucc_spec h he hf).1) he hf hlink hsu.glue
 
+/-- Reverse provenance across the consecutive `succ` and `pred` merges
+(parallel to `glueBoth_link`): a link present afterwards was already present,
+either at the same representative or copied from the removed root onto the
+surviving one. -/
+private theorem glueBoth_from {darts : Array Dart} {q : Queue (Nat × Nat)}
+    {eStar fStar r : Nat} (k : LinkKind) (hf : fStar < darts.size)
+    (h : ¬ (k.get ((gluePred (glueSucc darts q eStar fStar).1
+        (glueSucc darts q eStar fStar).2 eStar fStar).1[r]!)).isNone) :
+    ¬ (k.get (darts[r]!)).isNone ∨ (r = fStar ∧ ¬ (k.get (darts[eStar]!)).isNone) := by
+  have hsz : (LinkKind.succ.glue darts q eStar fStar).1.size = darts.size := by
+    unfold LinkKind.glue
+    split <;> simp
+  have h' : ¬ (k.get ((LinkKind.pred.glue (LinkKind.succ.glue darts q eStar fStar).1
+      (LinkKind.succ.glue darts q eStar fStar).2 eStar fStar).1[r]!)).isNone := by
+    simpa only [LinkKind.glue_succ, LinkKind.glue_pred] using h
+  rcases LinkKind.glue_from .pred k (hsz.symm ▸ hf) h' with h1 | ⟨hrf, h1⟩
+  · rcases LinkKind.glue_from .succ k hf h1 with h2 | ⟨hrf, h2⟩
+    · exact Or.inl h2
+    · exact Or.inr ⟨hrf, h2⟩
+  · rcases LinkKind.glue_from .succ k hf h1 with h2 | ⟨-, h2⟩
+    · exact Or.inr ⟨hrf, h2⟩
+    · exact Or.inr ⟨hrf, h2⟩
+
 /-- One nontrivial worklist step preserves Lemma 9.4's semantic invariant.
 The vertex forest may either perform the requested head union or stay put
 when those heads were already identified; `hVmono`/`hVpair` cover both cases. -/
@@ -1257,7 +1439,7 @@ private theorem GlueCoherent.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
       (by simpa only [Unionfind.n_unite, hinv.ufD_n, ← hinv.darts_size] using
         (hinv.read_inBounds hrf).rev_lt)
       Queue.active_push_self
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro i hi
     exact (headFinal i).trans (hcoh.head_eq i hi)
   · intro i hi
@@ -1289,7 +1471,7 @@ private theorem GlueCoherent.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
     · rw [rootAfter i hi, if_neg hir, revFinal]
       exact throughAll hbase
   · intro k i hi s hs
-    obtain ⟨u, hlink, hsu⟩ := hcoh.link k i hi s hs
+    obtain ⟨u, hlink, hsu⟩ := hcoh.link_of k i hi s hs
     have hsu' := afterCore hsu
     obtain ⟨t, ht, hst⟩ := glueBoth_link hcore hre hrf k hlink hsu'
     refine ⟨t, ?_, ?_⟩
@@ -1298,6 +1480,39 @@ private theorem GlueCoherent.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
         LinkKind.glue_pred] using ht
     · simpa only [succState, predState, LinkKind.glue_succ,
         LinkKind.glue_pred] using hst
+  · intro k i hi hnn
+    have happ : ∀ {r : Nat}, ¬ (k.get (predState.1[r]!)).isNone →
+        ¬ (k.get (darts[r]!)).isNone
+          ∨ (r = ufD.root f ∧ ¬ (k.get (darts[ufD.root e]!)).isNone) := fun {r} hr =>
+      glueBoth_from k (hinv.darts_size.symm ▸ hrf)
+        (by simpa only [succState, predState] using hr)
+    have hnn' := rootAfter i hi ▸ hnn
+    by_cases hir : ufD.root i = ufD.root e
+    · have hnn'' : ¬ (k.get (predState.1[ufD.root f]!)).isNone := by
+        simpa only [succState, predState, LinkKind.glue_succ, LinkKind.glue_pred,
+          if_pos hir] using hnn'
+      rcases happ hnn'' with hf' | ⟨-, he'⟩
+      · obtain ⟨j, hj, hjr, hjs⟩ := hcoh.link_from k f hef.2 hf'
+        refine ⟨j, hj, ?_, hjs⟩
+        rw [rootAfter j hj, rootAfter i hi,
+          if_neg (fun hc => hne (hc.symm.trans hjr)), if_pos hir]
+        exact hjr
+      · obtain ⟨j, hj, hjr, hjs⟩ := hcoh.link_from k e hef.1 he'
+        refine ⟨j, hj, ?_, hjs⟩
+        rw [rootAfter j hj, rootAfter i hi, if_pos hjr, if_pos hir]
+    · have hnn'' : ¬ (k.get (predState.1[ufD.root i]!)).isNone := by
+        simpa only [succState, predState, LinkKind.glue_succ, LinkKind.glue_pred,
+          if_neg hir] using hnn'
+      rcases happ hnn'' with hd' | ⟨hrf, he'⟩
+      · obtain ⟨j, hj, hjr, hjs⟩ := hcoh.link_from k i hi hd'
+        refine ⟨j, hj, ?_, hjs⟩
+        rw [rootAfter j hj, rootAfter i hi,
+          if_neg (fun hc => hir (hjr.symm.trans hc)), if_neg hir]
+        exact hjr
+      · obtain ⟨j, hj, hjr, hjs⟩ := hcoh.link_from k e hef.1 he'
+        refine ⟨j, hj, ?_, hjs⟩
+        rw [rootAfter j hj, rootAfter i hi, if_pos hjr, if_neg hir]
+        exact hrf.symm
   · intro p hp
     exact afterAll (hcoh.seeds p hp)
 
@@ -1340,6 +1555,14 @@ private theorem LinkKind.get_renumberDart {vMap dMap : IndexMap} {d : Dart}
     (k.get (renumberDart vMap dMap d)).get? = (dMap[i]!).get? := by
   have hi := OptIdx.get?_eq_some_iff.mp h
   cases k <;> simp_all [LinkKind.get, renumberDart]
+
+/-- A renumbered dart has a closed link only where the representative had
+one: the rebuild maps links, it does not create them. -/
+private theorem LinkKind.renumberDart_from {vMap dMap : IndexMap} {d : Dart}
+    {k : LinkKind} (h : ¬ (k.get (renumberDart vMap dMap d)).isNone) :
+    ¬ (k.get d).isNone := by
+  cases k <;> rcases hs : d.succ with _ | s <;> rcases hp : d.pred with _ | p <;>
+    simp_all [LinkKind.get, renumberDart]
 
 private theorem getElem!_of_toList_eq_append_cons {xs : Array α}
     [Inhabited α] {pref : List α} {x : α} {suff : List α}
@@ -1384,9 +1607,12 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
     let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
     let dMap := composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots
     Mappings.Coherent ⟨vMap, dMap⟩ pt ⟨ufV.numRoots, dartsStar⟩ ∧
-      ∀ p ∈ dartPairs, dMap.idx? p.1 = dMap.idx? p.2 := by
+      (∀ p ∈ dartPairs, dMap.idx? p.1 = dMap.idx? p.2) ∧
+      ∀ (k : LinkKind) c, c < dartsStar.size → ¬ (k.get (dartsStar[c]!)).isNone →
+        ∃ j, j < pt.darts.size ∧ dMap.idx? j = Option.some c ∧
+          ¬ (k.get (pt.darts[j]!)).isNone := by
   intro vMap dMap
-  constructor
+  refine ⟨?_, ?_, ?_⟩
   · intro f fStar hf
     obtain ⟨hfMap, -⟩ := IndexMap.idx?_eq_some_iff.mp hf
     have hfi : f < ufD.n := by
@@ -1418,7 +1644,7 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
         (hs : (k.get (pt.darts[f]!)).get? = Option.some s) :
         ∃ tStar, (k.get (dartsStar[fStar]!)).get? = Option.some tStar ∧
           dMap.idx? s = Option.some tStar := by
-      obtain ⟨t, ht, hst⟩ := hcoh.link k f hfpt s hs
+      obtain ⟨t, ht, hst⟩ := hcoh.link_of k f hfpt s hs
       refine ⟨ufD.rootRank (ufD.root t), ?_, ?_⟩
       · rw [hout, LinkKind.get_renumberDart ht,
           ufD.relabel_getElem! hinv.ufD_wf hst.right_lt]
@@ -1456,30 +1682,62 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
     rw [ufD.relabel_idx? hinv.ufD_wf hseed.left_lt,
       ufD.relabel_idx? hinv.ufD_wf hseed.right_lt,
       hseed.root_eq_of_empty hq]
+  · -- Link provenance: slot `c` holds the renumbered root of compact index
+    -- `c`; a closed link there descends, through the rebuild and then
+    -- `link_from`, to some source dart of that class.
+    intro k c hc hnn
+    have hcn : c < ufD.numRoots := by
+      simpa only [Unionfind.numRoots, ← hri.size_eq] using hc
+    obtain ⟨hrlt, hroot, hrank⟩ := Unionfind.rootRank_allRoots hcn
+    have hrpt : ufD.allRoots[c]! < pt.darts.size := by
+      simpa only [hinv.ufD_n] using hrlt
+    have hout : dartsStar[c]! = renumberDart vMap dMap (darts[ufD.allRoots[c]!]!) := by
+      rw [getElem!_pos dartsStar c hc]
+      exact hri.value_eq c hc
+    have hrep : ¬ (k.get (darts[ufD.allRoots[c]!]!)).isNone :=
+      LinkKind.renumberDart_from (hout ▸ hnn)
+    have hself : ufD.root ufD.allRoots[c]! = ufD.allRoots[c]! :=
+      Unionfind.root_eq_self hroot
+    obtain ⟨j, hj, hjr, hjs⟩ := hcoh.link_from k ufD.allRoots[c]! hrpt (hself.symm ▸ hrep)
+    refine ⟨j, hj, ?_, hjs⟩
+    rw [ufD.relabel_idx? hinv.ufD_wf (hinv.ufD_n.symm ▸ hj), hjr, hself, hrank]
 
 section
 -- The transparency linter flags `mvcgen`'s own `Invariant` encoding (the `⇓`
 -- postconditions), not this proof's text; nothing here to rephrase.
 set_option linter.tacticCheckInstances false
 
-/-- Combined A.3 contract: bounds, total quotient maps, structural coherence,
-and identification of every seed pair. Kept private so the public tiered
-theorems below expose only the facts their callers request. -/
+/-- The combined A.3 contract: the quotient graph is well-formed, the maps
+are total, well-formed relabellings that are also *onto* the quotient's index
+ranges, they commute with every dart field (interior links map forward),
+every seed pair is identified, and every closed quotient link has a source
+antecedent in its dart class. Private carrier: the public tiered theorems
+below expose only the facts their callers request. -/
+private structure FreeHomomorphismSpec (pt : PseudoTriangulation)
+    (dartPairs : Array (Nat × Nat)) (ptStar : PseudoTriangulation)
+    (maps : Mappings) : Prop where
+  graph_wf : ptStar.WF
+  maps_wf : maps.WF pt.n pt.darts.size ptStar.n ptStar.darts.size
+  vmap_total : maps.vmap.Total
+  dmap_total : maps.dmap.Total
+  coherent : maps.Coherent pt ptStar
+  seeds : ∀ p ∈ dartPairs, maps.dmap.idx? p.1 = maps.dmap.idx? p.2
+  vmap_surj : ∀ j, j < ptStar.n → ∃ i, i < pt.n ∧ maps.vmap.idx? i = Option.some j
+  dmap_surj : ∀ j, j < ptStar.darts.size →
+    ∃ i, i < pt.darts.size ∧ maps.dmap.idx? i = Option.some j
+  link_from : ∀ (k : LinkKind) c, c < ptStar.darts.size →
+    ¬ (k.get (ptStar.darts[c]!)).isNone →
+    ∃ j, j < pt.darts.size ∧ maps.dmap.idx? j = Option.some c ∧
+      ¬ (k.get (pt.darts[j]!)).isNone
+
 private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
     {dartPairs : Array (Nat × Nat)}
     (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
     {ptStar : PseudoTriangulation} {maps : Mappings}
     (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps)) :
-    ptStar.WF
-    ∧ maps.WF pt.n pt.darts.size ptStar.n ptStar.darts.size
-    ∧ maps.vmap.Total ∧ maps.dmap.Total
-    ∧ maps.Coherent pt ptStar
-    ∧ ∀ p ∈ dartPairs, maps.dmap.idx? p.1 = maps.dmap.idx? p.2 := by
+    FreeHomomorphismSpec pt dartPairs ptStar maps := by
   apply Id.of_wp_run_eq hrun fun (ptOut, mapsOut) =>
-    ptOut.WF ∧ mapsOut.WF pt.n pt.darts.size ptOut.n ptOut.darts.size
-    ∧ mapsOut.vmap.Total ∧ mapsOut.dmap.Total
-    ∧ mapsOut.Coherent pt ptOut
-    ∧ ∀ p ∈ dartPairs, mapsOut.dmap.idx? p.1 = mapsOut.dmap.idx? p.2
+    FreeHomomorphismSpec pt dartPairs ptOut mapsOut
   mvcgen
   case inv1 => exact fun s => ⟨glueMeasure s⟩
   case inv2 => exact ⇓s => ⌜GlueSpecSum pt dartPairs s⌝
@@ -1559,17 +1817,35 @@ private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
     obtain ⟨hVwf, hVtot⟩ := Unionfind.relabel_wf _ hinv'.ufV_wf
     obtain ⟨hDwf, hDtot⟩ := Unionfind.relabel_wf _ hinv'.ufD_wf
     have hri : RenumberInv _ _ _ _ _ := ‹_›
-    obtain ⟨hcoherent, hseeds⟩ :=
+    obtain ⟨hcoherent, hseeds, hfrom⟩ :=
       GlueCoherent.finish hpt hinv' hcoh
         (by simpa only [Array.length_toList] using hri) hqempty
-    exact ⟨fun i hi => by grind [RenumberInv, Unionfind.numRoots, Array.length_toList],
-      ⟨by grind [GlueInv],
-       by grind [RenumberInv, GlueInv, Unionfind.numRoots, Array.length_toList]⟩,
-      hVtot, hDtot, hcoherent, hseeds⟩
+    have hri' : RenumberInv _ _ _ _ _ := ‹_›
+    refine
+      { graph_wf :=
+          fun i hi => by grind [RenumberInv, Unionfind.numRoots, Array.length_toList]
+        maps_wf := ⟨by grind [GlueInv],
+          by grind [RenumberInv, GlueInv, Unionfind.numRoots, Array.length_toList]⟩
+        vmap_total := hVtot
+        dmap_total := hDtot
+        coherent := hcoherent
+        seeds := hseeds
+        vmap_surj := ?_
+        dmap_surj := ?_
+        link_from := hfrom }
+    · intro j hj
+      obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufV_wf hj
+      exact ⟨i, hinv'.ufV_n ▸ hi, hidx⟩
+    · intro j hj
+      obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufD_wf (j := j)
+        (by grind [RenumberInv, Unionfind.numRoots, Array.length_toList])
+      exact ⟨i, hinv'.ufD_n ▸ hi, hidx⟩
 end
 
 /-- **`freeHomomorphism` produces a well-formed quotient**: the graph is `WF`
-and the maps are total, well-formed relabellings onto its index ranges. -/
+and the maps are total, well-formed relabellings into its index ranges.
+(Surjectivity onto them is part of the semantic quotient tier,
+`freeHomomorphism_isQuotientMap`.) -/
 theorem freeHomomorphism_wf {pt : PseudoTriangulation} (hpt : pt.WF)
     {dartPairs : Array (Nat × Nat)}
     (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
@@ -1578,9 +1854,8 @@ theorem freeHomomorphism_wf {pt : PseudoTriangulation} (hpt : pt.WF)
     ptStar.WF
     ∧ maps.WF pt.n pt.darts.size ptStar.n ptStar.darts.size
     ∧ maps.vmap.Total ∧ maps.dmap.Total := by
-  obtain ⟨hptStar, hmaps, hvmap, hdmap, -, -⟩ :=
-    freeHomomorphism_spec hpt hpairs hrun
-  exact ⟨hptStar, hmaps, hvmap, hdmap⟩
+  have hspec := freeHomomorphism_spec hpt hpairs hrun
+  exact ⟨hspec.graph_wf, hspec.maps_wf, hspec.vmap_total, hspec.dmap_total⟩
 
 /-- **A.3 coherence tier.** The quotient maps commute with every dart field,
 and each requested input pair has a common quotient image. -/
@@ -1591,9 +1866,126 @@ theorem freeHomomorphism_coherent {pt : PseudoTriangulation} (hpt : pt.WF)
     (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps)) :
     maps.Coherent pt ptStar ∧
       ∀ p ∈ dartPairs, maps.dmap.idx? p.1 = maps.dmap.idx? p.2 := by
-  obtain ⟨-, -, -, -, hcoherent, hseeds⟩ :=
-    freeHomomorphism_spec hpt hpairs hrun
-  exact ⟨hcoherent, hseeds⟩
+  have hspec := freeHomomorphism_spec hpt hpairs hrun
+  exact ⟨hspec.coherent, hspec.seeds⟩
+
+/-- A.3 quotient tier: the maps are onto the quotient's index ranges, and
+every closed link of the quotient has a source antecedent in its dart class --
+the gluing relabels and merges links but never invents one. Private: the
+public semantic API is `freeHomomorphism_isQuotientMap`. -/
+private theorem freeHomomorphism_quotient {pt : PseudoTriangulation} (hpt : pt.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps)) :
+    (∀ j, j < ptStar.n → ∃ i, i < pt.n ∧ maps.vmap.idx? i = Option.some j)
+    ∧ (∀ j, j < ptStar.darts.size →
+        ∃ i, i < pt.darts.size ∧ maps.dmap.idx? i = Option.some j)
+    ∧ ∀ (k : LinkKind) c, c < ptStar.darts.size →
+        ¬ (k.get (ptStar.darts[c]!)).isNone →
+        ∃ j, j < pt.darts.size ∧ maps.dmap.idx? j = Option.some c ∧
+          ¬ (k.get (pt.darts[j]!)).isNone := by
+  have hspec := freeHomomorphism_spec hpt hpairs hrun
+  exact ⟨hspec.vmap_surj, hspec.dmap_surj, hspec.link_from⟩
+
+/-- The executable loop check decides dart-level loop-freedom. -/
+theorem hasLoop_eq_false_iff {pt : PseudoTriangulation} :
+    pt.hasLoop = false ↔ ∀ e, e < pt.darts.size →
+      (pt.darts[e]!).head ≠ (pt.darts[(pt.darts[e]!).rev]!).head := by
+  rw [show pt.hasLoop = pt.darts.any (fun d => d.head == (pt.darts[d.rev]!).head) from rfl,
+    Array.any_eq_false]
+  constructor
+  · intro h e he hEq
+    exact h e he (by simp only [← getElem!_pos pt.darts e he]; simp [hEq])
+  · intro h i hi
+    refine fun hbeq => h i hi ?_
+    rw [getElem!_pos pt.darts i hi]
+    exact eq_of_beq hbeq
+
+/-- **The quotient, semantically (A.3).** The typed decodes of the returned
+maps form a semantic quotient of dart graphs: `head`/`rev` commute with the
+collapse and interior links map forward (the coherence tier), while the
+surjectivity and provenance tiers supply the class-level converses. -/
+theorem freeHomomorphism_isQuotientMap {pt : PseudoTriangulation} (hpt : pt.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps))
+    (hS : ptStar.WF)
+    (hmw : maps.WF pt.n pt.darts.size ptStar.n ptStar.darts.size)
+    (hvt : maps.vmap.Total) (hdt : maps.dmap.Total) :
+    DartGraph.IsQuotientMap (pt.dartGraph hpt) (ptStar.dartGraph hS)
+      (maps.vmap.toTotalFun hmw.vmap_wf hvt) (maps.dmap.toTotalFun hmw.dmap_wf hdt) := by
+  obtain ⟨hcoh, -⟩ := freeHomomorphism_coherent hpt hpairs hrun
+  obtain ⟨hvsurj, hdsurj, hfrom⟩ := freeHomomorphism_quotient hpt hpairs hrun
+  generalize hqv : maps.vmap.toTotalFun hmw.vmap_wf hvt = qv
+  generalize hqd : maps.dmap.toTotalFun hmw.dmap_wf hdt = qd
+  have hidxv : ∀ i : Fin pt.n, maps.vmap.idx? i.val = Option.some (qv i).val :=
+    fun i => hqv ▸ IndexMap.idx?_toTotalFun hmw.vmap_wf hvt i
+  have hidxd : ∀ i : Fin pt.darts.size, maps.dmap.idx? i.val = Option.some (qd i).val :=
+    fun i => hqd ▸ IndexMap.idx?_toTotalFun hmw.dmap_wf hdt i
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · -- qv_surj
+    intro c
+    obtain ⟨i, hi, hidx⟩ := hvsurj c.val c.isLt
+    exact ⟨⟨i, hi⟩, Fin.ext (Option.some.inj ((hidxv ⟨i, hi⟩).symm.trans hidx))⟩
+  · -- qd_surj
+    intro c
+    obtain ⟨i, hi, hidx⟩ := hdsurj c.val c.isLt
+    exact ⟨⟨i, hi⟩, Fin.ext (Option.some.inj ((hidxd ⟨i, hi⟩).symm.trans hidx))⟩
+  · -- head_eq
+    intro d
+    obtain ⟨hhead, -, -, -⟩ := hcoh d.val (qd d).val (hidxd d)
+    exact Fin.ext
+      (Option.some.inj (((hidxv ((pt.dartGraph hpt).head d)).symm.trans hhead)).symm)
+  · -- rev_eq
+    intro d
+    obtain ⟨-, hrev, -, -⟩ := hcoh d.val (qd d).val (hidxd d)
+    exact Fin.ext
+      (Option.some.inj (((hidxd ((pt.dartGraph hpt).rev d)).symm.trans hrev)).symm)
+  · -- succ_of
+    intro d s hsem
+    obtain ⟨-, -, hsucc, -⟩ := hcoh d.val (qd d).val (hidxd d)
+    have hs' : (pt.darts[d.val]!).succ.get? = Option.some s.val :=
+      (dartGraph_succ_get? hpt d).symm.trans (congrArg (Option.map Fin.val) hsem)
+    obtain ⟨t, ht, hst⟩ := hsucc s.val hs'
+    have hqs : (qd s).val = t := Option.some.inj ((hidxd s).symm.trans hst)
+    exact (dartGraph_succ_eq_some hS ht).trans (congrArg some (Fin.ext hqs.symm))
+  · -- pred_of
+    intro d p hsem
+    obtain ⟨-, -, -, hpred⟩ := hcoh d.val (qd d).val (hidxd d)
+    have hp' : (pt.darts[d.val]!).pred.get? = Option.some p.val :=
+      (dartGraph_pred_get? hpt d).symm.trans (congrArg (Option.map Fin.val) hsem)
+    obtain ⟨t, ht, hpt'⟩ := hpred p.val hp'
+    have hqp : (qd p).val = t := Option.some.inj ((hidxd p).symm.trans hpt')
+    exact (dartGraph_pred_eq_some hS ht).trans (congrArg some (Fin.ext hqp.symm))
+  · -- succ_from
+    intro d hnn
+    have hnn' : ¬ (ptStar.darts[(qd d).val]!).succ.isNone := by simpa using hnn
+    obtain ⟨j, hj, hjidx, hjs⟩ := hfrom .succ (qd d).val (qd d).isLt hnn'
+    exact ⟨⟨j, hj⟩, Fin.ext (Option.some.inj ((hidxd ⟨j, hj⟩).symm.trans hjidx)),
+      by simpa [LinkKind.get] using hjs⟩
+  · -- pred_from
+    intro d hnn
+    have hnn' : ¬ (ptStar.darts[(qd d).val]!).pred.isNone := by simpa using hnn
+    obtain ⟨j, hj, hjidx, hjs⟩ := hfrom .pred (qd d).val (qd d).isLt hnn'
+    exact ⟨⟨j, hj⟩, Fin.ext (Option.some.inj ((hidxd ⟨j, hj⟩).symm.trans hjidx)),
+      by simpa [LinkKind.get] using hjs⟩
+
+/-- **`freeHomomorphism` preserves validity** when the executable loop guard
+passes: the quotient relation carries `rev_rev` and `boundary`, and the false
+`hasLoop` check supplies the loop-freedom a quotient cannot. -/
+theorem freeHomomorphism_valid {pt : PseudoTriangulation} (hv : pt.Valid)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps))
+    (hnl : ptStar.hasLoop = false) : ptStar.Valid := by
+  obtain ⟨hS, hmw, hvt, hdt⟩ := freeHomomorphism_wf hv.wf hpairs hrun
+  have hq := freeHomomorphism_isQuotientMap hv.wf hpairs hrun hS hmw hvt hdt
+  refine Valid.ofDartGraph hS (hq.valid hv.toDartGraph ?_)
+  intro c hEq
+  exact hasLoop_eq_false_iff.mp hnl c.val c.isLt (by simpa using congrArg Fin.val hEq)
 
 private theorem coherent_split_fst {l r dst : PseudoTriangulation} (hl : l.WF)
     {maps : Mappings}
@@ -1737,9 +2129,11 @@ theorem freeHomomorphismPair_coherent {pt0 pt1 : PseudoTriangulation}
     (pt0.disjointUnion pt1).freeHomomorphism
       #[(dartId0, dartId1 + pt0.darts.size)] = r
   obtain ⟨ptStar, maps⟩ := r
-  obtain ⟨-, hmaps, -, -, hcoh, hseeds⟩ :=
-    freeHomomorphism_spec (disjointUnion_wf hpt0 hpt1)
+  have hspec := freeHomomorphism_spec (disjointUnion_wf hpt0 hpt1)
       (freeHomomorphismPair_seed_bounds hdart0 hdart1) hrun
+  have hmaps := hspec.maps_wf
+  have hcoh := hspec.coherent
+  have hseeds := hspec.seeds
   have hcoh0 := coherent_split_fst hpt0 hmaps hcoh
   have hcoh1 := coherent_split_snd hpt1 hmaps hcoh
   have hseed := hseeds (dartId0, dartId1 + pt0.darts.size) (by simp)
@@ -1807,14 +2201,6 @@ section Steps
 open Std.Do
 set_option mvcgen.warning false
 
-/-- A picked optional dart index reads (`get!`) in range: `some` answers are
-bounded by hypothesis, `none`'s default `0` needs a nonempty range. -/
-private theorem get!_lt_of_some_lt {o : Option Nat} {D : Nat}
-    (hsome : ∀ e, o = some e → e < D) (hD : 0 < D) : o.get! < D := by
-  cases o with
-  | some e => exact hsome e rfl
-  | none => simpa using hD
-
 section
 set_option linter.tacticCheckInstances false
 /-- `dartIdentification` (A.4.3) preserves well-formedness: the glued graph by
@@ -1840,23 +2226,31 @@ theorem dartIdentification_wf {pc : PseudoConfiguration} (hpc : pc.WF)
   all_goals mleave
   all_goals grind [PseudoConfiguration.WF, PseudoConfiguration.new]
 
+/-- Rebuilding a configuration around a graph's own fields is that graph. -/
+private theorem new_toPseudoTriangulation (X : PseudoTriangulation)
+    (ds : Array Degree) :
+    (PseudoConfiguration.new X.n X.darts ds).toPseudoTriangulation = X := rfl
+
 /-- The mapping and graph `dartIdentification` returns are exactly
-`freeHomomorphism`'s: the degree reconciliation writes only `degreesStar`, so it
-touches neither the quotient graph nor the maps. -/
+`freeHomomorphism`'s (the degree reconciliation writes only `degreesStar`, so
+it touches neither the quotient graph nor the maps), and a returned graph has
+passed the loop guard. -/
 theorem dartIdentification_graph_maps {pc : PseudoConfiguration}
     {dartPairs : Array (Nat × Nat)} {pc' : PseudoConfiguration} {m : Mappings}
     (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
     pc'.toPseudoTriangulation = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1
-      ∧ m = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2 := by
+      ∧ m = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2
+      ∧ (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.hasLoop = false := by
   apply Id.of_wp_run_eq hrun fun
     | none => True
     | some (z, mp) =>
         z.toPseudoTriangulation = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1
           ∧ mp = (pc.toPseudoTriangulation.freeHomomorphism dartPairs).2
+          ∧ (pc.toPseudoTriangulation.freeHomomorphism dartPairs).1.hasLoop = false
   mvcgen
   case inv1 => exact ⇓⟨_xs, st⟩ => ⌜∀ o, st.fst = some o → o = none⌝
   all_goals mleave
-  all_goals grind [PseudoConfiguration.new]
+  all_goals grind [PseudoConfiguration.new, new_toPseudoTriangulation]
 
 /-- **Certified coherence for `dartIdentification` (A.4.1/A.4.3).** The quotient
 map is a well-formed, structurally-coherent mapping from the input graph into the
@@ -1867,11 +2261,25 @@ theorem dartIdentification_coherentMappings {pc : PseudoConfiguration} (hpc : pc
     {pc' : PseudoConfiguration} {m : Mappings}
     (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
     ∃ C : CoherentMappings pc.toPseudoTriangulation pc'.toPseudoTriangulation, C.maps = m := by
-  obtain ⟨hgraph, hmap⟩ := dartIdentification_graph_maps hrun
+  obtain ⟨hgraph, hmap, -⟩ := dartIdentification_graph_maps hrun
   refine ⟨⟨m, ?_, ?_⟩, rfl⟩
   · rw [hmap, hgraph]; exact (PseudoTriangulation.freeHomomorphism_wf hpc.1 hpairs rfl).2.1
   · rw [hmap, hgraph]; exact (PseudoTriangulation.freeHomomorphism_coherent hpc.1 hpairs rfl).1
 end
+
+/-- **`dartIdentification` preserves validity (A.4.1/A.4.3).** The gluing is a
+semantic quotient of the dart graph, and the executable `hasLoop` guard
+supplies the loop-freedom a quotient cannot preserve by itself. -/
+theorem dartIdentification_valid {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pc.darts.size ∧ p.2 < pc.darts.size)
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.dartIdentification dartPairs = some (pc', m)) :
+    pc'.toPseudoTriangulation.Valid := by
+  obtain ⟨hgraph, -, hnl⟩ := dartIdentification_graph_maps hrun
+  rw [hgraph]
+  exact PseudoTriangulation.freeHomomorphism_valid hv hpairs rfl hnl
 
 section
 set_option linter.tacticCheckInstances false
@@ -1998,19 +2406,11 @@ theorem addBoundaryDarts_wf {pc : PseudoConfiguration} (hpc : pc.WF) {v : Nat}
     | some x => x.WF
   mvcgen -trivial
   all_goals mleave
-  case vc2.isFalse =>
-    rename_i eF eL eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
-    -- Here `u ≠ w`, so the graph is nonempty and every read lands.
-    have hsz : pc.darts.size ≠ 0 := by
-      intro hzero
-      have hdd : (default : Dart) = ⟨0, 0, OptIdx.none, OptIdx.none⟩ := rfl
-      grind
-    have hfirst : eF < pc.darts.size :=
-      get!_lt_of_some_lt (fun e he => PseudoTriangulation.firstDart_lt he)
-        (Nat.pos_of_ne_zero hsz)
-    have hlast : eL < pc.darts.size :=
-      get!_lt_of_some_lt (fun e he => PseudoTriangulation.lastDart_lt he)
-        (Nat.pos_of_ne_zero hsz)
+  all_goals try trivial
+  next =>
+    rename_i eF hFsome eL hLsome eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
+    have hfirst : eF < pc.darts.size := PseudoTriangulation.firstDart_lt hFsome
+    have hlast : eL < pc.darts.size := PseudoTriangulation.lastDart_lt hLsome
     have hfrev : eFR < pc.darts.size := (hpc.1.read_inBounds hfirst).rev_lt
     have hlrev : eLR < pc.darts.size := (hpc.1.read_inBounds hlast).rev_lt
     have hu : u < pc.n := (hpc.1.read_inBounds hfrev).head_lt
@@ -2032,7 +2432,6 @@ that follows the `push`/`set!` chain. It reads the chain off into
 (`BoundaryFanPatch.valid`, `BoundaryFanPatch.toExtends`). -/
 theorem addBoundaryDarts_patch {pc : PseudoConfiguration}
     (hwf : pc.toPseudoTriangulation.WF) {v : Nat}
-    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
     {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
     ∃ eF eL eFR eLR, PseudoTriangulation.BoundaryFanPatch
       pc.toPseudoTriangulation pc'.toPseudoTriangulation eF eL eFR eLR := by
@@ -2042,12 +2441,9 @@ theorem addBoundaryDarts_patch {pc : PseudoConfiguration}
         pc.toPseudoTriangulation x.toPseudoTriangulation eF eL eFR eLR
   mvcgen -trivial
   all_goals mleave
-  case vc2.isFalse =>
-    have hFsome : pc.firstDart v = some (pc.firstDart v).get! := by
-      cases h : pc.firstDart v with | none => exact absurd hfd (by simp [h]) | some e => rfl
-    have hLsome : pc.lastDart v = some (pc.lastDart v).get! := by
-      cases h : pc.lastDart v with | none => exact absurd hld (by simp [h]) | some e => rfl
-    rename_i eF eL eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
+  all_goals try trivial
+  next =>
+    rename_i eF hFsome eL hLsome eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
     have hfirst : eF < pc.darts.size := PseudoTriangulation.firstDart_lt hFsome
     have hlast : eL < pc.darts.size := PseudoTriangulation.lastDart_lt hLsome
     have hfrev : eFR < pc.darts.size := (hwf.read_inBounds hfirst).rev_lt
@@ -2156,36 +2552,40 @@ theorem addBoundaryDarts_patch {pc : PseudoConfiguration}
         succFR_closed := hwsFR }
 end
 
-/-- **Certified step for `addBoundaryDarts` (A.4.6/A.4.8):** on a valid input the
-enlarged graph is valid and the identity map is coherent into it. The
-implementation patch supplies the facts; the semantic layer does the rest. -/
+/-- **Certified step for `addBoundaryDarts` (A.4.6/A.4.8):** on a valid input
+the enlarged graph is valid and reached by the identity as a certified
+mapping. The carrier packages the map, its well-formedness into the two-dart
+larger index ranges, and coherence at the operation boundary, so downstream
+proofs never inspect the patch. -/
 theorem addBoundaryDarts_spec {pc : PseudoConfiguration}
     (hv : pc.toPseudoTriangulation.Valid) {v : Nat}
-    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
     {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
     pc'.toPseudoTriangulation.Valid ∧
-      (Mappings.initialMappings pc.n pc.darts.size).Coherent
-        pc.toPseudoTriangulation pc'.toPseudoTriangulation := by
-  obtain ⟨eF, eL, eFR, eLR, hp⟩ := addBoundaryDarts_patch hv.wf hfd hld hrun
-  exact ⟨hp.valid hv, Mappings.Coherent.id_of_extends (hp.toExtends hv)⟩
+      ∃ C : CoherentMappings pc.toPseudoTriangulation pc'.toPseudoTriangulation,
+        C.maps = Mappings.initialMappings pc.n pc.darts.size := by
+  obtain ⟨eF, eL, eFR, eLR, hp⟩ := addBoundaryDarts_patch hv.wf hrun
+  refine ⟨hp.valid hv,
+    ⟨⟨Mappings.initialMappings pc.n pc.darts.size, ?_,
+      Mappings.Coherent.id_of_extends (hp.toExtends hv)⟩, rfl⟩⟩
+  exact (Mappings.initialMappings_wf pc.n pc.darts.size).mono
+    (Nat.le_of_eq hp.n_eq.symm) (by have := hp.size; omega)
 
 /-- `addBoundaryDarts` preserves `Valid` (A.4.6). -/
 theorem addBoundaryDarts_valid {pc : PseudoConfiguration}
     (hv : pc.toPseudoTriangulation.Valid) {v : Nat}
-    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
     {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
     pc'.toPseudoTriangulation.Valid :=
-  (addBoundaryDarts_spec hv hfd hld hrun).1
+  (addBoundaryDarts_spec hv hrun).1
 
 /-- On a valid input the identity map is coherent into the enlarged graph
 (A.4.8). -/
 theorem addBoundaryDarts_coherent {pc : PseudoConfiguration}
     (hv : pc.toPseudoTriangulation.Valid) {v : Nat}
-    (hfd : (pc.firstDart v).isSome) (hld : (pc.lastDart v).isSome)
     {pc' : PseudoConfiguration} (hrun : pc.addBoundaryDarts v = some pc') :
     (Mappings.initialMappings pc.n pc.darts.size).Coherent
-      pc.toPseudoTriangulation pc'.toPseudoTriangulation :=
-  (addBoundaryDarts_spec hv hfd hld hrun).2
+      pc.toPseudoTriangulation pc'.toPseudoTriangulation := by
+  obtain ⟨C, hC⟩ := (addBoundaryDarts_spec hv hrun).2
+  exact hC ▸ C.coherent
 
 /-- **Loop invariant for `resolveDegreeIssues` (A.4.4).** Every queued or emitted
 entry is a *valid* configuration reached from `origin` by a certified mapping:
@@ -2219,38 +2619,29 @@ theorem ResolveEntry.singleOut {origin pc z1 z2 : PseudoConfiguration} {maps : M
   exact ⟨⟨hg1 ▸ h.valid, by rw [hd1, h.degrees_wf, hn1], hg1 ▸ h.mapping⟩,
     ⟨hg2 ▸ h.valid, by rw [hd2, h.degrees_wf, hn2], hg2 ▸ h.mapping⟩⟩
 
-/-- An empty graph has no incident darts (so an over-incident vertex forces a
-nonempty graph). -/
-private theorem nIncidentDarts_getElem!_empty {pc : PseudoConfiguration}
-    (h : pc.darts.size = 0) {v : Nat} : pc.nIncidentDarts[v]! = 0 := by
-  have he : pc.darts = #[] := by grind
-  have hz : pc.nIncidentDarts = Array.replicate pc.n 0 := by
-    simp [PseudoTriangulation.nIncidentDarts, he]
-  rcases Nat.lt_or_ge v pc.n with hv | hv <;> simp [hz, hv]
-
-/-- In the over-incidence arm, the selected dart and its `lower`-th successor
-are both in range; over-incidence itself forces the graph to be nonempty. -/
-private theorem fixIssue_pair_bounds {pc : PseudoConfiguration} (hpc : pc.WF)
-    {v : Nat} (hinc : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!) :
-    let e := (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v).get!
-    let f := (pc.sucKTimes e (pc.degrees[v]!).lower).get!
-    e < pc.darts.size ∧ f < pc.darts.size := by
-  dsimp only []
-  have hne : pc.darts.size ≠ 0 := fun h0 => by
-    have h := nIncidentDarts_getElem!_empty (pc := pc) h0 (v := v)
-    omega
-  have he : (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v).get!
-      < pc.darts.size := by
-    split
-    · exact get!_lt_of_some_lt (fun e he => PseudoTriangulation.firstDart_lt he)
-        (Nat.pos_of_ne_zero hne)
-    · exact get!_lt_of_some_lt (fun e he => PseudoTriangulation.anyDart_lt he)
-        (Nat.pos_of_ne_zero hne)
-  have hf : (pc.sucKTimes ((if pc.isBoundary[v]! then pc.firstDart v
-      else pc.anyDart v).get!) (pc.degrees[v]!).lower).get! < pc.darts.size :=
-    get!_lt_of_some_lt (fun f hs => PseudoTriangulation.sucKTimes_lt hpc.1 he hs)
-      (Nat.pos_of_ne_zero hne)
-  exact ⟨he, hf⟩
+/-- Unwrap a successful over-incidence run: the explicitly selected dart pair
+exists, is in range (bounds come from the successful unwraps, not from a
+nonemptiness argument), and the run is the identification of that pair. -/
+private theorem fixIssue_over_run {pc : PseudoConfiguration} (hpc : pc.WF)
+    {v : Nat} (h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!)
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) :
+    ∃ e f, e < pc.darts.size ∧ f < pc.darts.size ∧
+      pc.dartIdentification #[(e, f)] = some (pc', m) := by
+  rcases hE : (if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v) with _ | e
+  · exact nomatch (show (none : Option (PseudoConfiguration × Mappings)) =
+      some (pc', m) from by simpa only [fixSingleDegreeIssue, if_pos h1, hE] using hrun)
+  · have he : e < pc.darts.size := by
+      by_cases hb : pc.isBoundary[v]! = true
+      · exact PseudoTriangulation.firstDart_lt (by simpa only [hb, if_pos] using hE)
+      · exact PseudoTriangulation.anyDart_lt
+          (by simpa only [if_neg hb] using hE)
+    rcases hF : pc.sucKTimes e (pc.degrees[v]!).lower with _ | f
+    · exact nomatch (show (none : Option (PseudoConfiguration × Mappings)) =
+        some (pc', m) from by
+          simpa only [fixSingleDegreeIssue, if_pos h1, hE, hF] using hrun)
+    · exact ⟨e, f, he, PseudoTriangulation.sucKTimes_lt hpc.1 he hF,
+        by simpa only [fixSingleDegreeIssue, if_pos h1, hE, hF] using hrun⟩
 
 /-- `fixSingleDegreeIssue` (A.4.7) preserves well-formedness: the
 over-incidence arm glues an in-range pair, the boundary arm closes the
@@ -2259,13 +2650,7 @@ theorem fixSingleDegreeIssue_wf {pc : PseudoConfiguration} (hpc : pc.WF)
     {v : Nat} {pc' : PseudoConfiguration} {m : Mappings}
     (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) : pc'.WF := by
   by_cases h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!
-  · obtain ⟨he, hf⟩ := fixIssue_pair_bounds hpc h1
-    have hrun' : pc.dartIdentification
-        #[((if pc.isBoundary[v]! then pc.firstDart v else pc.anyDart v).get!,
-          (pc.sucKTimes ((if pc.isBoundary[v]! then pc.firstDart v
-            else pc.anyDart v).get!) (pc.degrees[v]!).lower).get!)] =
-        some (pc', m) := by
-      simpa only [fixSingleDegreeIssue, if_pos h1] using hrun
+  · obtain ⟨e, f, he, hf, hrun'⟩ := fixIssue_over_run hpc h1 hrun
     exact dartIdentification_wf hpc (by grind) hrun'
   · by_cases h2 : (pc.isBoundary[v]!
         && pc.nIncidentDarts[v]! == (pc.degrees[v]!).lower) = true
@@ -2284,6 +2669,73 @@ theorem fixSingleDegreeIssue_wf {pc : PseudoConfiguration} (hpc : pc.WF)
         simp only [fixSingleDegreeIssue, if_neg h1, if_neg h2]
         exact fun hp => nomatch
           (show (none : Option (PseudoConfiguration × Mappings)) = some (pc', m) from hp))
+
+/-- **Certified step for `fixSingleDegreeIssue` (A.4.7):** every result the
+step actually produces is valid, has covering degrees, and is reached by a
+certified mapping -- soundness needs only `Valid` and degree coverage, since
+the option-safe arms unwrap their darts explicitly and a successful run
+carries their existence. (That a genuine degree issue always *produces* a
+result is the separate completeness claim, which awaits the deferred
+rotation-system laws.) -/
+theorem fixSingleDegreeIssue_spec {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid) (hd : pc.degrees.size = pc.n)
+    {v : Nat} {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) :
+    pc'.toPseudoTriangulation.Valid ∧ pc'.degrees.size = pc'.n ∧
+      ∃ C : CoherentMappings pc.toPseudoTriangulation pc'.toPseudoTriangulation,
+        C.maps = m := by
+  have hpc : pc.WF := ⟨hv.wf, hd⟩
+  have hdeg : pc'.degrees.size = pc'.n := (fixSingleDegreeIssue_wf hpc hrun).2
+  by_cases h1 : (pc.degrees[v]!).lower < pc.nIncidentDarts[v]!
+  · -- Over-incidence: identify the selected dart pair (A.4.1).
+    obtain ⟨e, f, he, hf, hrun'⟩ := fixIssue_over_run hpc h1 hrun
+    exact ⟨dartIdentification_valid hv (by grind) hrun', hdeg,
+      dartIdentification_coherentMappings hpc (by grind) hrun'⟩
+  · by_cases h2 : (pc.isBoundary[v]!
+        && pc.nIncidentDarts[v]! == (pc.degrees[v]!).lower) = true
+    · -- Boundary deficit: close the fan with a new edge (A.4.6/A.4.8).
+      cases hA : pc.addBoundaryDarts v with
+      | none =>
+          exact nomatch (show (none : Option (PseudoConfiguration × Mappings)) =
+            some (pc', m) from by
+              simpa only [fixSingleDegreeIssue, if_neg h1, if_pos h2, hA] using hrun)
+      | some pcA =>
+          have hr : (pcA, Mappings.initialMappings pc.n pc.darts.size) = (pc', m) :=
+            Option.some.inj (by
+              simpa only [fixSingleDegreeIssue, if_neg h1, if_pos h2, hA] using hrun)
+          have hr1 : pcA = pc' := congrArg Prod.fst hr
+          have hr2 : Mappings.initialMappings pc.n pc.darts.size = m :=
+            congrArg Prod.snd hr
+          obtain ⟨hAvalid, hEx⟩ := addBoundaryDarts_spec hv hA
+          obtain ⟨C, hC⟩ := hr1 ▸ hEx
+          exact ⟨hr1 ▸ hAvalid, hdeg, ⟨C, hC.trans hr2⟩⟩
+    · exact absurd hrun (by
+        simp only [fixSingleDegreeIssue, if_neg h1, if_neg h2]
+        exact fun hp => nomatch
+          (show (none : Option (PseudoConfiguration × Mappings)) = some (pc', m) from hp))
+
+/-- `fixSingleDegreeIssue` preserves validity (A.4.7). -/
+theorem fixSingleDegreeIssue_valid {pc : PseudoConfiguration}
+    (hv : pc.toPseudoTriangulation.Valid) (hd : pc.degrees.size = pc.n)
+    {v : Nat} {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) :
+    pc'.toPseudoTriangulation.Valid :=
+  (fixSingleDegreeIssue_spec hv hd hrun).1
+
+/-- **Degree-fix transport (A.4.7).** A fix step keeps the entry: validity and
+degrees by `fixSingleDegreeIssue_spec`, the mapping by composing the entry's
+certified mapping with the step's, exactly as the executable loop composes
+`mappingsTilde` with `mappingsStar`. -/
+theorem ResolveEntry.fixSingle {origin pc : PseudoConfiguration} {maps : Mappings}
+    (h : ResolveEntry origin (pc, maps)) {v : Nat}
+    {pc' : PseudoConfiguration} {m : Mappings}
+    (hrun : pc.fixSingleDegreeIssue v = some (pc', m)) :
+    ResolveEntry origin (pc', maps.compose m) := by
+  obtain ⟨hvalid, hdeg, C, hC⟩ := fixSingleDegreeIssue_spec h.valid h.degrees_wf hrun
+  obtain ⟨C₀, hC₀⟩ := h.mapping
+  exact ⟨hvalid, hdeg, ⟨C₀.compose C, by
+    show C₀.maps.compose C.maps = maps.compose m
+    rw [hC₀, hC]⟩⟩
 
 end Steps
 

@@ -188,6 +188,28 @@ private theorem getElem!_filter_countP_take [Inhabited α] (p : α → Bool)
   | cons x xs ih =>
       cases i <;> grind
 
+/-- Mirror of `getElem!_filter_countP_take`: the element at slot `j` of a
+filtered list sits at some source position whose accepted-prefix count is
+`j`. -/
+private theorem exists_countP_take_of_filter {α : Type _} [Inhabited α]
+    (p : α → Bool) (xs : List α) {j : Nat} (hj : j < (xs.filter p).length) :
+    ∃ i, i < xs.length ∧ xs[i]! = (xs.filter p)[j]! ∧ (xs.take i).countP p = j := by
+  induction xs generalizing j with
+  | nil => simp at hj
+  | cons x xs ih =>
+    by_cases hpx : p x
+    · cases j with
+      | zero => exact ⟨0, by simp [hpx]⟩
+      | succ j' =>
+        have hj' : j' < (xs.filter p).length := by simpa [hpx, List.filter_cons] using hj
+        obtain ⟨i, hi, hread, hcount⟩ := ih hj'
+        exact ⟨i + 1, by simpa using hi,
+          by simpa [hpx, List.filter_cons] using hread, by simp [hpx, hcount]⟩
+    · have hj' : j < (xs.filter p).length := by simpa [hpx, List.filter_cons] using hj
+      obtain ⟨i, hi, hread, hcount⟩ := ih hj'
+      exact ⟨i + 1, by simpa using hi,
+        by simpa [hpx, List.filter_cons] using hread, by simp [hpx, hcount]⟩
+
 /-- The functional model of `indexRoots`. -/
 def indexRootsFun (uf : Unionfind) : IndexMap :=
   (Array.range uf.n).map fun i =>
@@ -294,6 +316,10 @@ theorem rootAux_none {uf : Unionfind} {x : Nat} (h : uf.parents[x]! = .none) :
     ∀ j, uf.rootAux x j = x
   | 0 => rfl
   | _ + 1 => by grind [rootAux]
+
+/-- Roots are fixpoints of `root`: at a parentless entry the walk stutters. -/
+theorem root_eq_self {uf : Unionfind} {x : Nat} (h : uf.parents[x]! = .none) :
+    uf.root x = x := rootAux_none h uf.n
 
 /-- Unfold one step at a non-root: `rootAux x (fuel+1) = rootAux (parent x) fuel`. -/
 theorem rootAux_succ_some {uf : Unionfind} {x p : Nat} (h : uf.parents[x]! = .some p)
@@ -550,6 +576,46 @@ theorem relabel_idx! (uf : Unionfind) (hwf : uf.WF) {i : Nat} (hi : i < uf.n) :
   rw [uf.relabel_getElem! hwf hi]
   exact OptIdx.idx!_of_get?_some (by simp)
 
+/-- `rootRank` and `allRoots` are inverse on slots: slot `j` holds a root of
+compact index `j`. -/
+theorem rootRank_allRoots {uf : Unionfind} {j : Nat} (hj : j < uf.numRoots) :
+    uf.allRoots[j]! < uf.n ∧ uf.parents[uf.allRoots[j]!]! = .none
+      ∧ uf.rootRank uf.allRoots[j]! = j := by
+  have hlen : uf.numRoots = ((List.range uf.n).filter fun i => uf.parents[i]!.isNone).length := by
+    simp [Unionfind.numRoots, Unionfind.allRoots, ← Array.length_toList]
+  obtain ⟨i, hi, hread, hcount⟩ :=
+    exists_countP_take_of_filter (fun i => uf.parents[i]!.isNone) (List.range uf.n)
+      (j := j) (by omega)
+  have hilt : i < uf.n := by simpa using hi
+  have hrange : (List.range uf.n)[i]! = i := by
+    simp [List.getElem?_range hilt]
+  have hall : uf.allRoots[j]! = i := by
+    rw [← Array.getElem!_toList]
+    simpa only [Unionfind.allRoots, Array.toList_filter, Array.toList_range, hrange]
+      using hread.symm
+  have hrank : uf.rootRank i = j := by
+    simpa only [rootRank, List.take_range, Nat.min_eq_left (Nat.le_of_lt hilt), hrange]
+      using hcount
+  have hroot : uf.parents[i]! = .none := by
+    have hjs : j < uf.allRoots.size := by simpa [Unionfind.numRoots] using hj
+    have hmem : uf.allRoots[j]! ∈ uf.allRoots := by
+      rw [getElem!_pos uf.allRoots j hjs]
+      exact Array.getElem_mem hjs
+    have hisNone : uf.parents[i]!.isNone := by grind [Unionfind.allRoots]
+    exact OptIdx.get?_inj.mp (OptIdx.isNone_iff_get?.mp hisNone)
+  exact ⟨hall ▸ hilt, hall ▸ hroot, hall ▸ hrank⟩
+
+/-- **The quotient relabelling is surjective**: every compact root index is
+hit by a source node (namely the root occupying that slot). Complements
+`relabel_wf`'s totality, which alone does not give surjectivity. -/
+theorem relabel_surjective (uf : Unionfind) (hwf : uf.WF) {j : Nat}
+    (hj : j < uf.numRoots) :
+    ∃ i, i < uf.n ∧
+      (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).idx? i = Option.some j := by
+  obtain ⟨hlt, hroot, hrank⟩ := rootRank_allRoots hj
+  refine ⟨uf.allRoots[j]!, hlt, ?_⟩
+  rw [relabel_idx? uf hwf hlt, root_eq_self hroot, hrank]
+
 /-! ### `unite` bookkeeping for the gluing loop's termination measure
 
 The gluing BFS (`freeHomomorphism`, `PseudoTriangulationProofs.lean`)
@@ -561,9 +627,6 @@ invariant threads. -/
 @[simp] theorem n_unite (uf : Unionfind) (x y : Nat) : (uf.unite x y).n = uf.n := by
   grind [unite]
 
-/-- Roots are fixpoints of `root`: at a parentless entry the walk stutters. -/
-theorem root_eq_self {uf : Unionfind} {x : Nat} (h : uf.parents[x]! = .none) :
-    uf.root x = x := rootAux_none h uf.n
 
 /-- On distinct in-range representatives the guard passes and `unite` performs
 its write. -/
