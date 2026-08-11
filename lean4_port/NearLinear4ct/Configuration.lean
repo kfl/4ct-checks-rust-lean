@@ -3,7 +3,7 @@ import NearLinear4ct.PseudoConfiguration
 /-!
 File-backed reducible configurations (Appendix A.6).
 
-`Configuration extends WFConfig` and adds a root `dartId`.
+`Configuration extends RotConfig` and adds a root `dartId`.
 
 The adjacency scratch `suc` is a plain 2-D vector with a `-1` sentinel, an
 `Array (Array Int)`; no ordered-container behaviour is observable. `fromFile`
@@ -24,7 +24,7 @@ dart. `rootHeadDeg`/`rootTailDeg` cache the root dart's endpoint lower degrees
 
 `BEq` comes through `DecidableEq` (the derived `BEq` cannot transport the
 invariant field); `Inhabited` is the hand instance below `new`. -/
-structure Configuration extends WFConfig where
+structure Configuration extends RotConfig where
   dartId : Nat
   rootHeadDeg : Nat
   rootTailDeg : Nat
@@ -39,19 +39,19 @@ deriving DecidableEq, Repr
 namespace Configuration
 
 /-- Construct from `(dart_id, N, darts, degrees)`. The certification runs
-here (`attach!`), so the cached root degrees are read off the attached
-value -- identical to the arguments on well-formed input. -/
+here (`RotConfig.attach!`), so the cached root degrees are read off the
+attached value -- identical to the arguments on well-formed input. -/
 protected def new (dartId n : Nat) (darts : Array Dart) (degrees : Array Degree) : Configuration :=
-  let c := WFConfig.attach! (PseudoConfiguration.new n darts degrees)
+  let c := RotConfig.attach! (PseudoConfiguration.new n darts degrees)
   let f := c.darts[dartId]!
-  { toWFConfig := c, dartId := dartId
+  { toRotConfig := c, dartId := dartId
     rootHeadDeg := (c.degrees[f.head]!).lower
     rootTailDeg := (c.degrees[(c.darts[f.rev]!).head]!).lower
     root_deg_invariant := ⟨rfl, rfl⟩ }
 
 /-- Literal fields: no panicking empty-array reads in the initialiser. -/
 instance : Inhabited Configuration :=
-  ⟨{ toWFConfig := default, dartId := 0,
+  ⟨{ toRotConfig := default, dartId := 0,
      rootHeadDeg := 0, rootTailDeg := 0,
      root_deg_invariant := ⟨rfl, rfl⟩ }⟩
 
@@ -62,19 +62,25 @@ private theorem mirror_graph_wf {pt : PseudoTriangulation} (h : pt.WF) :
       : PseudoTriangulation).WF := by
   grind [PseudoTriangulation.WF, Dart.InBounds]
 
-/-- Reflect the configuration by swapping each dart's `succ`/`pred`. The
-mirrored certificate is constructed from `mirror_graph_wf` -- the mirror
-preserves well-formedness structurally, so no re-check runs. -/
+/-- Reflect the configuration by swapping each dart's `succ`/`pred`. Graph
+well-formedness transports structurally (`mirror_graph_wf` -- no re-check);
+the rotation-law certificate re-scans, since the mirror reverses every
+rotation and the stored walk witness does not transport. Load-time only,
+once per parsed configuration. -/
 def mirror (conf : Configuration) : Configuration :=
   let darts := conf.darts.map fun d => { d with succ := d.pred, pred := d.succ }
-  let f := darts[conf.dartId]!
-  { toWFConfig :=
-      ⟨⟨⟨conf.n, darts⟩, conf.degrees⟩,
-        by exact ⟨mirror_graph_wf conf.wf.1, conf.wf.2⟩,
-        by simpa [darts] using conf.packable⟩
+  let wfc : WFConfig :=
+    ⟨⟨⟨conf.n, darts⟩, conf.degrees⟩,
+      by exact ⟨mirror_graph_wf conf.wf.1, conf.wf.2⟩,
+      by simpa [darts] using conf.packable⟩
+  let rc : RotConfig :=
+    if h : wfc.toPseudoTriangulation.rotationLawsCertify then ⟨wfc, h⟩
+    else panic! "Configuration.mirror: mirrored rotation laws failed"
+  let f := rc.darts[conf.dartId]!
+  { toRotConfig := rc
     dartId := conf.dartId
-    rootHeadDeg := (conf.degrees[f.head]!).lower
-    rootTailDeg := (conf.degrees[(darts[f.rev]!).head]!).lower
+    rootHeadDeg := (rc.degrees[f.head]!).lower
+    rootTailDeg := (rc.degrees[(rc.darts[f.rev]!).head]!).lower
     root_deg_invariant := ⟨rfl, rfl⟩ }
 
 end Configuration

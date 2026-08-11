@@ -39,7 +39,7 @@ def deleteDegreeFromKTo9 (cartwheels : Array CartWheel) (k : Nat) : Array CartWh
     else
       let degrees := cw.degrees.map fun d =>
         if d.lower == k - 1 && d.upper == CARTWHEEL_DEG_MAX then ⟨d.lower, k - 1⟩ else d
-      some { cw with toWFConfig := cw.toWFConfig.withDegrees degrees (by simp [degrees]) }
+      some { cw with toRotConfig := cw.toRotConfig.withDegrees degrees (by simp [degrees]) }
 
 /-- Drop cartwheels that contain a 7-triangle. -/
 def delete7triangle (cartwheels : Array CartWheel) : Array CartWheel :=
@@ -48,8 +48,8 @@ def delete7triangle (cartwheels : Array CartWheel) : Array CartWheel :=
     !PseudoConfiguration.blockedByReducibleConfiguration cw.toWFConfig 0 confs
 
 /-- The fixed obstruction configuration `X` (A.10.8). -/
-def getX : WFConfig :=
-  WFConfig.attach! <| PseudoConfiguration.fromVRotations 17
+def getX : RotConfig :=
+  RotConfig.attach! <| PseudoConfiguration.fromVRotations 17
     #[#[1, 2, 3, 4, 5, 6, 7, 8], #[0, 8, 11, 12, 2], #[0, 1, 12, -1, 3], #[0, 2, -1, 13, 4],
       #[0, 3, 13, 14, 5], #[0, 4, 14, 15, 16, -1, 6], #[0, 5, -1, 7], #[0, 6, -1, 8],
       #[0, 7, -1, 9, 10, 11, 1], #[8, -1, 10], #[8, 9, -1, 11], #[1, 8, 10, -1, 12],
@@ -66,7 +66,7 @@ def containX (z : WFConfig) (v : Nat) : Bool := Id.run do
   let dartZ := (z.anyDart v).get!
   let mut dartX := (x.anyDart 0).get!
   for _ in [0:8] do
-    if PseudoConfiguration.homomorphismExists x dartX z dartZ Degree.includes then
+    if PseudoConfiguration.homomorphismExists x.toWFConfig dartX z dartZ Degree.includes then
       return true
     dartX := (x.darts[dartX]!).succ.idx!
   return false

@@ -80,6 +80,16 @@ def assertStIdValid (rule : Rule) (ctx : String) : IO Unit :=
   proofAssert (rule.stId < rule.darts.size)
     s!"{ctx}: charge dart {rule.stId} out of bounds (|darts| = {rule.darts.size})"
 
+/-- Validate at the I/O boundary that a loaded rule passes the rotation-law
+certificate (M3/M4/M6 -- `Rotational`, not `Valid`). Rules stay `WFConfig`
+rather than `RotConfig` because `CombinedRule.new` also runs on generated
+intermediates, whose rotationality is a theorem about the producing
+operation rather than a stored certificate; loaded rules are therefore
+checked here instead of at `RotConfig.attach!`. -/
+def assertRotationLaws (rule : Rule) (ctx : String) : IO Unit :=
+  proofAssert rule.toPseudoTriangulation.rotationLawsCertify
+    s!"{ctx}: rotation-law certificate failed"
+
 end Rule
 
 instance : FromFile Rule where
@@ -94,6 +104,7 @@ def getRules (ruledir : System.FilePath) : IO (Array Rule) := do
     Configuration.assertDegreesValid r.degrees "rule"
     r.assertStIdValid "rule"
     Configuration.assertDartCountPackable r.darts "rule"
+    r.assertRotationLaws "rule"
   IO.println s!"Total {rules.size} rules loaded."
   return rules
 
@@ -154,6 +165,7 @@ def getCombinedRules (combinedRuledir : System.FilePath) : IO (Array CombinedRul
   for cr in crs do
     cr.toRule.assertStIdValid "combined rule"
     Configuration.assertDartCountPackable cr.darts "combined rule"
+    cr.toRule.assertRotationLaws "combined rule"
   IO.println s!"Total {crs.size} combined rules loaded."
   return crs
 

@@ -21,7 +21,8 @@ hold at operation results only.
 The predicates, their executable checkers (`inBoundsCheck`/`wfCheck`) and
 decidability bridges (`_iff`) live beside the structure definitions
 (`PseudoTriangulation.lean`/`PseudoConfiguration.lean`), where
-`WFConfig.attach!` certifies loaded objects; this file holds the proofs.
+`RotConfig.attach!` certifies loaded objects and `WFConfig.attach!`
+certifies generated intermediates; this file holds the proofs.
 
 This is the graph-side counterpart of `IndexMap.WF` (`MappingProofs.lean`),
 and it is exactly the hypothesis the `homCoreGo` termination argument needs:
@@ -4392,5 +4393,13 @@ theorem rotationLawsCertify_rotational {pt : PseudoTriangulation} (hwf : pt.WF)
     exact hc₁.symm.trans hc₂
 
 end PseudoTriangulation
+
+/-- The load boundary's certificate, semantically: every `RotConfig`
+carries the rotation laws of its dart graph (`Rotational` -- M3/M4/M6 --
+not `Valid`). This is the fact the resolution wrappers take as their
+rotationality premise for loaded objects. -/
+theorem RotConfig.rotational (c : RotConfig) :
+    (c.toPseudoTriangulation.dartGraph c.wf.1).Rotational :=
+  PseudoTriangulation.rotationLawsCertify_rotational c.wf.1 c.rot_certified
 
 end NearLinear4ct

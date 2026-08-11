@@ -335,7 +335,7 @@ def exA (xs : List Nat) : Array Degree := (xs.map dgx).toArray
 def setDeg (cw : CartWheel) (mods : List (Nat × Nat)) : CartWheel := Id.run do
   let mut c := cw
   for (v, d) in mods do
-    c := { c with toWFConfig := (c.toWFConfig.withDegrees (c.degrees.set! v (dgx d)) (by simp)) }
+    c := { c with toRotConfig := (c.toRotConfig.withDegrees (c.degrees.set! v (dgx d)) (by simp)) }
   return c
 
 /-- Cartwheel FromFile / enumWheels / charge / pruning / refinement /
@@ -409,7 +409,7 @@ def cartwheelTests (c : Counter) : IO Unit := do
   let withMods (mods : List (Nat × Degree)) : CartWheel := Id.run do
     let mut x := refCw
     for (v, deg) in mods do
-      x := { x with toWFConfig := (x.toWFConfig.withDegrees (x.degrees.set! v deg) (by simp)) }
+      x := { x with toRotConfig := (x.toRotConfig.withDegrees (x.degrees.set! v deg) (by simp)) }
     return x
   let refExp := #[
     withMods [(11, dgx 5)], withMods [(15, dgx 5)], withMods [(15, dgx 6)],

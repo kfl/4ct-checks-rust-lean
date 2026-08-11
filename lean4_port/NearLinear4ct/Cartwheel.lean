@@ -65,13 +65,13 @@ end PseudoConfiguration
 
 /-- A cartwheel: a pseudo-configuration with a distinguished centre vertex and its
 darts in rotation order. -/
-structure CartWheel extends WFConfig where
+structure CartWheel extends RotConfig where
   center : Nat
   centerDarts : Array Nat
 deriving DecidableEq, Repr
 
 instance : Inhabited CartWheel :=
-  ⟨{ toWFConfig := default, center := 0, centerDarts := #[] }⟩
+  ⟨{ toRotConfig := default, center := 0, centerDarts := #[] }⟩
 
 namespace CartWheel
 
@@ -83,7 +83,7 @@ private def centerDartsOf (pc : PseudoConfiguration) (center : Nat) : Array Nat 
 /-- Construct from `(center, center_darts, N, darts, degrees)`. -/
 protected def new (center : Nat) (centerDarts : Array Nat) (n : Nat) (darts : Array Dart)
     (degrees : Array Degree) : CartWheel :=
-  { toWFConfig := WFConfig.attach! (PseudoConfiguration.new n darts degrees)
+  { toRotConfig := RotConfig.attach! (PseudoConfiguration.new n darts degrees)
     center := center, centerDarts := centerDarts }
 
 /-- Serialise to the `.cartwheel` text format. The layout follows `FORMAT.md`,
@@ -128,7 +128,7 @@ def generateCartwheel (d : Nat) (degrees : Array Int) : CartWheel := Id.run do
   for i in [1:d+1] do
     allDegrees := allDegrees.set! i (Degree.exact degrees[i-1]!.toNat)
   let pc := PseudoConfiguration.fromVRotations k rotations allDegrees
-  return { toWFConfig := WFConfig.attach! pc, center := 0, centerDarts := centerDartsOf pc 0 }
+  return { toRotConfig := RotConfig.attach! pc, center := 0, centerDarts := centerDartsOf pc 0 }
 
 /-- Parse one cartwheel from text. Tolerates the leading blank
 line that `write` emits. -/
@@ -148,7 +148,7 @@ def ofString (content : String) : CartWheel := Id.run do
     degrees := degrees.set! u deg
     rotationVertices := rotationVertices.set! u rotU
   let pc := PseudoConfiguration.fromVRotations n rotationVertices degrees
-  return { toWFConfig := WFConfig.attach! pc, center := center, centerDarts := centerDartsOf pc center }
+  return { toRotConfig := RotConfig.attach! pc, center := center, centerDarts := centerDartsOf pc center }
 
 /-- Validate at the I/O boundary that the centre structure is coherent: `center`
 indexes `degrees` (and `n`), every centre dart indexes `darts`, and the centre's
@@ -214,7 +214,7 @@ def concreteDegreeExceptTail (cw : CartWheel) : Array CartWheel := Id.run do
       if Degree.includes (cw.degrees[v]!) (Degree.exact dval) then
         for cartwheel in cartwheels do
           newCartwheels := newCartwheels.push
-            { cartwheel with toWFConfig := (cartwheel.toWFConfig.withDegrees
+            { cartwheel with toRotConfig := (cartwheel.toRotConfig.withDegrees
                 (cartwheel.degrees.set! v (Degree.exact dval)) (by simp)) }
     cartwheels := newCartwheels
   return cartwheels
@@ -230,7 +230,7 @@ def updateDegreeByRule (cw : CartWheel) (dartId : Nat) (rule : Rule) : Array Car
     for vRule in [0:rule.n] do
       let vCw := (rule2cw.vmap[vRule]!).idx!
       let newDeg := Degree.intersection (updated.degrees[vCw]!) (rule.degrees[vRule]!)
-      updated := { updated with toWFConfig := (updated.toWFConfig.withDegrees
+      updated := { updated with toRotConfig := (updated.toRotConfig.withDegrees
         (updated.degrees.set! vCw newDeg) (by simp)) }
     return updated.concreteDegreeExceptTail
 
@@ -318,7 +318,7 @@ def refineAlways (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : 
   for vRule in uR do
     let vCw := (rule2cw.vmap[vRule]!).idx!
     let newDeg : Degree := ⟨(rule.degrees[vRule]!).lower, (cAlways.degrees[vCw]!).upper⟩
-    cAlways := { cAlways with toWFConfig := (cAlways.toWFConfig.withDegrees
+    cAlways := { cAlways with toRotConfig := (cAlways.toRotConfig.withDegrees
       (cAlways.degrees.set! vCw newDeg) (by simp)) }
   return cAlways
 
@@ -330,7 +330,7 @@ def refineNever (cw : CartWheel) (uR : Array Nat) (rule2cw : Mappings) (rule : R
   for vRule in uR do
     let vCw := (rule2cw.vmap[vRule]!).idx!
     let newDeg : Degree := ⟨(cw.degrees[vCw]!).lower, (rule.degrees[vRule]!).lower - 1⟩
-    let base : CartWheel := { cw with toWFConfig := (cw.toWFConfig.withDegrees
+    let base : CartWheel := { cw with toRotConfig := (cw.toRotConfig.withDegrees
       (cw.degrees.set! vCw newDeg) (by simp)) }
     cNever := cNever ++ base.concreteDegreeExceptTail
   return cNever

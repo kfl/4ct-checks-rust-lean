@@ -49,10 +49,11 @@ end PseudoConfiguration
 /-- A configuration certified at the boundary: the graph and degree array
 are well-formed and the dart count fits the packed-pair encoding (erased at
 runtime). Certification happens once per object -- `attach!` runs the
-executable checks where loaded and combined objects are built -- and the
-homomorphism BFS and its lemmas read both facts off the type instead of
-threading well-formedness premises. The resolution pipeline's intermediate
-states stay raw and keep their proof-side preservation theorems. -/
+executable checks where combined objects are built, and loaded objects come
+through `RotConfig.attach!` below -- and the homomorphism BFS and its
+lemmas read both facts off the type instead of threading well-formedness
+premises. The resolution pipeline's intermediate states stay raw and keep
+their proof-side preservation theorems. -/
 structure WFConfig extends PseudoConfiguration where
   wfconfig_invariant :
     toPseudoConfiguration.WF
@@ -94,6 +95,45 @@ def withDegrees (c : WFConfig) (degrees : Array Degree)
    ⟨⟨c.wf.1, h.trans c.wf.2⟩, c.packable⟩⟩
 
 end WFConfig
+
+/-- A configuration certified at the load boundary: `WFConfig`'s invariant
+plus the rotation-law certificate (M3/M4/M6 -- `Rotational`, not `Valid`).
+The certificate is stored as the passing executable check; the proofs layer
+converts it once (`RotConfig.rotational`, via the checker bridge).
+Configurations, cartwheels (parsed and generated), and the fixed seeds
+carry this type; loaded rules are checked at their I/O gate but stay
+`WFConfig` (`Rule.assertRotationLaws`), and generated intermediates stay
+`WFConfig`, with their rotationality a theorem about the producing
+operation rather than a stored certificate. -/
+structure RotConfig extends WFConfig where
+  rot_certified : toWFConfig.toPseudoTriangulation.rotationLawsCertify = true
+deriving DecidableEq, Repr
+
+namespace RotConfig
+
+instance : Coe RotConfig WFConfig := ⟨toWFConfig⟩
+
+/-- The empty configuration passes every law vacuously. -/
+instance : Inhabited RotConfig := ⟨⟨default, by decide⟩⟩
+
+/-- Check-and-attach at a load boundary: `WFConfig.attach!`'s certification
+plus the rotation-law scan, or print a `panic!` message and answer the
+default. Runs once per loaded, parsed, or seeded object. -/
+def attach! (pc : PseudoConfiguration) : RotConfig :=
+  if h : pc.wfCheck && (decide (pc.darts.size ≤ SmallNatPair.pairBase)
+      && pc.rotationLawsCertify) then
+    ⟨⟨pc, PseudoConfiguration.wfCheck_iff.mp (by grind), by grind⟩, by grind⟩
+  else
+    panic! "RotConfig.attach!: malformed or non-rotational configuration"
+
+/-- Rebuild with a same-size degree array: the graph is untouched, so both
+certificates transport. The degrees-only refinements use this instead of a
+re-scan. -/
+def withDegrees (c : RotConfig) (degrees : Array Degree)
+    (h : degrees.size = c.degrees.size) : RotConfig :=
+  ⟨c.toWFConfig.withDegrees degrees h, c.rot_certified⟩
+
+end RotConfig
 
 namespace PseudoConfiguration
 
