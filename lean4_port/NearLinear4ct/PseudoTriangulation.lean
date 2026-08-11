@@ -180,28 +180,25 @@ def anyDart (pt : PseudoTriangulation) (v : Nat) : Option Nat :=
 /-- Whether `succ` and `pred` are mutually inverse where present (the
 paper's M3). Both directions are scanned, so a one-sided link is caught even
 when its partner is absent. -/
-def linkInverseCheck (pt : PseudoTriangulation) : Bool := Id.run do
-  for i in [0:pt.darts.size] do
-    match (pt.darts[i]!).succ with
-    | .some e => if (pt.darts[e]!).pred != .some i then return false
-    | .none => pure ()
-    match (pt.darts[i]!).pred with
-    | .some e => if (pt.darts[e]!).succ != .some i then return false
-    | .none => pure ()
-  return true
+def linkInverseCheck (pt : PseudoTriangulation) : Bool :=
+  (List.range pt.darts.size).all fun i =>
+    (match (pt.darts[i]!).succ with
+      | .some e => (pt.darts[e]!).pred == .some i
+      | .none => true) &&
+    (match (pt.darts[i]!).pred with
+      | .some e => (pt.darts[e]!).succ == .some i
+      | .none => true)
 
 /-- Whether `succ` and `pred` stay within their dart's vertex (the paper's
 M4). -/
-def linkHeadCheck (pt : PseudoTriangulation) : Bool := Id.run do
-  for i in [0:pt.darts.size] do
-    let d := pt.darts[i]!
-    match d.succ with
-    | .some e => if (pt.darts[e]!).head != d.head then return false
-    | .none => pure ()
-    match d.pred with
-    | .some e => if (pt.darts[e]!).head != d.head then return false
-    | .none => pure ()
-  return true
+def linkHeadCheck (pt : PseudoTriangulation) : Bool :=
+  (List.range pt.darts.size).all fun i =>
+    (match (pt.darts[i]!).succ with
+      | .some e => (pt.darts[e]!).head == (pt.darts[i]!).head
+      | .none => true) &&
+    (match (pt.darts[i]!).pred with
+      | .some e => (pt.darts[e]!).head == (pt.darts[i]!).head
+      | .none => true)
 
 /-- Vertices violating the paper's M6: each vertex has exactly one incidence
 list -- cyclic when inner (no open corner), acyclic with a unique open corner
@@ -266,6 +263,61 @@ def sucKTimes (pt : PseudoTriangulation) (e k : Nat) : Option Nat := Id.run do
     | .none => return none
     | .some nxt => curr := nxt
   return some curr
+
+/-- Untrusted reachability witnesses: a per-vertex start dart (one dart
+scan, preferring a `pred`-open dart so boundary rotations start at their
+first corner) and the per-dart walk index from that start; unset slots keep
+the sentinel `darts.size`. Only the verifier `incidenceReachCheck` is
+bridged, so this builder needs no specification -- a wrong witness merely
+fails the check. -/
+def walkWitness (pt : PseudoTriangulation) : Array Nat × Array Nat := Id.run do
+  let sentinel := pt.darts.size
+  let mut starts := Array.replicate pt.n sentinel
+  for i in [0:pt.darts.size] do
+    let d := pt.darts[i]!
+    if d.pred.isNone || starts[d.head]! == sentinel then
+      starts := starts.set! d.head i
+  let mut idx := Array.replicate pt.darts.size sentinel
+  for v in [0:pt.n] do
+    let s := starts[v]!
+    if s == sentinel then continue
+    idx := idx.set! s 0
+    let mut cur := s
+    for k in [0:pt.darts.size] do
+      match (pt.darts[cur]!).succ with
+      | .none => break
+      | .some nxt =>
+        if nxt == s then break
+        idx := idx.set! nxt (k + 1)
+        cur := nxt
+  return (starts, idx)
+
+/-- Verified reachability: every dart's witness index is locally justified
+-- an index `0` dart is its vertex's stored start, a positive index steps
+back through `pred`. Any witness passing this scan proves each dart
+connected to its vertex's start by induction on the index (with M3 turning
+the `pred` edge forward), which is exactly the fiber connectivity the
+conversion theorem turns into M6. Builder and scan are linear in vertices
+plus darts. -/
+def incidenceReachCheck (pt : PseudoTriangulation) : Bool :=
+  let w := pt.walkWitness
+  let starts := w.1
+  let idx := w.2
+  (List.range pt.darts.size).all fun d =>
+    if idx[d]! == 0 then
+      starts[(pt.darts[d]!).head]! == d
+    else
+      match (pt.darts[d]!).pred with
+      | .some p => idx[p]! + 1 == idx[d]!
+      | .none => false
+
+/-- The certified gate for the rotation laws: the two link scans plus the
+verified reachability witness. `rotationLawsCheck` stays the per-vertex
+diagnostic for sweeps; this variant has the proof-friendly contract --
+`rotationLawsCertify_rotational` converts a pass into
+`DartGraph.Rotational` (and only that; validity is certified separately). -/
+def rotationLawsCertify (pt : PseudoTriangulation) : Bool :=
+  pt.linkInverseCheck && pt.linkHeadCheck && pt.incidenceReachCheck
 
 /-- For each vertex, the cyclic rotation of its darts. A boundary rotation is
 terminated by a trailing `none`. -/

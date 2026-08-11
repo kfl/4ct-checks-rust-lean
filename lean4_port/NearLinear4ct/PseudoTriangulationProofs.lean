@@ -4039,8 +4039,8 @@ private def ResolveSpecSum (origin : PseudoConfiguration) :
 
 /-- **The A.4.4 BFS is sound and terminates**: every entry it emits is a
 valid, rotational configuration with covering degrees, reached from the
-origin by a certified mapping. Origin rotationality is a premise until the
-checker bridge discharges it at load time. -/
+origin by a certified mapping. Origin rotationality is a premise,
+discharged at the load boundary by `rotationLawsCertify_rotational`. -/
 theorem resolveDegreeIssues_sound {origin : PseudoConfiguration}
     (hv : origin.toPseudoTriangulation.Valid) (hd : origin.degrees.size = origin.n)
     (hr : (origin.toPseudoTriangulation.dartGraph hv.wf).Rotational)
@@ -4254,5 +4254,143 @@ theorem freeHomomorphismPair_resolvedEntries {pc0 pc1 : PseudoConfiguration}
 end Steps
 
 end PseudoConfiguration
+
+namespace PseudoTriangulation
+
+/-- A passing M3 scan gives the pointwise inverse laws. -/
+private theorem linkInverseCheck_spec {pt : PseudoTriangulation}
+    (h : pt.linkInverseCheck = true) {i : Nat} (hi : i < pt.darts.size) :
+    (∀ e, (pt.darts[i]!).succ = OptIdx.some e →
+      (pt.darts[e]!).pred = OptIdx.some i) ∧
+    (∀ e, (pt.darts[i]!).pred = OptIdx.some e →
+      (pt.darts[e]!).succ = OptIdx.some i) := by
+  have hall := by simpa [linkInverseCheck] using h
+  exact ⟨fun e he => by simpa [he, OptIdx.«some»] using (hall i hi).1,
+    fun e he => by simpa [he, OptIdx.«some»] using (hall i hi).2⟩
+
+/-- A passing M4 scan gives the pointwise head-preservation laws. -/
+private theorem linkHeadCheck_spec {pt : PseudoTriangulation}
+    (h : pt.linkHeadCheck = true) {i : Nat} (hi : i < pt.darts.size) :
+    (∀ e, (pt.darts[i]!).succ = OptIdx.some e →
+      (pt.darts[e]!).head = (pt.darts[i]!).head) ∧
+    (∀ e, (pt.darts[i]!).pred = OptIdx.some e →
+      (pt.darts[e]!).head = (pt.darts[i]!).head) := by
+  have hall := by simpa [linkHeadCheck] using h
+  exact ⟨fun e he => by simpa [he, OptIdx.«some»] using (hall i hi).1,
+    fun e he => by simpa [he, OptIdx.«some»] using (hall i hi).2⟩
+
+/-- A passing reachability scan justifies every witness index locally:
+index `0` darts are their vertex's stored start, positive indices step
+back through `pred`. -/
+private theorem incidenceReachCheck_spec {pt : PseudoTriangulation}
+    (h : pt.incidenceReachCheck = true) {d : Nat} (hd : d < pt.darts.size) :
+    (pt.walkWitness.2[d]! = 0 → pt.walkWitness.1[(pt.darts[d]!).head]! = d) ∧
+    (pt.walkWitness.2[d]! ≠ 0 → ∃ p, (pt.darts[d]!).pred = OptIdx.some p ∧
+      pt.walkWitness.2[p]! + 1 = pt.walkWitness.2[d]!) := by
+  have hall := by simpa [incidenceReachCheck] using h
+  have hd' := hall d hd
+  constructor
+  · intro h0
+    simpa [h0] using hd'
+  · intro hne
+    cases hp : (pt.darts[d]!).pred with
+    | none => exact absurd hd' (by simp [hne, hp])
+    | some p =>
+      refine ⟨p, rfl, ?_⟩
+      simpa [hne, hp] using hd'
+
+/-- **The checker bridge**: a passing `rotationLawsCertify` yields the
+semantic rotation laws -- `Rotational` only, not `Valid`, so it discharges
+exactly the BFS wrappers' rotationality premise while validity and degree
+coverage stay separately certified. The link scans give pointwise M3/M4,
+reachability gives fiber connectivity, and the conversion theorem rebuilds
+each vertex's incidence list. -/
+theorem rotationLawsCertify_rotational {pt : PseudoTriangulation} (hwf : pt.WF)
+    (h : pt.rotationLawsCertify = true) : (pt.dartGraph hwf).Rotational := by
+  obtain ⟨⟨hm3, hm4⟩, hreach⟩ : (pt.linkInverseCheck = true ∧
+      pt.linkHeadCheck = true) ∧ pt.incidenceReachCheck = true := by
+    simpa [rotationLawsCertify, Bool.and_eq_true] using h
+  have hM3a : ∀ d e, (pt.dartGraph hwf).succ d = some e →
+      (pt.dartGraph hwf).pred e = some d := by
+    intro d e hs
+    have hget : (pt.darts[d.val]!).succ.get? = Option.some e.val :=
+      (dartGraph_succ_get? hwf d).symm.trans (congrArg (Option.map Fin.val) hs)
+    have hpred := (linkInverseCheck_spec hm3 d.isLt).1 e.val
+      (OptIdx.get?_eq_some_iff.mp hget)
+    have hpget : (pt.darts[e.val]!).pred.get? = Option.some d.val := by
+      rw [hpred]
+      exact OptIdx.get?_some d.val
+    exact dartGraph_pred_eq_some hwf hpget
+  have hM3b : ∀ d e, (pt.dartGraph hwf).pred d = some e →
+      (pt.dartGraph hwf).succ e = some d := by
+    intro d e hs
+    have hget : (pt.darts[d.val]!).pred.get? = Option.some e.val :=
+      (dartGraph_pred_get? hwf d).symm.trans (congrArg (Option.map Fin.val) hs)
+    have hsucc := (linkInverseCheck_spec hm3 d.isLt).2 e.val
+      (OptIdx.get?_eq_some_iff.mp hget)
+    have hsget : (pt.darts[e.val]!).succ.get? = Option.some d.val := by
+      rw [hsucc]
+      exact OptIdx.get?_some d.val
+    exact dartGraph_succ_eq_some hwf hsget
+  have hM4 : ∀ d e, (pt.dartGraph hwf).succ d = some e →
+      (pt.dartGraph hwf).head e = (pt.dartGraph hwf).head d := by
+    intro d e hs
+    have hget : (pt.darts[d.val]!).succ.get? = Option.some e.val :=
+      (dartGraph_succ_get? hwf d).symm.trans (congrArg (Option.map Fin.val) hs)
+    exact Fin.ext ((linkHeadCheck_spec hm4 d.isLt).1 e.val
+      (OptIdx.get?_eq_some_iff.mp hget))
+  refine ⟨hM3a, hM3b, hM4, ?_⟩
+  intro v
+  haveI := Classical.typeDecidableEq (Fin pt.n)
+  refine DartGraph.exists_incidenceList_of_conn hM3a hM3b hM4
+    (l₀ := (List.finRange pt.darts.size).filter
+      (fun d => (pt.dartGraph hwf).head d = v)) ?_ ?_
+  · intro d
+    rw [List.mem_filter]
+    simp [List.mem_finRange]
+  · -- every dart connects to its vertex's start: induction on the witness
+    have hstart : ∀ n d (hd : d < pt.darts.size), pt.walkWitness.2[d]! = n →
+        ∃ s, ∃ hs : s < pt.darts.size,
+          pt.walkWitness.1[(pt.darts[d]!).head]! = s ∧
+          DartGraph.IncidenceConn (pt.dartGraph hwf) ⟨s, hs⟩ ⟨d, hd⟩ := by
+      intro n
+      induction n using Nat.strongRecOn with
+      | ind n ih =>
+        intro d hd hidx
+        by_cases h0 : pt.walkWitness.2[d]! = 0
+        · exact ⟨d, hd, (incidenceReachCheck_spec hreach hd).1 h0, .refl _⟩
+        · obtain ⟨p, hp, hpidx⟩ := (incidenceReachCheck_spec hreach hd).2 h0
+          have hplt : p < pt.darts.size :=
+            (hwf.read_inBounds hd).pred_lt p (by
+              rw [hp]
+              exact OptIdx.get?_some p)
+          obtain ⟨s, hs, hstart_p, hconn_p⟩ :=
+            ih pt.walkWitness.2[p]! (by omega) p hplt rfl
+          have hhead : (pt.darts[p]!).head = (pt.darts[d]!).head :=
+            (linkHeadCheck_spec hm4 hd).2 p hp
+          have hsucc := (linkInverseCheck_spec hm3 hd).2 p hp
+          have hsget : (pt.darts[p]!).succ.get? = Option.some d := by
+            rw [hsucc]
+            exact OptIdx.get?_some d
+          refine ⟨s, hs, ?_, ?_⟩
+          · rw [← hhead]
+            exact hstart_p
+          · exact hconn_p.trans (.succ (dartGraph_succ_eq_some hwf hsget))
+    intro d₁ h1 d₂ h2
+    have hh1 : (pt.dartGraph hwf).head d₁ = v := by
+      simpa using (List.mem_filter.mp h1).2
+    have hh2 : (pt.dartGraph hwf).head d₂ = v := by
+      simpa using (List.mem_filter.mp h2).2
+    obtain ⟨s₁, hs₁lt, hst₁, hc₁⟩ := hstart _ d₁.val d₁.isLt rfl
+    obtain ⟨s₂, hs₂lt, hst₂, hc₂⟩ := hstart _ d₂.val d₂.isLt rfl
+    have hv12 : (pt.darts[d₁.val]!).head = (pt.darts[d₂.val]!).head := by
+      simpa using congrArg Fin.val (hh1.trans hh2.symm)
+    have hss : s₁ = s₂ := hst₁.symm.trans (by
+      rw [hv12]
+      exact hst₂)
+    subst hss
+    exact hc₁.symm.trans hc₂
+
+end PseudoTriangulation
 
 end NearLinear4ct

@@ -676,6 +676,13 @@ def rotationLawTests (c : Counter) : IO Unit := do
       unless (← report s!"wheel d={d}" cw.toPseudoTriangulation) do
         initBad := initBad + 1
   expect c s!"rotation laws on {initCount} initial wheels" (initBad == 0)
+  -- The certified gate agrees on the initial objects.
+  let mut certBad := 0
+  for d in [5, 6] do
+    for cw in CartWheel.enumWheels d do
+      unless cw.toPseudoTriangulation.rotationLawsCertify do
+        certBad := certBad + 1
+  expect c s!"rotationLawsCertify on {initCount} initial wheels" (certBad == 0)
   -- Quotients and resolve intermediates: glue sampled wheel pairs and check
   -- the identified graph plus every shadow-BFS state.
   let wheels := CartWheel.enumWheels 5
