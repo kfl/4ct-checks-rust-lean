@@ -3,6 +3,7 @@ import NearLinear4ct.DartGraph
 import NearLinear4ct.MappingProofs
 import NearLinear4ct.UtilProofs
 import Std.Tactic.Do
+import Std.Internal.Do
 
 /-!
 Well-formedness of the combinatorial map, in two layers.
@@ -4033,9 +4034,13 @@ private abbrev ResolveState :=
 /-- Continue-side and break-side invariants over the packed state. -/
 private def ResolveSpecSum (origin : PseudoConfiguration) :
     ResolveState ⊕ ResolveState → Prop
-  | .inl ⟨z, q⟩ =>
-      (∀ p, q.Active p → ResolveEntry origin p) ∧ ∀ p ∈ z, ResolvedEntry origin p
-  | .inr ⟨z, _q⟩ => ∀ p ∈ z, ResolvedEntry origin p
+  | .inl s =>
+      (∀ p, s.snd.Active p → ResolveEntry origin p) ∧ ∀ p ∈ s.fst, ResolvedEntry origin p
+  | .inr s => ∀ p ∈ s.fst, ResolvedEntry origin p
+
+grind_pattern resolveWeight_lt => resolveWeight (z', m'), resolveWeight (z, m)
+grind_pattern resolveWeight_add_lt =>
+  resolveWeight (z1, m1), resolveWeight (z2, m2), resolveWeight (z, m)
 
 /-- **The A.4.4 BFS is sound and terminates**: every entry it emits is a
 valid, rotational configuration with covering degrees, reached from the
@@ -4047,113 +4052,19 @@ theorem resolveDegreeIssues_sound {origin : PseudoConfiguration}
     {out : Array (PseudoConfiguration × Mappings)}
     (hrun : origin.resolveDegreeIssues = out) :
     ∀ entry ∈ out, ResolvedEntry origin entry := by
-  apply Id.of_wp_run_eq hrun fun out => ∀ entry ∈ out, ResolvedEntry origin entry
-  mvcgen
-  case inv1 => exact fun s => ⟨resolveMeasure s.snd⟩
-  case inv2 =>
-    exact ⇓s => ⌜ResolveSpecSum origin s⌝
-  all_goals mleave
-  case vc1.step.h_1.isTrue =>
-    rename_i b mb z q zTilde mTilde q' hpop _hdrop hh
-    obtain ⟨hmb, hspec⟩ := hh
-    obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
-        (∀ p ∈ z, ResolvedEntry origin p) := hspec
-    have hmb' : mb = resolveMeasure q := congrArg ULift.down hmb
-    have hpopM := resolveMeasure_pop hpop
-    have hpos := resolveWeight_pos (zTilde, mTilde)
-    refine ⟨_, rfl, ?_, fun p hp => hact p (Queue.active_pop hpop hp), hout⟩
-    show resolveMeasure q' < mb
-    omega
-  case vc2.step.h_1.isFalse.h_1.h_1 =>
-    rename_i b mb z q zTilde mTilde q' hpop _hnodrop v hvsome _jp zStar mStar
-      hfixrun hh
-    obtain ⟨hmb, hspec⟩ := hh
-    obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
-        (∀ p ∈ z, ResolvedEntry origin p) := hspec
-    have hre : ResolveEntry origin (zTilde, mTilde) := hact _ (Queue.active_head hpop)
-    obtain ⟨hvn, hfx, -⟩ := vertexSingleDegreeIssue_spec hvsome
-    have hpot : statePotential zStar < statePotential zTilde :=
-      fixSingleDegreeIssue_potential hre.valid hre.degrees_wf hre.rotational
-        hvn hfx hfixrun
-    have hreS : ResolveEntry origin (zStar, mTilde.compose mStar) :=
-      hre.fixSingle hfixrun
-    have hmb' : mb = resolveMeasure q := congrArg ULift.down hmb
-    have hpopM := resolveMeasure_pop hpop
-    have hpushM := resolveMeasure_push q' (zStar, mTilde.compose mStar)
-    have hltW : resolveWeight (zStar, mTilde.compose mStar) <
-        resolveWeight (zTilde, mTilde) := resolveWeight_lt hpot
-    refine ⟨_, rfl, ?_, ?_, hout⟩
-    · show resolveMeasure (q'.push (zStar, mTilde.compose mStar)) < mb
-      omega
-    · intro p hp
-      rcases Queue.active_push hp with hp' | rfl
-      · exact hact p (Queue.active_pop hpop hp')
-      · exact hreS
-  case vc3.step.h_1.isFalse.h_1.h_2 =>
-    rename_i b mb z q zTilde mTilde q' hpop _hnodrop v hvsome _jp _hfixnone hh
-    obtain ⟨hmb, hspec⟩ := hh
-    obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
-        (∀ p ∈ z, ResolvedEntry origin p) := hspec
-    have hmb' : mb = resolveMeasure q := congrArg ULift.down hmb
-    have hpopM := resolveMeasure_pop hpop
-    have hpos := resolveWeight_pos (zTilde, mTilde)
-    refine ⟨_, rfl, ?_, fun p hp => hact p (Queue.active_pop hpop hp), hout⟩
-    show resolveMeasure q' < mb
-    omega
-  case vc4.step.h_1.isFalse.h_2.h_1 =>
-    rename_i b mb z q zTilde mTilde q' hpop _hnodrop _hvnone z1 z2 hsplitrun hh
-    obtain ⟨hmb, hspec⟩ := hh
-    obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
-        (∀ p ∈ z, ResolvedEntry origin p) := hspec
-    have hre : ResolveEntry origin (zTilde, mTilde) := hact _ (Queue.active_head hpop)
-    obtain ⟨hpot1, hpot2⟩ := singleOutLowerDegree_potential hre.degrees_wf hsplitrun
-    obtain ⟨hre1, hre2⟩ := hre.singleOut hsplitrun
-    have hmb' : mb = resolveMeasure q := congrArg ULift.down hmb
-    have hpopM := resolveMeasure_pop hpop
-    have hpush1 := resolveMeasure_push q' (z1, mTilde)
-    have hpush2 := resolveMeasure_push (q'.push (z1, mTilde)) (z2, mTilde)
-    have haddW : resolveWeight (z1, mTilde) + resolveWeight (z2, mTilde) <
-        resolveWeight (zTilde, mTilde) := resolveWeight_add_lt hpot1 hpot2
-    refine ⟨_, rfl, ?_, ?_, hout⟩
-    · show resolveMeasure ((q'.push (z1, mTilde)).push (z2, mTilde)) < mb
-      omega
-    · intro p hp
-      rcases Queue.active_push hp with hp' | rfl
-      · rcases Queue.active_push hp' with hp'' | rfl
-        · exact hact p (Queue.active_pop hpop hp'')
-        · exact hre1
-      · exact hre2
-  case vc5.step.h_1.isFalse.h_2.h_2 =>
-    rename_i b mb z q zTilde mTilde q' hpop hnodrop hvnone hsplitnone hh
-    obtain ⟨hmb, hspec⟩ := hh
-    obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
-        (∀ p ∈ z, ResolvedEntry origin p) := hspec
-    have hre : ResolveEntry origin (zTilde, mTilde) := hact _ (Queue.active_head hpop)
-    have hmb' : mb = resolveMeasure q := congrArg ULift.down hmb
-    have hpopM := resolveMeasure_pop hpop
-    have hpos := resolveWeight_pos (zTilde, mTilde)
-    refine ⟨_, rfl, ?_, fun p hp => hact p (Queue.active_pop hpop hp), ?_⟩
-    · show resolveMeasure q' < mb
-      omega
-    · intro p hp
-      rcases (by simpa using hp : p ∈ z ∨ p = (zTilde, mTilde)) with hp' | rfl
-      · exact hout p hp'
-      · exact ⟨hre, by simpa using hnodrop, hvnone, hsplitnone⟩
-  case vc6.step.h_2 =>
-    rename_i b mb hnopop hh
-    exact hh.2.2
-  case vc7.pre =>
-    refine ⟨?_, ?_⟩
-    · intro p hp
-      have hp' : p = (origin, Mappings.initialMappings origin.n origin.darts.size) := by
-        simpa using Queue.active_ofArray hp
-      rw [hp']
-      exact ResolveEntry.initial hv hd hr
-    · intro p hp
-      exact absurd hp (by simp)
-  case vc8.post.success =>
-    rename_i r hinv
-    exact hinv
+  apply Std.Internal.Do.Id.of_wp_run_eq hrun
+    fun out => ∀ entry ∈ out, ResolvedEntry origin entry
+  vcgen
+  case inv1 => exact ResolveSpecSum origin
+  case inv2 => exact fun s => resolveMeasure s.snd
+  any_goals simp_all +zetaDelta
+  all_goals grind [ResolveSpecSum, ResolveEntry, ResolvedEntry,
+    ResolveEntry.initial, → ResolveEntry.fixSingle, → ResolveEntry.singleOut,
+    → vertexSingleDegreeIssue_spec, → fixSingleDegreeIssue_potential,
+    → singleOutLowerDegree_potential, → resolveMeasure_pop, resolveMeasure_push,
+    resolveWeight_pos, resolveWeight, resolveWeight_lt, resolveWeight_add_lt,
+    Nat.pow_lt_pow_right, → Queue.active_pop, → Queue.active_push,
+    → Queue.active_head, → Queue.active_ofArray, Array.mem_def]
 end
 
 /-- Membership form of the BFS soundness theorem: everything
