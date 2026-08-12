@@ -1835,21 +1835,22 @@ private theorem getElem!_of_toList_eq_append_cons {xs : Array α}
   rw [← Array.getElem!_toList, h]
   simp
 
-/-- Specification of the completed renumbered dart array: one slot per
-surviving representative, every emitted dart in bounds for the quotient, and
-slot `i` exactly the renumbered representative stored at `allRoots[i]`. -/
+/-- Specification of the completed renumbered dart array: one slot per root,
+every emitted dart in bounds for the quotient, and the slot at a root's
+compact index exactly the renumbered dart the root reads. -/
 private structure RenumberSpec (darts : Array Dart) (ufV ufD : Unionfind)
     (dartsStar : Array Dart) : Prop where
-  size_eq : dartsStar.size = ufD.allRoots.size
+  size_eq : dartsStar.size = ufD.numRoots
   dart_wf : ∀ i (h : i < dartsStar.size),
     (dartsStar[i]'h).InBounds ufV.numRoots ufD.numRoots
-  value_eq : ∀ i (h : i < dartsStar.size),
-    dartsStar[i]'h =
-      renumberDart ufV.relabel ufD.relabel (darts[ufD.allRoots[i]!]!)
+  value_eq : ∀ (r : ufD.Root) (h : (ufD.rootIndexEquiv r).val < dartsStar.size),
+    dartsStar[(ufD.rootIndexEquiv r).val]'h =
+      renumberDart ufV.relabel ufD.relabel (r.read darts)
 
 /-- `materialiseQuotient`'s renumber pass meets `RenumberSpec`: `Array.map`
-gives the size and slot values by library rewrites, and boundedness is
-pointwise from `renumberDart_inBounds`. -/
+gives the size and slot values by library rewrites, boundedness is pointwise
+from `renumberDart_inBounds`, and the root-indexed value law is
+`rootIndexEquiv.left_inv` through `Root.read_allRoots`. -/
 private theorem RenumberSpec.of_map {pt : PseudoTriangulation}
     {darts : Array Dart} {ufV ufD : Unionfind} {q : Queue (Nat × Nat)}
     (hinv : GlueInv pt darts ufV ufD q) :
@@ -1861,9 +1862,31 @@ private theorem RenumberSpec.of_map {pt : PseudoTriangulation}
     rw [Array.getElem_map]
     exact renumberDart_inBounds hinv
       (hinv.ufD_n ▸ Unionfind.mem_allRoots_lt (ufD.allRoots.getElem_mem _))
-  · intro i hi
-    rw [Array.getElem_map,
-      getElem!_pos ufD.allRoots i (by simpa using hi)]
+  · intro r h
+    have h' : (ufD.rootIndexEquiv r).val < ufD.allRoots.size := by
+      simpa using h
+    rw [Array.getElem_map, ← getElem!_pos ufD.allRoots _ h',
+      Unionfind.Root.read_allRoots]
+
+/-- Slot-indexed corollary of `value_eq`: slot `c` holds the renumbered
+representative stored at `allRoots[c]` -- `rootIndexEquiv.right_inv` names
+the root occupying the slot. For consumers whose question is genuinely
+positional (`link_from`'s source-dart interface). -/
+private theorem RenumberSpec.value_eq_slot {darts : Array Dart}
+    {ufV ufD : Unionfind} {dartsStar : Array Dart}
+    (h : RenumberSpec darts ufV ufD dartsStar) {c : Nat}
+    (hc : c < dartsStar.size) :
+    dartsStar[c]'hc =
+      renumberDart ufV.relabel ufD.relabel (darts[ufD.allRoots[c]!]!) := by
+  have hcn : c < ufD.numRoots := h.size_eq ▸ hc
+  let r := ufD.rootIndexEquiv.invFun ⟨c, hcn⟩
+  have hrc : (ufD.rootIndexEquiv r).val = c :=
+    congrArg Fin.val (ufD.rootIndexEquiv.right_inv ⟨c, hcn⟩)
+  have hread : darts[ufD.allRoots[c]!]! = r.read darts := by
+    simpa only [hrc] using Unionfind.Root.read_allRoots r darts
+  have hv := h.value_eq r (by rw [hrc]; exact hc)
+  rw [hread]
+  simpa only [hrc] using hv
 
 /-- At an empty worklist, the semantic gluing invariant and the exact
 renumbering specification are precisely A.3's quotient-map coherence. -/
@@ -1892,18 +1915,18 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
     have hsrc := hpt.read_inBounds hfpt
     have hr := hinv.root_lt hfpt
     have hrep := hinv.read_inBounds hr
-    have hfRelabel := ufD.relabel_idx? hinv.ufD_wf hfi
-    have hfStar : fStar = ufD.rootRank (ufD.root f) :=
-      Option.some.inj (hf.symm.trans hfRelabel)
+    have hfStar : fStar =
+        (ufD.rootIndexEquiv (Unionfind.Root.ofNode hinv.ufD_wf ⟨f, hfi⟩)).val :=
+      Option.some.inj (hf.symm.trans (ufD.relabel_idx?_root hinv.ufD_wf hfi))
     have hfStarLt : fStar < dartsStar.size := by
       have hDwf := (Unionfind.relabel_wf ufD hinv.ufD_wf).1
       have := IndexMap.idx?_lt_of_bounded hDwf.bounded hf
-      simpa only [Unionfind.numRoots, ← hri.size_eq] using this
-    have hroot := hinv.ufD_wf.root_spec hfi
-    have hall := Unionfind.getElem!_allRoots_rootRank hroot.2 (by simp [hroot.1])
+      simpa only [← hri.size_eq] using this
     have hout : dartsStar[fStar]! = renumberDart vMap dMap (darts[ufD.root f]!) := by
       rw [getElem!_pos dartsStar fStar hfStarLt]
-      simpa only [hfStar, hall] using hri.value_eq fStar hfStarLt
+      have hv := hri.value_eq (Unionfind.Root.ofNode hinv.ufD_wf ⟨f, hfi⟩)
+        (hfStar ▸ hfStarLt)
+      simpa only [Unionfind.Root.read_ofNode, ← hfStar] using hv
     have hsrcV : (pt.darts[f]!).head < ufV.n := by
       simpa only [hinv.ufV_n] using hsrc.head_lt
     have hrepV : (darts[ufD.root f]!).head < ufV.n := by
@@ -1957,13 +1980,13 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
     -- `link_from`, to some source dart of that class.
     intro k c hc hnn
     have hcn : c < ufD.numRoots := by
-      simpa only [Unionfind.numRoots, ← hri.size_eq] using hc
+      simpa only [← hri.size_eq] using hc
     obtain ⟨hrlt, hroot, hrank⟩ := Unionfind.rootRank_allRoots hcn
     have hrpt : ufD.allRoots[c]! < pt.darts.size := by
       simpa only [hinv.ufD_n] using hrlt
     have hout : dartsStar[c]! = renumberDart vMap dMap (darts[ufD.allRoots[c]!]!) := by
       rw [getElem!_pos dartsStar c hc]
-      exact hri.value_eq c hc
+      exact hri.value_eq_slot hc
     have hrep : ¬ (k.get (darts[ufD.allRoots[c]!]!)).isNone :=
       LinkKind.renumberDart_from (hout ▸ hnn)
     have hself : ufD.root ufD.allRoots[c]! = ufD.allRoots[c]! :=

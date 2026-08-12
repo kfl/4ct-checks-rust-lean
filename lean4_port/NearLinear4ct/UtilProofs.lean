@@ -1,3 +1,4 @@
+import NearLinear4ct.TypeEquiv
 import NearLinear4ct.Util
 import NearLinear4ct.MappingProofs
 
@@ -613,18 +614,98 @@ theorem relabel_surjective (uf : Unionfind) (hwf : uf.WF) {j : Nat}
   refine ⟨uf.allRoots[j]!, hlt, ?_⟩
   rw [relabel_idx? uf hwf hlt, root_eq_self hroot, hrank]
 
-/-- **The quotient relabelling's kernel is root equality**: two nodes get the
-same compact index iff they have the same root. Packages the
-`rootRank`/`allRoots` witness management that graph-quotient proofs
-otherwise repeat at their exit states. -/
+/-! ### Roots as a proof-only carrier
+
+`Root uf` is a parentless node of the forest state `uf` behind a private
+representative. Clients normalise nodes with `Root.ofNode`, compare roots
+with `=` (`Root.ofNode_eq_iff`), and enumerate them by compact index through
+`rootIndexEquiv`. Indexing the type by `uf` keeps a root from accidentally
+outliving a `unite`: roots of different forest states have different
+types. -/
+
+/-- A root of the forest `uf`, behind a private representative; compare
+roots rather than inspect them. -/
+structure Root (uf : Unionfind) where
+  private mk ::
+  private rep : Fin uf.n
+  private isRoot : uf.parents[rep.val]!.isNone
+
+/-- Roots are equal once their representatives are (root-ness is a proof). -/
+private theorem Root.rep_inj {uf : Unionfind} {r s : uf.Root}
+    (h : r.rep = s.rep) : r = s := by
+  cases r; cases s; cases h; rfl
+
+/-- Normalise a node to its root: `WF` guarantees the parent walk reaches a
+parentless node. -/
+def Root.ofNode {uf : Unionfind} (hwf : uf.WF) (i : Fin uf.n) : uf.Root :=
+  ⟨⟨uf.root i.val, (hwf.root_spec i.isLt).2⟩, by
+    simp [(hwf.root_spec i.isLt).1]⟩
+
+/-- Two nodes normalise to the same root iff their union-find
+representatives agree: `Root` equality is the semantic equality. -/
+theorem Root.ofNode_eq_iff {uf : Unionfind} (hwf : uf.WF) (a b : Fin uf.n) :
+    Root.ofNode hwf a = Root.ofNode hwf b ↔ uf.root a.val = uf.root b.val := by
+  constructor
+  · intro h
+    exact congrArg (fun r : uf.Root => r.rep.val) h
+  · intro h
+    exact Root.rep_inj (Fin.ext h)
+
+/-- The compact index of a root lies below the root count. -/
+theorem rootRank_lt_numRoots {uf : Unionfind} {r : Nat} (hr : r < uf.n)
+    (hroot : uf.parents[r]!.isNone) : uf.rootRank r < uf.numRoots := by
+  rw [numRoots_eq_rootRank]
+  exact uf.rootRank_lt_rootRank hr hroot
+
+/-- **A.3.1's compaction, as an equivalence**: the compact indices
+`[0, numRoots)` enumerate the parentless nodes of `uf`. Unconditional -- the
+forest's shape alone pairs each root with its rank; `WF` enters only at
+`Root.ofNode`, to establish that normalising a node reaches a root. The
+inverse laws are `getElem!_allRoots_rootRank` and `rootRank_allRoots`. -/
+def rootIndexEquiv (uf : Unionfind) : TypeEquiv uf.Root (Fin uf.numRoots) where
+  toFun r := ⟨uf.rootRank r.rep.val, rootRank_lt_numRoots r.rep.isLt r.isRoot⟩
+  invFun j :=
+    ⟨⟨uf.allRoots[j.val]!, (rootRank_allRoots j.isLt).1⟩, by
+      simp [(rootRank_allRoots j.isLt).2.1]⟩
+  left_inv r :=
+    Root.rep_inj (Fin.ext (getElem!_allRoots_rootRank r.rep.isLt r.isRoot))
+  right_inv j := Fin.ext (rootRank_allRoots j.isLt).2.2
+
+/-- Controlled eliminator: the value an array associates with a root.
+Clients read through a root; the numeric representative stays private. -/
+def Root.read {α : Type _} [Inhabited α] {uf : Unionfind} (r : uf.Root)
+    (xs : Array α) : α :=
+  xs[r.rep.val]!
+
+/-- Normalisation law for `Root.read`. -/
+theorem Root.read_ofNode {α : Type _} [Inhabited α] {uf : Unionfind}
+    (hwf : uf.WF) (i : Fin uf.n) (xs : Array α) :
+    (Root.ofNode hwf i).read xs = xs[uf.root i.val]! :=
+  rfl
+
+/-- `rootIndexEquiv.left_inv`, as seen by `Root.read`: indexing `allRoots`
+at a root's compact index reads the root itself. -/
+theorem Root.read_allRoots {α : Type _} [Inhabited α] {uf : Unionfind}
+    (r : uf.Root) (xs : Array α) :
+    xs[uf.allRoots[(uf.rootIndexEquiv r).val]!]! = r.read xs :=
+  congrArg (fun s : uf.Root => xs[s.rep.val]!) (uf.rootIndexEquiv.left_inv r)
+
+/-- The relabelling read, root-carrier form: a node's compact label is the
+index of its root. -/
+theorem relabel_idx?_root {uf : Unionfind} (hwf : uf.WF) {i : Nat}
+    (hi : i < uf.n) :
+    uf.relabel.idx? i =
+      Option.some (uf.rootIndexEquiv (Root.ofNode hwf ⟨i, hi⟩)).val :=
+  uf.relabel_idx? hwf hi
+
+/-- **The quotient relabelling's kernel is root equality**: same compact
+label iff same root (`rootIndexEquiv` is injective) iff same union-find
+representative (`Root.ofNode_eq_iff`). -/
 theorem relabel_idx?_eq_iff_root_eq {uf : Unionfind} (hwf : uf.WF)
     {a b : Nat} (ha : a < uf.n) (hb : b < uf.n) :
     uf.relabel.idx? a = uf.relabel.idx? b ↔ uf.root a = uf.root b := by
-  have hall_a := getElem!_allRoots_rootRank (hwf.root_spec ha).2
-    (by rw [(hwf.root_spec ha).1]; rfl)
-  have hall_b := getElem!_allRoots_rootRank (hwf.root_spec hb).2
-    (by rw [(hwf.root_spec hb).1]; rfl)
-  grind [relabel_idx?]
+  simp only [relabel_idx?_root hwf ha, relabel_idx?_root hwf hb,
+    Option.some.injEq, Fin.val_inj, uf.rootIndexEquiv.eq_iff, Root.ofNode_eq_iff]
 
 /-! ### `unite` bookkeeping for the gluing loop's termination measure
 

@@ -1,5 +1,6 @@
 -- core value types & helpers
 import NearLinear4ct.OptIdx
+import NearLinear4ct.TypeEquiv
 import NearLinear4ct.SmallNatPair
 import NearLinear4ct.Queue
 import NearLinear4ct.Util
