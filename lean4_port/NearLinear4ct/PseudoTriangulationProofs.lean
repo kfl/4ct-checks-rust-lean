@@ -1795,8 +1795,8 @@ vertex relabelling, `rev` through the total dart relabelling, and open
 private theorem renumberDart_inBounds {pt : PseudoTriangulation}
     {darts : Array Dart} {ufV ufD : Unionfind} {q : Queue (Nat × Nat)}
     (h : GlueInv pt darts ufV ufD q) {d : Nat} (hd : d < pt.darts.size) :
-    let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
-    let dMap := composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots
+    let vMap := ufV.relabel
+    let dMap := ufD.relabel
     let dd := darts[d]!
     (renumberDart vMap dMap dd).InBounds ufV.numRoots ufD.numRoots := by
   intro vMap dMap dd
@@ -1844,10 +1844,8 @@ private structure RenumberSpec (darts : Array Dart) (ufV ufD : Unionfind)
   dart_wf : ∀ i (h : i < dartsStar.size),
     (dartsStar[i]'h).InBounds ufV.numRoots ufD.numRoots
   value_eq : ∀ i (h : i < dartsStar.size),
-    dartsStar[i]'h = renumberDart
-      (composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots)
-      (composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots)
-      (darts[ufD.allRoots[i]!]!)
+    dartsStar[i]'h =
+      renumberDart ufV.relabel ufD.relabel (darts[ufD.allRoots[i]!]!)
 
 /-- `materialiseQuotient`'s renumber pass meets `RenumberSpec`: `Array.map`
 gives the size and slot values by library rewrites, and boundedness is
@@ -1856,10 +1854,8 @@ private theorem RenumberSpec.of_map {pt : PseudoTriangulation}
     {darts : Array Dart} {ufV ufD : Unionfind} {q : Queue (Nat × Nat)}
     (hinv : GlueInv pt darts ufV ufD q) :
     RenumberSpec darts ufV ufD
-      (ufD.allRoots.map fun d => renumberDart
-        (composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots)
-        (composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots)
-        darts[d]!) := by
+      (ufD.allRoots.map fun d =>
+        renumberDart ufV.relabel ufD.relabel darts[d]!) := by
   refine ⟨Array.size_map .., ?_, ?_⟩
   · intro i hi
     rw [Array.getElem_map]
@@ -1878,8 +1874,8 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
     (hcoh : GlueCoherent pt dartPairs darts ufV ufD q)
     (hri : RenumberSpec darts ufV ufD dartsStar)
     (hq : q.isEmpty = true) :
-    let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
-    let dMap := composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots
+    let vMap := ufV.relabel
+    let dMap := ufD.relabel
     Mappings.Coherent ⟨vMap, dMap⟩ pt ⟨ufV.numRoots, dartsStar⟩ ∧
       (∀ p ∈ dartPairs, dMap.idx? p.1 = dMap.idx? p.2) ∧
       ∀ (k : LinkKind) c, c < dartsStar.size → ¬ (k.get (dartsStar[c]!)).isNone →
@@ -1890,8 +1886,8 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
   · intro f fStar hf
     obtain ⟨hfMap, -⟩ := IndexMap.idx?_eq_some_iff.mp hf
     have hfi : f < ufD.n := by
-      simpa only [size_composeMap, Array.size_map, Unionfind.size_eachRoot] using
-        show f < (composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots).size from hfMap
+      simpa only [Unionfind.size_relabel] using
+        show f < ufD.relabel.size from hfMap
     have hfpt : f < pt.darts.size := by simpa only [hinv.ufD_n] using hfi
     have hsrc := hpt.read_inBounds hfpt
     have hr := hinv.root_lt hfpt
@@ -1975,6 +1971,34 @@ private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
     obtain ⟨j, hj, hjr, hjs⟩ := hcoh.link_from k ufD.allRoots[c]! hrpt (hself.symm ▸ hrep)
     refine ⟨j, hj, ?_, hjs⟩
     rw [ufD.relabel_idx? hinv.ufD_wf (hinv.ufD_n.symm ▸ hj), hjr, hself, hrank]
+
+/-- At an empty worklist, the gluing connectivity invariant transports along
+`rootRank`, `allRoots`, and the two relabellings to A.3's quotient
+connectivity: source darts with a common quotient head are connected in the
+quotient of the dart forest. -/
+private theorem GlueConnected.finish {pt : PseudoTriangulation} (hwf : pt.WF)
+    {darts : Array Dart} {ufV ufD : Unionfind} {q : Queue (Nat × Nat)}
+    (hinv : GlueInv pt darts ufV ufD q)
+    (hconn : GlueConnected pt ufV ufD q)
+    (hq : q.isEmpty = true) :
+    let vMap := ufV.relabel
+    let dMap := ufD.relabel
+    ∀ a b : Fin pt.darts.size,
+      vMap.idx? (pt.darts[a.val]!).head = vMap.idx? (pt.darts[b.val]!).head →
+      DartGraph.QuotientConn (pt.dartGraph hwf)
+        (fun d : Fin pt.darts.size => dMap.idx? d.val) a b := by
+  intro vMap dMap a b hidx
+  have hha : (pt.darts[a.val]!).head < ufV.n :=
+    Nat.lt_of_lt_of_eq (hwf.read_inBounds a.isLt).head_lt hinv.ufV_n.symm
+  have hhb : (pt.darts[b.val]!).head < ufV.n :=
+    Nat.lt_of_lt_of_eq (hwf.read_inBounds b.isLt).head_lt hinv.ufV_n.symm
+  have hroot := (Unionfind.relabel_idx?_eq_iff_root_eq hinv.ufV_wf hha hhb).mp hidx
+  have hqc := (hconn a.val b.val a.isLt b.isLt hroot).to_quotientConn
+    hwf hinv.ufD_n hq a.isLt b.isLt
+  exact hqc.mono fun x y hxy =>
+    (Unionfind.relabel_idx?_eq_iff_root_eq hinv.ufD_wf
+      (Nat.lt_of_lt_of_eq x.isLt hinv.ufD_n.symm)
+      (Nat.lt_of_lt_of_eq y.isLt hinv.ufD_n.symm)).mpr hxy
 
 section
 -- The transparency linter flags `mvcgen`'s own `Invariant` encoding (the `⇓`
@@ -2121,7 +2145,8 @@ private theorem materialiseQuotient_spec {pt : PseudoTriangulation}
       vmap_surj := ?_
       dmap_surj := ?_
       link_from := hfrom
-      conn := ?_ }
+      conn := fun hwf hr =>
+        GlueConnected.finish hwf hinv' (hcm hr) hqempty }
   · intro j hj
     obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufV_wf hj
     exact ⟨i, hinv'.ufV_n ▸ hi, hidx⟩
@@ -2129,32 +2154,6 @@ private theorem materialiseQuotient_spec {pt : PseudoTriangulation}
     obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufD_wf (j := j)
       (by grind [RenumberSpec, Unionfind.numRoots])
     exact ⟨i, hinv'.ufD_n ▸ hi, hidx⟩
-  · intro hwf hr a b hidx
-    have hcg := hcm hr
-    have hha : (pt.darts[a.val]!).head < pt.n := (hpt.read_inBounds a.isLt).head_lt
-    have hhb : (pt.darts[b.val]!).head < pt.n := (hpt.read_inBounds b.isLt).head_lt
-    have hha' := hinv'.ufV_n.symm ▸ hha
-    have hhb' := hinv'.ufV_n.symm ▸ hhb
-    have hia := Unionfind.relabel_idx? _ hinv'.ufV_wf hha'
-    have hib := Unionfind.relabel_idx? _ hinv'.ufV_wf hhb'
-    have hrank := Option.some.inj ((hia.symm.trans hidx).trans hib)
-    have hrs_a := hinv'.ufV_wf.root_spec hha'
-    have hrs_b := hinv'.ufV_wf.root_spec hhb'
-    have hall_a := Unionfind.getElem!_allRoots_rootRank hrs_a.2
-      (by rw [hrs_a.1]; rfl)
-    have hall_b := Unionfind.getElem!_allRoots_rootRank hrs_b.2
-      (by rw [hrs_b.1]; rfl)
-    have hgie := hcg a.val b.val a.isLt b.isLt
-      (by rw [← hall_a, ← hall_b, hrank])
-    have hqc := hgie.to_quotientConn hwf hinv'.ufD_n hqempty a.isLt b.isLt
-    refine hqc.mono ?_
-    intro x y hxy
-    have h1 := Unionfind.relabel_idx? _ hinv'.ufD_wf
-      (Nat.lt_of_lt_of_eq x.isLt hinv'.ufD_n.symm)
-    have h2 := Unionfind.relabel_idx? _ hinv'.ufD_wf
-      (Nat.lt_of_lt_of_eq y.isLt hinv'.ufD_n.symm)
-    exact h1.trans
-      ((congrArg (fun r => Option.some (Unionfind.rootRank _ r)) hxy).trans h2.symm)
 
 /-- The A.3 contract for `freeHomomorphism`: the two phase contracts compose. -/
 private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)

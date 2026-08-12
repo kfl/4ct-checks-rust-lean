@@ -1,5 +1,6 @@
 import NearLinear4ct.OptIdx
 import NearLinear4ct.Degree
+import NearLinear4ct.Mapping
 import NearLinear4ct.Queue
 import Linen
 
@@ -86,8 +87,8 @@ def allRoots (uf : Unionfind) : Array Nat :=
   (Array.range uf.n).filter (fun i => uf.parents[i]!.isNone)
 
 /-- A relabelling map: each root gets a fresh sequential index; non-roots map to
-`OptIdx.none` (the C++ `-1`). Composes with `eachRoot` via `composeMap` to
-renumber a quotient (see `disjointUnion`). -/
+`OptIdx.none` (the C++ `-1`). Composes with `eachRoot` to renumber a quotient
+(`relabel`). -/
 def indexRoots (uf : Unionfind) : Array OptIdx := Id.run do
   let mut index : Nat := 0
   let mut out : Array OptIdx := Array.mkEmpty uf.n
@@ -100,6 +101,13 @@ def indexRoots (uf : Unionfind) : Array OptIdx := Id.run do
   return out
 
 def numRoots (uf : Unionfind) : Nat := uf.allRoots.size
+
+/-- The quotient relabelling each_root (total, lifted to `some`) ∘ index_roots
+(compacted): every node to the compact sequential index of its root. A real
+abstraction boundary -- proofs go through the `relabel_*` bridge lemmas
+(`UtilProofs.lean`); `@[inline]` eliminates the call at runtime. -/
+@[inline] def relabel (uf : Unionfind) : IndexMap :=
+  composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots
 
 end Unionfind
 

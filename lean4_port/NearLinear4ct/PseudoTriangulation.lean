@@ -417,13 +417,13 @@ already an `OptIdx`, so a boundary `none` stays `none`). -/
   , succ := match d.succ with | .some s => dMap[s]! | .none => .none
   , pred := match d.pred with | .some p => dMap[p]! | .none => .none }
 
-/-- The pure renumbering phase of `freeHomomorphism`: builds the relabellings
-each_root (total, lifted to `some`) ∘ index_roots (compacted) and materialises
-the quotient graph over the surviving representatives. -/
+/-- The pure renumbering phase of `freeHomomorphism`: the two quotient
+relabellings (`Unionfind.relabel`) and the quotient graph over the surviving
+representatives. -/
 def materialiseQuotient (c : HomomorphismClosure) :
     PseudoTriangulation × Mappings :=
-  let vMap := composeMap (c.ufV.eachRoot.map OptIdx.some) c.ufV.indexRoots
-  let dMap := composeMap (c.ufD.eachRoot.map OptIdx.some) c.ufD.indexRoots
+  let vMap := c.ufV.relabel
+  let dMap := c.ufD.relabel
   let dartsStar := c.ufD.allRoots.map fun d => renumberDart vMap dMap c.darts[d]!
   (⟨c.ufV.numRoots, dartsStar⟩, ⟨vMap, dMap⟩)
 

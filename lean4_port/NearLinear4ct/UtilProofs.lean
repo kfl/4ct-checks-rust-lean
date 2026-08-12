@@ -529,15 +529,19 @@ the composition pattern `disjointUnion`/`freeHomomorphism` uses) is a *total,
 well-formed* map onto the compact root indices, for any well-formed union-find.
 `WF` is provable and preserved by `new`/`unite` (`wf_new`, `WF.unite`), so unlike
 the earlier `RootsWF` assumption this holds unconditionally. -/
+@[simp] theorem size_relabel (uf : Unionfind) : uf.relabel.size = uf.n := by
+  simp [Unionfind.relabel]
+
 theorem relabel_wf (uf : Unionfind) (hwf : uf.WF) :
-    IndexMap.WF (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots) uf.n uf.numRoots
-    ∧ IndexMap.Total (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots) := by
+    IndexMap.WF uf.relabel uf.n uf.numRoots
+    ∧ IndexMap.Total uf.relabel := by
   have h := hwf.rootsWF
   have hm1wf : IndexMap.WF (uf.eachRoot.map OptIdx.some) uf.n uf.n := by
     simpa [eachRoot, Function.comp_def] using
       (range_map_some_wf (n := uf.n) (codom := uf.n) (f := uf.root)
         (fun i hi => (h i hi).1))
   refine ⟨composeMap_wf hm1wf (uf.indexRoots_wf), ?_⟩
+  simp only [Unionfind.relabel]
   intro i hi
   have hin : i < uf.n := by simpa using hi
   have hroot := h i hin
@@ -546,33 +550,27 @@ theorem relabel_wf (uf : Unionfind) (hwf : uf.WF) :
 
 /-- The quotient relabelling sends a node to the compact rank of its root. -/
 theorem relabel_idx? (uf : Unionfind) (hwf : uf.WF) {i : Nat} (hi : i < uf.n) :
-    (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).idx? i =
-      Option.some (uf.rootRank (uf.root i)) := by
+    uf.relabel.idx? i = Option.some (uf.rootRank (uf.root i)) := by
   have hroot := hwf.root_spec hi
+  simp only [Unionfind.relabel]
   rw [IndexMap.idx?_pos (by simp [hi])]
   rw [getElem_composeMap (by simp [hi])]
   simp [getElem!_indexRoots uf hroot.2, hroot.1]
 
 /-- Entry-level form of `relabel_idx?`, used by quotient construction code. -/
 theorem relabel_getElem! (uf : Unionfind) (hwf : uf.WF) {i : Nat} (hi : i < uf.n) :
-    (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]! =
-      OptIdx.some (uf.rootRank (uf.root i)) := by
-  have hsz : i < (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).size := by
-    simp [hi]
+    uf.relabel[i]! = OptIdx.some (uf.rootRank (uf.root i)) := by
+  have hsz : i < uf.relabel.size := by simp [hi]
   apply OptIdx.get?_eq_some_iff.mp
   calc
-    ((composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]!).get? =
-        ((composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]'hsz).get? :=
-      congrArg OptIdx.get?
-        (getElem!_pos (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots) i hsz)
-    _ = (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).idx? i :=
-      (IndexMap.idx?_pos hsz).symm
+    (uf.relabel[i]!).get? = (uf.relabel[i]'hsz).get? :=
+      congrArg OptIdx.get? (getElem!_pos uf.relabel i hsz)
+    _ = uf.relabel.idx? i := (IndexMap.idx?_pos hsz).symm
     _ = Option.some (uf.rootRank (uf.root i)) := uf.relabel_idx? hwf hi
 
 /-- Panicking-index form of `relabel_idx?`; its panic branch is dead in range. -/
 theorem relabel_idx! (uf : Unionfind) (hwf : uf.WF) {i : Nat} (hi : i < uf.n) :
-    ((composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots)[i]!).idx! =
-      uf.rootRank (uf.root i) := by
+    (uf.relabel[i]!).idx! = uf.rootRank (uf.root i) := by
   rw [uf.relabel_getElem! hwf hi]
   exact OptIdx.idx!_of_get?_some (by simp)
 
@@ -610,11 +608,23 @@ hit by a source node (namely the root occupying that slot). Complements
 `relabel_wf`'s totality, which alone does not give surjectivity. -/
 theorem relabel_surjective (uf : Unionfind) (hwf : uf.WF) {j : Nat}
     (hj : j < uf.numRoots) :
-    ∃ i, i < uf.n ∧
-      (composeMap (uf.eachRoot.map OptIdx.some) uf.indexRoots).idx? i = Option.some j := by
+    ∃ i, i < uf.n ∧ uf.relabel.idx? i = Option.some j := by
   obtain ⟨hlt, hroot, hrank⟩ := rootRank_allRoots hj
   refine ⟨uf.allRoots[j]!, hlt, ?_⟩
   rw [relabel_idx? uf hwf hlt, root_eq_self hroot, hrank]
+
+/-- **The quotient relabelling's kernel is root equality**: two nodes get the
+same compact index iff they have the same root. Packages the
+`rootRank`/`allRoots` witness management that graph-quotient proofs
+otherwise repeat at their exit states. -/
+theorem relabel_idx?_eq_iff_root_eq {uf : Unionfind} (hwf : uf.WF)
+    {a b : Nat} (ha : a < uf.n) (hb : b < uf.n) :
+    uf.relabel.idx? a = uf.relabel.idx? b ↔ uf.root a = uf.root b := by
+  have hall_a := getElem!_allRoots_rootRank (hwf.root_spec ha).2
+    (by rw [(hwf.root_spec ha).1]; rfl)
+  have hall_b := getElem!_allRoots_rootRank (hwf.root_spec hb).2
+    (by rw [(hwf.root_spec hb).1]; rfl)
+  grind [relabel_idx?]
 
 /-! ### `unite` bookkeeping for the gluing loop's termination measure
 
