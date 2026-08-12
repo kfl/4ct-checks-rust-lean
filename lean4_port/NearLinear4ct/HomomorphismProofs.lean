@@ -1107,23 +1107,22 @@ def homomorphismA2 (src dst : WFConfig) (dartFrom dartTo : Nat)
   return some (vmap, dmap)                                                      -- 34
 
 /-- The A.2.1 loop's state, as `mvcgen` packs it: the early-return slot and
-the three mutable variables. -/
+the three mutable variables in declaration order. -/
 private abbrev A2State :=
-  MProd (Option (Option (IndexMap × IndexMap)))
-    (MProd IndexMap (MProd (Queue SmallNatPair) IndexMap))
+  Option (Option (IndexMap × IndexMap)) × IndexMap × IndexMap × Queue SmallNatPair
 
 /-- Coupling invariant for `homCore_eq_a2`: mid-loop (`.inl`) the state is
 index-safe and driving `homCoreGo` from it computes `homCore`'s answer; after
 the loop (`.inr`) the early return or normally returned maps are that answer. -/
 private def A2Coupling (src dst : WFConfig) (degreeTest : Degree → Degree → Bool)
     (dartFrom dartTo : Nat) : A2State ⊕ A2State → Prop
-  | .inl ⟨ret, dmap, q, vmap⟩ =>
+  | .inl ⟨ret, vmap, dmap, q⟩ =>
       ret = none ∧ HomIndexSafe src dst q vmap dmap ∧
       ∀ h, homCoreGo src dst degreeTest q vmap dmap h
         = homCore src dartFrom dst dartTo degreeTest
   | .inr ⟨some r0, _, _, _⟩ =>
       homCore src dartFrom dst dartTo degreeTest = r0
-  | .inr ⟨none, dmap, _, vmap⟩ =>
+  | .inr ⟨none, vmap, dmap, _⟩ =>
       homCore src dartFrom dst dartTo degreeTest = some (vmap, dmap)
 
 section
@@ -1157,7 +1156,7 @@ theorem homCore_eq_a2 {src dst : WFConfig} {degreeTest : Degree → Degree → B
     rfl
   apply Id.of_wp_run_eq hr fun r => homCore src dartFrom dst dartTo degreeTest = r
   mvcgen
-  case inv1 => exact fun ⟨_, dmap, q, _⟩ => ⟨measure q dmap⟩
+  case inv1 => exact fun ⟨_, _, dmap, q⟩ => ⟨measure q dmap⟩
   case inv2 => exact ⇓s => ⌜A2Coupling src dst degreeTest dartFrom dartTo s⌝
   all_goals mleave
   -- Thirteen verification conditions, one per path through the inlined body.

@@ -230,7 +230,7 @@ theorem rootRank_lt_rootRank (uf : Unionfind) {i j : Nat} (hij : i < j)
 
 /-- The step function of `indexRoots`' loop (state: next index × output). -/
 private def indexRootsStep (uf : Unionfind) (i : Nat)
-    (s : MProd Nat (Array OptIdx)) : MProd Nat (Array OptIdx) :=
+    (s : Nat × Array OptIdx) : Nat × Array OptIdx :=
   if uf.parents[i]!.isNone then ⟨s.1 + 1, s.2.push (OptIdx.some s.1)⟩
   else ⟨s.1, s.2.push OptIdx.none⟩
 
@@ -257,11 +257,11 @@ private theorem foldl_indexRootsStep (uf : Unionfind) :
 /-- **The bridge**: the push loop computes the functional model. -/
 theorem indexRoots_eq_fun (uf : Unionfind) : uf.indexRoots = uf.indexRootsFun := by
   unfold indexRoots
-  simp only [pure_bind]
+  dsimp only
   rw [forIn_range_eq_foldl uf.n _ uf.indexRootsStep
         (fun i s => by grind [indexRootsStep])]
-  have h0 : (⟨0, Array.mkEmpty uf.n⟩ : MProd Nat (Array OptIdx))
-      = ⟨uf.rootRank 0, uf.outPrefix 0⟩ := by
+  have h0 : ((0, Array.mkEmpty uf.n) : Nat × Array OptIdx)
+      = (uf.rootRank 0, uf.outPrefix 0) := by
     simp [rootRank, outPrefix]
   rw [h0, foldl_indexRootsStep uf uf.n 0]
   simp [outPrefix, indexRootsFun]

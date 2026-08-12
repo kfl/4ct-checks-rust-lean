@@ -426,18 +426,18 @@ theorem fromVRotations_wf (n : Nat) (rotations : Array (Array Int)) :
   case inv1 => exact ⇓⟨_xs, dartOf, fresh⟩ => ⌜DartOfWF n dartOf fresh⌝
   case inv2 => exact ⇓⟨_xs, dartOf, fresh⟩ => ⌜DartOfWF n dartOf fresh⌝
   case inv3 => exact ⇓⟨_xs, darts⟩ =>
-    ⌜darts.size = (‹MProd (Array (Array (Option Nat))) Nat›).snd ∧
+    ⌜darts.size = (‹Array (Array (Option Nat)) × Nat›).snd ∧
       ∀ i (hi : i < darts.size), (darts[i]'hi).InBounds n darts.size⌝
   case inv4 => exact ⇓⟨_xs, darts⟩ =>
-    ⌜darts.size = (‹MProd (Array (Array (Option Nat))) Nat›).snd ∧
+    ⌜darts.size = (‹Array (Array (Option Nat)) × Nat›).snd ∧
       ∀ i (hi : i < darts.size), (darts[i]'hi).InBounds n darts.size⌝
   all_goals mleave
   case vc6 => exact dartOfWF_init n
   case vc2 => exact dartOfWF_set n _ _ _ _ (by assumption) (lt_of_mem_range_toList (by assumption))
   case vc3 => exact dartOfWF_set n _ _ _ _ (by assumption) (lt_of_mem_range_toList (by assumption))
   case vc11 =>
-    rename_i r hwf
-    exact ⟨by simp, fun i hi =>
+    rename_i r _dartOf fresh darts hwf
+    exact ⟨by simp [darts, fresh], fun i hi =>
       inBounds_replicate_default n r.snd _ ⟨rfl, rfl, rfl, rfl⟩ hwf.2.2.2 i hi⟩
   case vc12 => rename_i hinv; exact hinv.2
   case vc8 =>
@@ -1291,17 +1291,18 @@ private theorem GlueConnected.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
     exact ((hconn a f ha hef.2 h1).map_pend afterAll).trans
       (hseam.symm.trans ((hconn e b hef.1 hb h2).map_pend afterAll))
 
-/-- The packed-state form of the loop's mutable tuple `⟨darts, q, ufD, ufV⟩`. -/
+/-- The packed-state form of the loop's mutable tuple, in declaration order
+`(darts, ufV, ufD, q)`. -/
 private abbrev GlueState :=
-  MProd (Array Dart) (MProd (Queue (Nat × Nat)) (MProd Unionfind Unionfind))
+  Array Dart × Unionfind × Unionfind × Queue (Nat × Nat)
 
 /-- The structural and semantic loop invariants over the same packed state. -/
 private def GlueSpecSum (pt : PseudoTriangulation) (hpt : pt.WF)
     (dartPairs : Array (Nat × Nat)) : GlueState ⊕ GlueState → Prop
-  | .inl ⟨darts, ⟨q, ⟨ufD, ufV⟩⟩⟩ =>
+  | .inl ⟨darts, ufV, ufD, q⟩ =>
       GlueInv pt darts ufV ufD q ∧ GlueCoherent pt dartPairs darts ufV ufD q ∧
       ((pt.dartGraph hpt).Rotational → GlueConnected pt ufV ufD q)
-  | .inr ⟨darts, ⟨q, ⟨ufD, ufV⟩⟩⟩ =>
+  | .inr ⟨darts, ufV, ufD, q⟩ =>
       GlueInv pt darts ufV ufD q ∧ GlueCoherent pt dartPairs darts ufV ufD q ∧
       ((pt.dartGraph hpt).Rotational → GlueConnected pt ufV ufD q) ∧
       q.isEmpty = true
@@ -1319,7 +1320,7 @@ private theorem Queue.pop?_eq_none_of_no_pair {q : Queue (Nat × Nat)}
 /-- The termination measure over the packed loop state: each glue merges two
 dart classes, each skip pops an obligation. -/
 private def glueMeasure (s : GlueState) : Nat :=
-  3 * s.snd.snd.fst.numRoots + s.snd.fst.live
+  3 * s.snd.snd.fst.numRoots + s.snd.snd.snd.live
 
 /-- Popping preserves the invariant (the active set shrinks). -/
 private theorem GlueInv.pop {pt : PseudoTriangulation} {darts : Array Dart}
@@ -2017,9 +2018,9 @@ private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
   case inv1 => exact fun s => ⟨glueMeasure s⟩
   case inv2 => exact ⇓s => ⌜GlueSpecSum pt hpt dartPairs s⌝
   case inv3 =>
-    rename_i r _ _ _ _
+    rename_i r _s1 ufV _s ufD _q _vMap _dMap _dartsStar _h
     exact ⇓⟨xs, dartsStar⟩ =>
-      ⌜RenumberInv r.1 r.2.2.snd r.2.2.fst xs.prefix.length dartsStar⌝
+      ⌜RenumberInv r.1 ufV ufD xs.prefix.length dartsStar⌝
   all_goals mleave
   -- Continue branch: the popped pair is already merged; only the queue shrinks.
   case vc1.step.h_1.isTrue =>
@@ -2081,12 +2082,13 @@ private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
   -- Renumber loop: one push per root, so the size tracks the processed
   -- prefix; the pushed dart is in bounds for the quotient.
   case vc6.step =>
-    rename_i _ _ _ _ r _ _ _ _ pref cur suff hcursor b _ hd rv succ pred _ _
+    rename_i _s1 _ufV _s ufD _q _vMap _dMap _dS0 _hspec pref cur suff hcursor b
+      _dd hd rv succ pred _dS _h
     have hri : RenumberInv _ _ _ _ _ := ‹_›
     obtain ⟨hinv', -, -⟩ :
         GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := ‹_›
     have hcur := getElem!_of_toList_eq_append_cons
-      (xs := r.2.2.fst.allRoots) hcursor
+      (xs := ufD.allRoots) hcursor
     have hpush := hri.push
       (d := { head := hd, rev := rv, succ := succ, pred := pred })
       (renumber_push_inBounds hinv'
@@ -2787,7 +2789,7 @@ theorem addBoundaryDarts_wf {pc : PseudoConfiguration} (hpc : pc.WF) {v : Nat}
   all_goals mleave
   all_goals try trivial
   next =>
-    rename_i eF hFsome eL hLsome eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
+    rename_i eF hFsome eL hLsome eFR eLR u w hne dUW dWU a0 a1 a2 a3 a4 a5 a6
     have hfirst : eF < pc.darts.size := PseudoTriangulation.firstDart_lt hFsome
     have hlast : eL < pc.darts.size := PseudoTriangulation.lastDart_lt hLsome
     have hfrev : eFR < pc.darts.size := (hpc.1.read_inBounds hfirst).rev_lt
@@ -2822,7 +2824,7 @@ theorem addBoundaryDarts_patch {pc : PseudoConfiguration}
   all_goals mleave
   all_goals try trivial
   next =>
-    rename_i eF hFsome eL hLsome eFR eLR u w _jp hne dUW dWU a0 a1 a2 a3 a4 a5 a6
+    rename_i eF hFsome eL hLsome eFR eLR u w hne dUW dWU a0 a1 a2 a3 a4 a5 a6
     have hfirst : eF < pc.darts.size := PseudoTriangulation.firstDart_lt hFsome
     have hlast : eL < pc.darts.size := PseudoTriangulation.lastDart_lt hLsome
     have hfrev : eFR < pc.darts.size := (hwf.read_inBounds hfirst).rev_lt
@@ -3231,8 +3233,13 @@ private theorem sucKTimes_spec {pt : PseudoTriangulation} (hwf : pt.WF)
   case vc3.pre =>
     exact ⟨(fun o h => nomatch h), fun _ => trivial, he, rfl, Nat.zero_le k⟩
   case vc4.post.success.h_1 =>
-    rename_i r hreg hinv
-    obtain ⟨hc, htrack, -⟩ := hinv.2.2 hreg
+    rename_i _s o hreg hinv
+    obtain ⟨ho, hnone⟩ := hinv.1 o hreg
+    subst ho
+    exact hnone.symm
+  case vc5.post.success.h_2 =>
+    rename_i s hnone hinv
+    obtain ⟨hc, htrack, -⟩ := hinv.2.2 hnone
     have hfull : ([0:k].toList).length = k := by
       rw [range_toList]
       exact List.length_range'
@@ -3241,11 +3248,6 @@ private theorem sucKTimes_spec {pt : PseudoTriangulation} (hwf : pt.WF)
       omega
     rw [htrack, h0]
     rfl
-  case vc5.post.success.h_2 =>
-    rename_i r o hreg hinv
-    obtain ⟨ho, hnone⟩ := hinv.1 o hreg
-    subst ho
-    exact hnone.symm
 end
 
 /-- Bridge a functional `idx?` fact to the executable's `idx!` read. -/
@@ -3459,7 +3461,7 @@ private theorem dartIdentification_reconciliation {pc : PseudoConfiguration}
   case vc2.step.isTrue =>
     exact ⟨fun o h => (Option.some.inj h).symm, fun h => absurd rfl h, fun h => nomatch h⟩
   case vc3.step.isFalse =>
-    rename_i hloop pref cur suff hcursor b degreesStar vStar jp hdisj hinv
+    rename_i hloop pref cur suff hcursor b degreesStar vStar hdisj hinv
     obtain ⟨hcur, hplt⟩ := range_cursor_facts hcursor
     have hb : b.fst = none := hinv.2.1 (by simp)
     obtain ⟨hsize, hpos, hup, hcont⟩ := hinv.2.2 hb
@@ -3503,9 +3505,7 @@ private theorem dartIdentification_reconciliation {pc : PseudoConfiguration}
       by_cases hlast : v' = pref.length
       · subst hlast
         rw [← hcur, getElem!_set!_self hvsz]
-        simp only [Degree.includes, Degree.intersection, Bool.and_eq_true,
-          decide_eq_true_eq]
-        omega
+        grind [Degree.includes, Degree.intersection]
       · have hold := hcont v' (by omega)
         have holdinc : (pc.degrees[v']!).lower ≤
             (b.snd[((pc.toPseudoTriangulation.freeHomomorphism
@@ -3520,9 +3520,7 @@ private theorem dartIdentification_reconciliation {pc : PseudoConfiguration}
           have holdincA : (pc.degrees[v']!).lower ≤ degreesStar[vStar]!.lower ∧
               degreesStar[vStar]!.upper ≤ (pc.degrees[v']!).upper := holdinc'
           rw [hcv, getElem!_set!_self hvsz]
-          simp only [Degree.includes, Degree.intersection, Bool.and_eq_true,
-            decide_eq_true_eq]
-          omega
+          grind [Degree.includes, Degree.intersection]
         · rw [getElem!_set!_ne fun h => hcv h.symm]
           exact hold
   case vc4.isFalse.pre =>
@@ -3539,6 +3537,11 @@ private theorem dartIdentification_reconciliation {pc : PseudoConfiguration}
     · intro v' hv'
       exact absurd hv' (by simp)
   case vc5.isFalse.post.success.h_1 =>
+    rename_i hloop r a hreg hinv
+    have ha := hinv.1 a hreg
+    subst ha
+    trivial
+  case vc6.isFalse.post.success.h_2 =>
     rename_i hloop r hreg hinv
     obtain ⟨hsize, hpos, hup, hcont⟩ := hinv.2.2 hreg
     have hfull : ([0:pc.n].toList).length = pc.n := by
@@ -3568,11 +3571,6 @@ private theorem dartIdentification_reconciliation {pc : PseudoConfiguration}
       exact hup v (by omega)
     · intro v hv
       simpa [PseudoConfiguration.new] using hcont v (by omega)
-  case vc6.isFalse.post.success.h_2 =>
-    rename_i hloop r a hreg hinv
-    have ha := hinv.1 a hreg
-    subst ha
-    trivial
 end
 
 /-- The quotient never grows the total slack: construct the reconciliation
@@ -4027,16 +4025,17 @@ structure ResolvedEntry (origin : PseudoConfiguration)
   noSingleIssue : entry.1.vertexSingleDegreeIssue = none
   noDegreeSplit : entry.1.singleOutLowerDegree = none
 
-/-- The BFS loop's packed state: the worklist and the emitted entries. -/
+/-- The BFS loop's packed state: the emitted entries and the worklist, in
+declaration order. -/
 private abbrev ResolveState :=
-  MProd (Queue (PseudoConfiguration × Mappings)) (Array (PseudoConfiguration × Mappings))
+  Array (PseudoConfiguration × Mappings) × Queue (PseudoConfiguration × Mappings)
 
 /-- Continue-side and break-side invariants over the packed state. -/
 private def ResolveSpecSum (origin : PseudoConfiguration) :
     ResolveState ⊕ ResolveState → Prop
-  | .inl ⟨q, z⟩ =>
+  | .inl ⟨z, q⟩ =>
       (∀ p, q.Active p → ResolveEntry origin p) ∧ ∀ p ∈ z, ResolvedEntry origin p
-  | .inr ⟨_q, z⟩ => ∀ p ∈ z, ResolvedEntry origin p
+  | .inr ⟨z, _q⟩ => ∀ p ∈ z, ResolvedEntry origin p
 
 /-- **The A.4.4 BFS is sound and terminates**: every entry it emits is a
 valid, rotational configuration with covering degrees, reached from the
@@ -4050,12 +4049,12 @@ theorem resolveDegreeIssues_sound {origin : PseudoConfiguration}
     ∀ entry ∈ out, ResolvedEntry origin entry := by
   apply Id.of_wp_run_eq hrun fun out => ∀ entry ∈ out, ResolvedEntry origin entry
   mvcgen
-  case inv1 => exact fun s => ⟨resolveMeasure s.fst⟩
+  case inv1 => exact fun s => ⟨resolveMeasure s.snd⟩
   case inv2 =>
     exact ⇓s => ⌜ResolveSpecSum origin s⌝
   all_goals mleave
   case vc1.step.h_1.isTrue =>
-    rename_i b mb q z zTilde mTilde q' hpop jp _hdrop hh
+    rename_i b mb z q zTilde mTilde q' hpop _hdrop hh
     obtain ⟨hmb, hspec⟩ := hh
     obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
         (∀ p ∈ z, ResolvedEntry origin p) := hspec
@@ -4066,8 +4065,8 @@ theorem resolveDegreeIssues_sound {origin : PseudoConfiguration}
     show resolveMeasure q' < mb
     omega
   case vc2.step.h_1.isFalse.h_1.h_1 =>
-    rename_i b mb q z zTilde mTilde q' hpop jp _hnodrop hh v hvsome jp2 zStar mStar
-      hfixrun
+    rename_i b mb z q zTilde mTilde q' hpop _hnodrop v hvsome _jp zStar mStar
+      hfixrun hh
     obtain ⟨hmb, hspec⟩ := hh
     obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
         (∀ p ∈ z, ResolvedEntry origin p) := hspec
@@ -4091,7 +4090,7 @@ theorem resolveDegreeIssues_sound {origin : PseudoConfiguration}
       · exact hact p (Queue.active_pop hpop hp')
       · exact hreS
   case vc3.step.h_1.isFalse.h_1.h_2 =>
-    rename_i b mb q z zTilde mTilde q' hpop jp _hnodrop hh v hvsome jp2 _hfixnone
+    rename_i b mb z q zTilde mTilde q' hpop _hnodrop v hvsome _jp _hfixnone hh
     obtain ⟨hmb, hspec⟩ := hh
     obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
         (∀ p ∈ z, ResolvedEntry origin p) := hspec
@@ -4102,7 +4101,7 @@ theorem resolveDegreeIssues_sound {origin : PseudoConfiguration}
     show resolveMeasure q' < mb
     omega
   case vc4.step.h_1.isFalse.h_2.h_1 =>
-    rename_i b mb q z zTilde mTilde q' hpop jp _hnodrop hh _hvnone z1 z2 hsplitrun
+    rename_i b mb z q zTilde mTilde q' hpop _hnodrop _hvnone z1 z2 hsplitrun hh
     obtain ⟨hmb, hspec⟩ := hh
     obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
         (∀ p ∈ z, ResolvedEntry origin p) := hspec
@@ -4125,7 +4124,7 @@ theorem resolveDegreeIssues_sound {origin : PseudoConfiguration}
         · exact hre1
       · exact hre2
   case vc5.step.h_1.isFalse.h_2.h_2 =>
-    rename_i b mb q z zTilde mTilde q' hpop jp hnodrop hh hvnone hsplitnone
+    rename_i b mb z q zTilde mTilde q' hpop hnodrop hvnone hsplitnone hh
     obtain ⟨hmb, hspec⟩ := hh
     obtain ⟨hact, hout⟩ : (∀ p, q.Active p → ResolveEntry origin p) ∧
         (∀ p ∈ z, ResolvedEntry origin p) := hspec
