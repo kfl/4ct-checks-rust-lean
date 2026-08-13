@@ -63,3 +63,10 @@ jobs:
       - name: Test
         working-directory: lean4_port
         run: lake exe test
+      # Linen's own executable: combinator results plus the worker-budget
+      # invariants (no underflow, balanced reservations, peak within budget).
+      # Kept separate from `test` so a scheduler regression is distinguishable
+      # from a proof obligation firing.
+      - name: Linen tests
+        working-directory: lean4_port
+        run: lake exe linenTest
