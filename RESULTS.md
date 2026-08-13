@@ -17,14 +17,15 @@ This gives two results:
 
 - **Performance.** The ports parallelise the stages the C++ original runs
   serially. On the nodes described below, that makes Rust the fastest of the
-  three end-to-end -- 5.8x faster than C++ over the whole pipeline, and at or
-  below C++'s wall-clock on every stage of every degree -- and Lean 1.5x
+  three end-to-end -- 8.7x faster than C++ over the whole pipeline, and at or
+  below C++'s wall-clock on every stage of every degree -- and Lean 2.6x
   faster than C++ overall. These ratios are properties of this hardware and
   dispatch setup, not per-operation speedups; Sec. 3 and 4 give the breakdown.
 
 Run on MODI (University of Copenhagen, SCIENCE HPC centre). Each degree used one
 node with two AMD EPYC 7501 processors: 64 physical cores, 128 SMT hardware
-threads, and 256 GB RAM. Measured at commit `0d05d5e` (SLURM job array 229); the
+threads, and 256 GB RAM. Measured at commit `9cf81f2` (degrees 8-11 from SLURM
+job array 1393, degree 7 from array 1396); the
 raw per-degree logs for Lemmas A.2-A.6 are archived in
 [`modi/runs/`](modi/runs/). The separate Lemma A.1 run is not archived there.
 For *how* to build and run, see
@@ -106,54 +107,54 @@ thread on a 64-physical-core node), one degree per row-block. `enum_cartwheels`
 ```
 degree 7 (5439 wheels, 9366 bad cartwheels)
    stage         C++      Rust      Lean   Rust/C++  Lean/C++
-   combine      6.95      0.84      2.74     0.12x     0.39x
-   wheels      91.52      1.36      5.09     0.01x     0.06x
-   cart       305.69    248.73    826.87     0.81x     2.70x
-   check      495.94    408.90   1455.01     0.82x     2.93x
-   TOTAL      900.10    659.83   2289.71     0.73x     2.54x
+   combine      6.87      0.80      2.66     0.12x     0.39x
+   wheels      92.11      1.32      4.74     0.01x     0.05x
+   cart       320.50    240.51    699.42     0.75x     2.18x
+   check      496.95    219.37    591.34     0.44x     1.19x
+   TOTAL      916.43    462.00   1298.16     0.50x     1.42x
 
 degree 8 (6790 wheels, 728 bad cartwheels)
-   combine      6.91      0.84      2.59     0.12x     0.37x
-   wheels     114.66      2.12      7.95     0.02x     0.07x
-   cart       321.07    275.52    885.12     0.86x     2.76x
-   check      750.18    615.41   2921.07     0.82x     3.89x
-   TOTAL     1192.82    893.89   3816.73     0.75x     3.20x
+   combine      6.95      0.82      2.63     0.12x     0.38x
+   wheels     113.11      2.03      7.35     0.02x     0.06x
+   cart       319.09    265.77    768.65     0.83x     2.41x
+   check      749.92    228.73   1010.59     0.31x     1.35x
+   TOTAL     1189.07    497.35   1789.22     0.42x     1.50x
 
 degree 9 (3285 wheels, 0 bad cartwheels)
-   combine      6.88      0.84      2.68     0.12x     0.39x
-   wheels     280.84      5.27     23.68     0.02x     0.08x
-   cart        86.50     64.25    206.06     0.74x     2.38x
-   check        0.92      0.32      0.85     0.35x     0.92x
-   TOTAL      375.14     70.68    233.27     0.19x     0.62x
+   combine      6.98      0.81      2.66     0.12x     0.38x
+   wheels     276.28      5.24     22.61     0.02x     0.08x
+   cart        82.99     66.10    191.73     0.80x     2.31x
+   check        0.93      0.32      0.90     0.34x     0.97x
+   TOTAL      367.18     72.47    217.90     0.20x     0.59x
 
 degree 10 (626 wheels, 0 bad cartwheels)
-   combine      6.89      0.84      2.80     0.12x     0.41x
-   wheels    1281.59     25.80    118.25     0.02x     0.09x
-   cart         8.61      8.14     20.51     0.95x     2.38x
-   check        0.92      0.32      0.84     0.35x     0.91x
-   TOTAL     1298.01     35.10    142.40     0.03x     0.11x
+   combine      6.91      0.81      2.60     0.12x     0.38x
+   wheels    1291.85     24.67    112.77     0.02x     0.09x
+   cart         8.58      8.05     18.68     0.94x     2.18x
+   check        0.94      0.32      0.91     0.34x     0.97x
+   TOTAL     1308.28     33.85    134.96     0.03x     0.10x
 
 degree 11 (8 wheels, 0 bad cartwheels)
-   combine      6.94      0.83      2.59     0.12x     0.37x
-   wheels    6537.95    125.76    623.77     0.02x     0.10x
-   cart         0.64      0.48      1.33     0.75x     2.08x
-   check        0.93      0.32      0.85     0.34x     0.91x
-   TOTAL     6546.46    127.39    628.54     0.02x     0.10x
+   combine      6.97      0.79      2.56     0.11x     0.37x
+   wheels    6535.98    120.97    569.94     0.02x     0.09x
+   cart         0.63      0.47      1.33     0.75x     2.11x
+   check        0.93      0.32      0.91     0.34x     0.98x
+   TOTAL     6544.51    122.55    574.74     0.02x     0.09x
 ```
 
 ### End-to-end summary
 
 | deg      | wheels    | bad cw    | C++ TOTAL (s) | Rust/C++  | Lean/C++  |
 | -------- | --------- | --------- | ------------- | --------- | --------- |
-| 7        | 5439      | 9366      | 900.10        | 0.73x     | 2.54x     |
-| 8        | 6790      | 728       | 1192.82       | 0.75x     | 3.20x     |
-| 9        | 3285      | 0         | 375.14        | 0.19x     | 0.62x     |
-| 10       | 626       | 0         | 1298.01       | 0.03x     | 0.11x     |
-| 11       | 8         | 0         | 6546.46       | **0.02x** | **0.10x** |
-| **7-11** | **16148** | **10094** | **10312.53**  | **0.17x** | **0.69x** |
+| 7        | 5439      | 9366      | 916.43        | 0.50x     | 1.42x     |
+| 8        | 6790      | 728       | 1189.07       | 0.42x     | 1.50x     |
+| 9        | 3285      | 0         | 367.18        | 0.20x     | 0.59x     |
+| 10       | 626       | 0         | 1308.28       | 0.03x     | 0.10x     |
+| 11       | 8         | 0         | 6544.51       | **0.02x** | **0.09x** |
+| **7-11** | **16148** | **10094** | **10325.47**  | **0.12x** | **0.39x** |
 
 Rust's total is at or below C++'s at every degree, increasingly so as degree
-rises: from 0.73x at degree 7 to 0.02x (51x faster, on this setup) at degree
+rises: from 0.50x at degree 7 to 0.02x (53x faster, on this setup) at degree
 11, where the C++ total is almost entirely its serial `enum_wheels` pass.
 Lean's total is below C++'s from degree 9 upward.
 
@@ -164,18 +165,18 @@ would take to run the whole verification (all stages, degrees 7-11):
 
 | port     | total                | vs C++                  |
 | -------- | -------------------- | ----------------------- |
-| C++      | 10313 s (≈ 2 h 52 m) | 1.0x                    |
-| **Rust** | **1787 s (≈ 30 m)**  | **5.8x faster** (0.17x) |
-| Lean     | 7111 s (≈ 1 h 59 m)  | 1.5x faster (0.69x)     |
+| C++      | 10325 s (≈ 2 h 52 m) | 1.0x                    |
+| **Rust** | **1188 s (≈ 20 m)**  | **8.7x faster** (0.12x) |
+| Lean     | 4015 s (≈ 1 h 07 m)  | 2.6x faster (0.39x)     |
 
-The totals are dominated by degree 11: C++'s d11 alone (6546 s) is 63% of its
-entire total, almost all of it the single serial `enum_wheels` pass (6538 s =
+The totals are dominated by degree 11: C++'s d11 alone (6545 s) is 63% of its
+entire total, almost all of it the single serial `enum_wheels` pass (6536 s =
 1 h 49 m). The end-to-end speedups are therefore not uniform per-operation
 speedups -- they mostly measure that the ports parallelise the one stage the
 C++ original runs serially, on a node with 128 hardware threads to spread it
-over. On the stages that are compute-bound and similarly parallel in all
-ports (`cart` + `check`), Rust runs at 0.74-0.95x of C++ and Lean at
-2.1-3.9x.
+over. Across `cart` and the non-trivial degree-7/8 `check` stages, where all
+three ports exploit comparable parallelism, Rust runs at 0.31-0.94x of C++
+and Lean at 1.19-2.41x.
 
 ---
 
@@ -191,33 +192,32 @@ degree even though few wheels survive:
 
 | deg | C++ `enum_wheels`     | Rust      | Lean  |
 | --- | --------------------- | --------- | ----- |
-| 7   | 92 s                  | 1.4 s     | 5.1 s |
-| 8   | 115 s                 | 2.1 s     | 8.0 s |
-| 9   | 281 s                 | 5.3 s     | 24 s  |
-| 10  | 1282 s                | 25.8 s    | 118 s |
-| 11  | **6538 s** (1 h 49 m) | **126 s** | 624 s |
+| 7   | 92 s                  | 1.3 s     | 4.7 s |
+| 8   | 113 s                 | 2.0 s     | 7.4 s |
+| 9   | 276 s                 | 5.2 s     | 23 s  |
+| 10  | 1292 s                | 24.7 s    | 113 s |
+| 11  | **6536 s** (1 h 49 m) | **121 s** | 570 s |
 
 This single serial stage is what makes C++ slow at high degree, and it
 accounts for most of the ports' end-to-end advantage. It is also the main
 payoff of the ports' design choice to parallelise the driver steps.
 
-**`enum_cartwheels` -- external parallelism; per-process overhead.** Run as one
-process *per wheel* (`xargs -P 128`), matching the reference. The cost is
-per-invocation overhead -- each process re-reads and re-parses the whole
-configuration database (8200 files, 19754 configurations). With the per-process
-thread pool capped (`RAYON_NUM_THREADS=1`, see sec 5), Rust runs at
-0.74-0.95x of C++; Lean is 2.1-2.8x (per-process Lean startup + the
-reference-counted BFS inner loop). An *internal* variant (one process,
-`par_iter` over wheels, configs loaded once) was tested and does not help at
-this scale: the workload is allocation-heavy, so 128 threads sharing one
-address space contend on the allocator and memory bandwidth, whereas 128
-independent processes each get a NUMA-local working set.
+**`enum_cartwheels` -- external parallelism.** Run as one process *per wheel*
+(`xargs -P 128`), matching the reference. With the per-process thread pools
+capped (`RAYON_NUM_THREADS=1` / `LEAN_NUM_THREADS=1`, see Sec. 5), Rust runs at
+0.75-0.94x of C++ and Lean at 2.11-2.41x. An *internal* variant (one process,
+`par_iter` over wheels, configurations loaded once, byte-identical output) was
+slower at 128 threads -- Rust 235 -> 270 s, Lean 1232 -> 1328 s -- despite
+avoiding the repeated loads. Allocator, memory-bandwidth and NUMA contention
+are plausible causes, but this experiment did not isolate them. In the
+measured Rust case at 10 cores, the internal variant was ~1.8x faster.
 
 **`check` -- internal parallelism in *all three* ports.** All three parallelise
 over cartwheels (C++ `boost::asio::thread_pool`, Rust `par_iter`, Lean
-`parForEach`), so Rust ≈ C++ (0.82x). Lean is 2.9-3.9x only on per-element
-compute (its `homCoreGo` homomorphism hot path), not concurrency. `check` time
-scales with the *bad-cartwheel* count, so it is ~0 for degrees 9-11.
+`parForEach`), and both new ports also parallelise the candidate sweep within
+a cartwheel, which is where the phase's time concentrates: at degrees 7 and
+8, Rust runs at 0.31-0.44x of C++ and Lean at 1.19-1.35x. `check` time scales
+with the *bad-cartwheel* count, so it is ~0 for degrees 9-11.
 
 **`combine_rules` -- internal parallelism.** Rust ~0.12x C++ (mimalloc +
 parallel parse), Lean ~0.4x.
@@ -248,9 +248,9 @@ re-hit.
   `xargs -P 128` process dispatch as the only source of parallelism
   (128 processes x 1 thread).
 
-- **Process startup is *not* the per-wheel bottleneck.** Measured ~2 ms/spawn;
-  the per-wheel cost is the redundant config re-parse (CPU + I/O), not
-  exec/link.
+- **Toolchains.** rustc 1.97.1, Lean 4.33.0, and MODI's stock Apptainer image
+  `hpc-notebook-25.11.5.sif`. The C++ reference is the static binary built from
+  `computer-checks` @ `6cb8566` (see `modi/Dockerfile`).
 
 ---
 

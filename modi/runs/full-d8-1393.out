@@ -1,0 +1,38 @@
+node: n004.modi, degree: 8, start 2026-08-13 13:16:49
+image: /home/tmb790_ku_dk/modi_images/hpc-notebook-25.11.5.sif
+staging data into /dev/shm/fulldiff.cdmMsO ...
+== Full differential (degrees: 8, wheel-limit 0) on Linux x86_64, 128-way ==
+   C++ =/home/tmb790_ku_dk/modi_mount/computer-checks/build/src/main
+   Rust=/home/tmb790_ku_dk/modi_mount/4ct-checks-rust-lean/rust_port/target/release/main
+   Lean=/home/tmb790_ku_dk/modi_mount/4ct-checks-rust-lean/lean4_port/.lake/build/bin/main
+-- combine_rules --
+   combined rules: 671  (paper: 671)  MATCH
+  combine_rules: rust == C++  OK
+  combine_rules: lean == C++  OK
+-- enum_wheels --
+   d8 wheels: 6790  (paper: 6790)  MATCH
+  enum_wheels d8: rust == C++  OK
+  enum_wheels d8: lean == C++  OK
+-- enum_cartwheels --
+   [cpp] enum_cartwheels: 6790 wheels, 128-way ...
+   [cpp] enum_cartwheels done: 6790 wheels in 319.09s
+   [rust] enum_cartwheels: 6790 wheels, 128-way ...
+   [rust] enum_cartwheels done: 6790 wheels in 265.77s
+   [lean] enum_cartwheels: 6790 wheels, 128-way ...
+   [lean] enum_cartwheels done: 6790 wheels in 768.65s
+   bad cartwheels: 728  (paper: 728)  MATCH
+  enum_cartwheels: rust == C++  OK
+  enum_cartwheels: lean == C++  OK
+-- checks (no output files; ports must agree on pass/fail) --
+  check_deg7: all agree (exit 0)  OK
+  check_deg8: all agree (exit 0)  OK
+  check_7triangle: all agree (exit 0)  OK
+== Per-port wall-clock seconds (degrees 8; enum_cartwheels is 128-way parallel) ==
+   stage                   C++       Rust       Lean   Rust/C++   Lean/C++
+   combine                6.95       0.82       2.63      0.12x      0.38x
+   wheels               113.11       2.03       7.35      0.02x      0.06x
+   cart                 319.09     265.77     768.65      0.83x      2.41x
+   check                749.92     228.73    1010.59      0.31x      1.35x
+   TOTAL               1189.07     497.35    1789.22      0.42x      1.50x
+All checks passed (degrees: 8): ports agree AND every count matches the published values.
+=> degree 8: PASS (exit 0); recorded in /home/tmb790_ku_dk/modi_mount/full-summary.txt

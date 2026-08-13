@@ -1,0 +1,38 @@
+node: n006.modi, degree: 11, start 2026-08-13 13:52:45
+image: /home/tmb790_ku_dk/modi_images/hpc-notebook-25.11.5.sif
+staging data into /dev/shm/fulldiff.Mgcg9K ...
+== Full differential (degrees: 11, wheel-limit 0) on Linux x86_64, 128-way ==
+   C++ =/home/tmb790_ku_dk/modi_mount/computer-checks/build/src/main
+   Rust=/home/tmb790_ku_dk/modi_mount/4ct-checks-rust-lean/rust_port/target/release/main
+   Lean=/home/tmb790_ku_dk/modi_mount/4ct-checks-rust-lean/lean4_port/.lake/build/bin/main
+-- combine_rules --
+   combined rules: 671  (paper: 671)  MATCH
+  combine_rules: rust == C++  OK
+  combine_rules: lean == C++  OK
+-- enum_wheels --
+   d11 wheels: 8  (paper: 8)  MATCH
+  enum_wheels d11: rust == C++  OK
+  enum_wheels d11: lean == C++  OK
+-- enum_cartwheels --
+   [cpp] enum_cartwheels: 8 wheels, 128-way ...
+   [cpp] enum_cartwheels done: 8 wheels in 0.63s
+   [rust] enum_cartwheels: 8 wheels, 128-way ...
+   [rust] enum_cartwheels done: 8 wheels in 0.47s
+   [lean] enum_cartwheels: 8 wheels, 128-way ...
+   [lean] enum_cartwheels done: 8 wheels in 1.33s
+   bad cartwheels: 0
+  enum_cartwheels: rust == C++  OK
+  enum_cartwheels: lean == C++  OK
+-- checks (no output files; ports must agree on pass/fail) --
+  check_deg7: all agree (exit 0)  OK
+  check_deg8: all agree (exit 0)  OK
+  check_7triangle: all agree (exit 0)  OK
+== Per-port wall-clock seconds (degrees 11; enum_cartwheels is 128-way parallel) ==
+   stage                   C++       Rust       Lean   Rust/C++   Lean/C++
+   combine                6.97       0.79       2.56      0.11x      0.37x
+   wheels              6535.98     120.97     569.94      0.02x      0.09x
+   cart                   0.63       0.47       1.33      0.75x      2.11x
+   check                  0.93       0.32       0.91      0.34x      0.98x
+   TOTAL               6544.51     122.55     574.74      0.02x      0.09x
+All checks passed (degrees: 11): ports agree AND every count matches the published values.
+=> degree 11: PASS (exit 0); recorded in /home/tmb790_ku_dk/modi_mount/full-summary.txt

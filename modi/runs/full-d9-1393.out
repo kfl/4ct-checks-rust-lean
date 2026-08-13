@@ -1,0 +1,38 @@
+node: n006.modi, degree: 9, start 2026-08-13 13:16:51
+image: /home/tmb790_ku_dk/modi_images/hpc-notebook-25.11.5.sif
+staging data into /dev/shm/fulldiff.393Lxn ...
+== Full differential (degrees: 9, wheel-limit 0) on Linux x86_64, 128-way ==
+   C++ =/home/tmb790_ku_dk/modi_mount/computer-checks/build/src/main
+   Rust=/home/tmb790_ku_dk/modi_mount/4ct-checks-rust-lean/rust_port/target/release/main
+   Lean=/home/tmb790_ku_dk/modi_mount/4ct-checks-rust-lean/lean4_port/.lake/build/bin/main
+-- combine_rules --
+   combined rules: 671  (paper: 671)  MATCH
+  combine_rules: rust == C++  OK
+  combine_rules: lean == C++  OK
+-- enum_wheels --
+   d9 wheels: 3285  (paper: 3285)  MATCH
+  enum_wheels d9: rust == C++  OK
+  enum_wheels d9: lean == C++  OK
+-- enum_cartwheels --
+   [cpp] enum_cartwheels: 3285 wheels, 128-way ...
+   [cpp] enum_cartwheels done: 3285 wheels in 82.99s
+   [rust] enum_cartwheels: 3285 wheels, 128-way ...
+   [rust] enum_cartwheels done: 3285 wheels in 66.10s
+   [lean] enum_cartwheels: 3285 wheels, 128-way ...
+   [lean] enum_cartwheels done: 3285 wheels in 191.73s
+   bad cartwheels: 0
+  enum_cartwheels: rust == C++  OK
+  enum_cartwheels: lean == C++  OK
+-- checks (no output files; ports must agree on pass/fail) --
+  check_deg7: all agree (exit 0)  OK
+  check_deg8: all agree (exit 0)  OK
+  check_7triangle: all agree (exit 0)  OK
+== Per-port wall-clock seconds (degrees 9; enum_cartwheels is 128-way parallel) ==
+   stage                   C++       Rust       Lean   Rust/C++   Lean/C++
+   combine                6.98       0.81       2.66      0.12x      0.38x
+   wheels               276.28       5.24      22.61      0.02x      0.08x
+   cart                  82.99      66.10     191.73      0.80x      2.31x
+   check                  0.93       0.32       0.90      0.34x      0.97x
+   TOTAL                367.18      72.47     217.90      0.20x      0.59x
+All checks passed (degrees: 9): ports agree AND every count matches the published values.
+=> degree 9: PASS (exit 0); recorded in /home/tmb790_ku_dk/modi_mount/full-summary.txt
