@@ -13,13 +13,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"          # repo root
 NRULES="${1:-8}"                                   # 8-rule subset by default
 
-# Make sure the Lean binary can find libleanshared (the build records its dir).
-LIBDIR="$(cat "$ROOT/.lean_libdir" 2>/dev/null || true)"
-if [ -z "$LIBDIR" ]; then
-    LIBDIR="$(dirname "$(find /root/.elan "${HOME:-/root}/.elan" -name 'libleanshared*' 2>/dev/null | head -1)" 2>/dev/null || true)"
-fi
-[ -n "$LIBDIR" ] && export LD_LIBRARY_PATH="$LIBDIR:${LD_LIBRARY_PATH:-}"
-
 # p7_differential.sh resolves its binaries relative to lean4_port; override here so
 # the paths are anchored at the repo root. The C++ reference uses the sibling
 # `computer-checks/build/src/main` path; on MODI that tree contains only the

@@ -2,15 +2,16 @@
 # Full-pipeline 3-way differential on a MODI compute node.
 #
 # Cheap GATE (degree 7, minutes) — validate the machinery first:
-#   cp ~/erda_mount/full_job.sh ~/modi_mount/
-#   cd ~/modi_mount && sbatch full_job.sh
-#   cat ~/modi_mount/full-*.out
+#   cd ~/modi_mount && sbatch 4ct-checks-rust-lean/modi/full_job.sh   # submit from
+#   cat ~/modi_mount/full-*.out               # ~/modi_mount so the output lands here
 #
 # Even quicker smoke test (first 20 wheels of degree 7):
-#   cd ~/modi_mount && WHEEL_LIMIT=20 sbatch --export=ALL full_job.sh
+#   cd ~/modi_mount && WHEEL_LIMIT=20 sbatch --export=ALL \
+#       4ct-checks-rust-lean/modi/full_job.sh
 #
 # FULL run (degrees 7..11, hours) once the gate is green — override on the CLI:
-#   cd ~/modi_mount && SCOPE=all sbatch --export=ALL --partition=modi_long --time=24:00:00 full_job.sh
+#   cd ~/modi_mount && SCOPE=all sbatch --export=ALL --partition=modi_long \
+#       --time=24:00:00 4ct-checks-rust-lean/modi/full_job.sh
 #
 #SBATCH --partition=modi_short
 #SBATCH --nodes=1

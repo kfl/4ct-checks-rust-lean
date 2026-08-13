@@ -12,8 +12,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LIBDIR="$(cat "$ROOT/.lean_libdir" 2>/dev/null || dirname "$(find /root/.elan "${HOME:-/root}/.elan" -name 'libleanshared*' 2>/dev/null | head -1)" 2>/dev/null || true)"
-[ -n "$LIBDIR" ] && export LD_LIBRARY_PATH="$LIBDIR:${LD_LIBRARY_PATH:-}"
 
 BENCH="$ROOT/lean4_port/.lake/build/bin/linenBench"
 [ -x "$BENCH" ] || { echo "linenBench not built: $BENCH (run lake build in lean4_port)"; exit 1; }

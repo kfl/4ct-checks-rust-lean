@@ -200,9 +200,13 @@ the checks) before shipping.
 ## Gotchas
 - **C++23**: the `Dockerfile` uses `ubuntu:24.04` (g++-13). If the C++ build errors on a
   C++23 feature, bump the base / install `g++-14`.
-- **Lean shared lib**: the build records `libleanshared`'s dir in `.lean_libdir` and the
-  scripts add it to `LD_LIBRARY_PATH`; if the Lean binary still can't find it,
-  `export LD_LIBRARY_PATH=$(dirname $(find $HOME/.elan -name 'libleanshared*' | head -1))`.
+- **Instance-local storage is scratch space** ("any important data from your
+  analysis there should always explicitly be saved to ERDA for permanent
+  storage" -- ERDA support); only `~/modi_mount` and `~/erda_mount` persist.
+  Observed consequence: `$HOME` is empty again at the next session, so rustup
+  and elan need reinstalling. Rerun `modi_setup.sh` -- it is idempotent, and
+  since the checkouts and build trees live on `~/modi_mount`, only the
+  toolchain downloads repeat.
 - **No mathlib**: the Lean port only imports core/Std, so `lake build` is quick and
   needs no extra package cache.
 

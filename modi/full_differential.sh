@@ -28,10 +28,6 @@ DATA="${DATA:-$ROOT/rust_port}"                 # holds the two data repos
 R="$DATA/discharging-rules/R"
 C="$DATA/reducible-configurations/D"
 
-# Lean needs libleanshared on the library path (recorded by the build, else searched).
-LIBDIR="$(cat "$ROOT/.lean_libdir" 2>/dev/null || dirname "$(find "${HOME:-/root}/.elan" /root/.elan -name 'libleanshared*' 2>/dev/null | head -1)" 2>/dev/null || true)"
-[ -n "$LIBDIR" ] && export LD_LIBRARY_PATH="$LIBDIR:${LD_LIBRARY_PATH:-}"
-
 case "${1:-7}" in
   all) DEGREES="7 8 9 10 11" ;;
   *)   DEGREES="${1:-7}" ;;

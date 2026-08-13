@@ -15,7 +15,7 @@
 #SBATCH --output=scaling-%j.out
 echo "node: $(hostname), logical CPUs: $(nproc)"
 cd "$HOME/modi_mount/4ct-checks-rust-lean"
-# scaling.sh locates libleanshared itself (searches $HOME/.elan). RUNS via --env.
+# RUNS reaches scaling.sh via --env.
 # `nproc` mis-reports 2 inside this env even though the job owns all 128 hardware threads
 # (Cpus_allowed_list 0-127), so set the sweep explicitly rather than letting
 # scaling.sh derive it from nproc.

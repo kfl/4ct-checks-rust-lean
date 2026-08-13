@@ -33,8 +33,6 @@ RUST="${RUST:-$ROOT/rust_port/target/release/main}"
 LEAN="${LEAN:-$ROOT/lean4_port/.lake/build/bin/main}"
 CPP="${CPP:-$(dirname "$ROOT")/computer-checks/build/src/main}"     # optional staged/source reference
 DATA="${DATA:-$ROOT/rust_port}"
-LIBDIR="$(cat "$ROOT/.lean_libdir" 2>/dev/null || dirname "$(find "${HOME:-/root}/.elan" /root/.elan -name 'libleanshared*' 2>/dev/null | head -1)" 2>/dev/null || true)"
-[ -n "$LIBDIR" ] && export LD_LIBRARY_PATH="$LIBDIR:${LD_LIBRARY_PATH:-}"
 
 DEGREE="${DEGREE:-7}"
 PORTS="${PORTS:-lean rust}"
