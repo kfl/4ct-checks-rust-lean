@@ -96,10 +96,36 @@ samples only):
   O(n²)) and no `lean_box` traffic (the unboxed `OptIdx`/`SmallNatPair`
   encodings, see `FIDELITY.md`, are doing their job).
 
-- The remaining ~30% reference-counting + allocator tax is the price of Lean's
-  automatic memory management over manual/ownership models. It used to be ~50%:
-  some of the reduction came from *style* changes (below), how the code is
-  written affects the Perceus mechanisms.
+- The remaining ~30% reference-counting + allocator share is what this profile
+  spends on memory management. It used to be ~50%: some of the reduction came
+  from *style* changes (below), how the code is written affects the Perceus
+  mechanisms.
+
+- **That share is not itself the gap against C++.** All three ports spend
+  substantial time on memory management. On one `enum_cartwheels` wheel,
+  single-threaded on EPYC (MODI job 1409), the measured shares were 15.5% for
+  named C++ allocator symbols -- up to 20.1% if an unresolved `libc` cluster
+  is allocator code -- 36.9% for Rust, and 21.0% for Lean's allocator and
+  reference counting. Because the ports' total costs differ, the shares are
+  not directly comparable as costs. Normalised to C++'s total cycle count,
+  they are 0.155-0.201 for C++, 0.264 for Rust, and 0.485 for Lean. Under this
+  classification, Lean's excess in the category is 22-25% of its total excess
+  over C++, not the whole gap. As arithmetic upper bounds, removing Lean's
+  reference-counting time leaves it at about 2.05x C++; removing all measured
+  Lean allocator and reference-counting time still leaves it at about 1.82x.
+
+- The main difference on that wheel is instruction count: Lean/C++ cycles are
+  2.307x, decomposing into 2.210x instructions and a 1.044x IPC penalty.
+  Additional instructions account for about 93% of the cycle excess. Cycle
+  samples place roughly 42% of the total excess in the BFS kernel alone, or
+  51% counting the whole BFS family (the `homCore` wrapper and the `neverApply`
+  and `homomorphism` specialisations, against C++'s single `homomorphism`
+  symbol). Nor is the excess evenly spread: the containment sweep runs at
+  1.22x, the worklist push at 1.85x, the degree test at 1.98x, and the BFS
+  kernel at 2.27x. The BFS is therefore an outlier rather than one of a uniform
+  set, and it is the main target -- not an isolated runtime function.
+  Identifying the extra instructions requires instruction-level analysis. Full
+  experiment and arithmetic: `../scratch_notes/cart-attribution.md`.
 
 - `_tlv_get_addr` (~3%) is a macOS thread-local artefact; it does not appear on
   Linux.
