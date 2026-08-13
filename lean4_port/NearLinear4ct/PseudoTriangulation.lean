@@ -373,13 +373,20 @@ updates stay in place. -/
   | .some e', .none => (darts.set! fStar { darts[fStar]! with pred := .some e' }, q)
   | _, _ => (darts, q)
 
-/-- Free homomorphism gluing the given dart pairs, returning the quotient and the
-index `Mappings` onto it (A.3).
+/-- The exit state of `freeHomomorphism`'s gluing worklist: the rewritten
+darts and the two union-find forests, with the worklist exhausted. -/
+structure HomomorphismClosure where
+  darts : Array Dart
+  ufV : Unionfind
+  ufD : Unionfind
+
+/-- The gluing closure of the requested dart identifications: the stateful
+worklist phase of `freeHomomorphism`.
 
 A `Queue` (`Util.Queue`) over the gluing obligations gives FIFO order (needed for
 byte-identical results). -/
-def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat)) :
-    PseudoTriangulation × Mappings := Id.run do
+def glueClosure (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat)) :
+    HomomorphismClosure := Id.run do
   let mut darts := pt.darts          -- copy: succ/pred get rewritten as we glue
   let mut ufV := Unionfind.new pt.n
   let mut ufD := Unionfind.new darts.size
@@ -399,21 +406,33 @@ def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat))
     q := q.push (eRev, fRev)
     (darts, q) := glueSucc darts q eStar fStar
     (darts, q) := gluePred darts q eStar fStar
+  return ⟨darts, ufV, ufD⟩
 
-  -- renumber survivors: each_root (total, lifted to `some`) ∘ index_roots (compacted)
-  let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
-  let dMap := composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots
-  let mut dartsStar : Array Dart := #[]
-  for d in ufD.allRoots do
-    let dd := darts[d]!
-    let hd := (vMap[dd.head]!).idx!
-    let rv := (dMap[dd.rev]!).idx!
-    -- `dMap[s]!` is already an `OptIdx`; propagate it directly (boundary
-    -- `none` stays `none`).
-    let succ := match dd.succ with | .some s => dMap[s]! | .none => .none
-    let pred := match dd.pred with | .some p => dMap[p]! | .none => .none
-    dartsStar := dartsStar.push ⟨hd, rv, succ, pred⟩
-  return (⟨ufV.numRoots, dartsStar⟩, ⟨vMap, dMap⟩)
+/-- The dart emitted for one surviving representative: `head` and `rev`
+through the relabellings, `succ`/`pred` propagated directly (`dMap[s]!` is
+already an `OptIdx`, so a boundary `none` stays `none`). -/
+@[inline] def renumberDart (vMap dMap : IndexMap) (d : Dart) : Dart :=
+  { head := (vMap[d.head]!).idx!
+  , rev := (dMap[d.rev]!).idx!
+  , succ := match d.succ with | .some s => dMap[s]! | .none => .none
+  , pred := match d.pred with | .some p => dMap[p]! | .none => .none }
+
+/-- The pure renumbering phase of `freeHomomorphism`: builds the relabellings
+each_root (total, lifted to `some`) ∘ index_roots (compacted) and materialises
+the quotient graph over the surviving representatives. -/
+def materialiseQuotient (c : HomomorphismClosure) :
+    PseudoTriangulation × Mappings :=
+  let vMap := composeMap (c.ufV.eachRoot.map OptIdx.some) c.ufV.indexRoots
+  let dMap := composeMap (c.ufD.eachRoot.map OptIdx.some) c.ufD.indexRoots
+  let dartsStar := c.ufD.allRoots.map fun d => renumberDart vMap dMap c.darts[d]!
+  (⟨c.ufV.numRoots, dartsStar⟩, ⟨vMap, dMap⟩)
+
+/-- Free homomorphism gluing the given dart pairs, returning the quotient and the
+index `Mappings` onto it (A.3): the gluing worklist, then the renumbering of
+the surviving representatives. -/
+def freeHomomorphism (pt : PseudoTriangulation) (dartPairs : Array (Nat × Nat)) :
+    PseudoTriangulation × Mappings :=
+  materialiseQuotient (pt.glueClosure dartPairs)
 
 /-- Free homomorphism over the disjoint union of `pt0`, `pt1`, identifying
 `dartId0` (in `pt0`) with `dartId1` (in `pt1`); returns the quotient and the two

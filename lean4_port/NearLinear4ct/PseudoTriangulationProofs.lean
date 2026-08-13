@@ -1788,18 +1788,11 @@ private theorem GlueCoherent.glue_step {pt : PseudoTriangulation} (hpt : pt.WF)
   · intro p hp
     exact afterAll (hcoh.seeds p hp)
 
-/-- The executable dart emitted for one surviving representative. -/
-private def renumberDart (vMap dMap : IndexMap) (d : Dart) : Dart :=
-  { head := (vMap[d.head]!).idx!
-  , rev := (dMap[d.rev]!).idx!
-  , succ := match d.succ with | .some s => dMap[s]! | .none => .none
-  , pred := match d.pred with | .some p => dMap[p]! | .none => .none }
-
-/-- One renumber step: on the loop's exit state, the dart pushed for a
-surviving representative is in bounds for the quotient -- `head` through the
-total vertex relabelling, `rev` through the total dart relabelling, and open
+/-- On the gluing closure's exit state, the dart emitted for a surviving
+representative is in bounds for the quotient -- `head` through the total
+vertex relabelling, `rev` through the total dart relabelling, and open
 `succ`/`pred` links through its `Bounded` half. -/
-private theorem renumber_push_inBounds {pt : PseudoTriangulation}
+private theorem renumberDart_inBounds {pt : PseudoTriangulation}
     {darts : Array Dart} {ufV ufD : Unionfind} {q : Queue (Nat × Nat)}
     (h : GlueInv pt darts ufV ufD q) {d : Nat} (hd : d < pt.darts.size) :
     let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
@@ -1842,12 +1835,12 @@ private theorem getElem!_of_toList_eq_append_cons {xs : Array α}
   rw [← Array.getElem!_toList, h]
   simp
 
-/-- Invariant of the renumber loop: the output tracks the processed prefix of
-`allRoots`, every emitted dart is in bounds, and slot `i` is exactly the
-renumbered representative stored at `allRoots[i]`. -/
-private structure RenumberInv (darts : Array Dart) (ufV ufD : Unionfind) (k : Nat)
+/-- Specification of the completed renumbered dart array: one slot per
+surviving representative, every emitted dart in bounds for the quotient, and
+slot `i` exactly the renumbered representative stored at `allRoots[i]`. -/
+private structure RenumberSpec (darts : Array Dart) (ufV ufD : Unionfind)
     (dartsStar : Array Dart) : Prop where
-  size_eq : dartsStar.size = k
+  size_eq : dartsStar.size = ufD.allRoots.size
   dart_wf : ∀ i (h : i < dartsStar.size),
     (dartsStar[i]'h).InBounds ufV.numRoots ufD.numRoots
   value_eq : ∀ i (h : i < dartsStar.size),
@@ -1856,25 +1849,34 @@ private structure RenumberInv (darts : Array Dart) (ufV ufD : Unionfind) (k : Na
       (composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots)
       (darts[ufD.allRoots[i]!]!)
 
-/-- Pushing an in-bounds dart preserves the renumber loop invariant. -/
-private theorem RenumberInv.push {darts : Array Dart} {ufV ufD : Unionfind} {k : Nat}
-    {dartsStar : Array Dart} (h : RenumberInv darts ufV ufD k dartsStar)
-    {d : Dart} (hd : d.InBounds ufV.numRoots ufD.numRoots)
-    (hval : d = renumberDart
-      (composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots)
-      (composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots)
-      (darts[ufD.allRoots[k]!]!)) :
-    RenumberInv darts ufV ufD (k + 1) (dartsStar.push d) := by
-  grind [RenumberInv]
+/-- `materialiseQuotient`'s renumber pass meets `RenumberSpec`: `Array.map`
+gives the size and slot values by library rewrites, and boundedness is
+pointwise from `renumberDart_inBounds`. -/
+private theorem RenumberSpec.of_map {pt : PseudoTriangulation}
+    {darts : Array Dart} {ufV ufD : Unionfind} {q : Queue (Nat × Nat)}
+    (hinv : GlueInv pt darts ufV ufD q) :
+    RenumberSpec darts ufV ufD
+      (ufD.allRoots.map fun d => renumberDart
+        (composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots)
+        (composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots)
+        darts[d]!) := by
+  refine ⟨Array.size_map .., ?_, ?_⟩
+  · intro i hi
+    rw [Array.getElem_map]
+    exact renumberDart_inBounds hinv
+      (hinv.ufD_n ▸ Unionfind.mem_allRoots_lt (ufD.allRoots.getElem_mem _))
+  · intro i hi
+    rw [Array.getElem_map,
+      getElem!_pos ufD.allRoots i (by simpa using hi)]
 
 /-- At an empty worklist, the semantic gluing invariant and the exact
-renumbering invariant are precisely A.3's quotient-map coherence. -/
+renumbering specification are precisely A.3's quotient-map coherence. -/
 private theorem GlueCoherent.finish {pt : PseudoTriangulation} (hpt : pt.WF)
     {dartPairs : Array (Nat × Nat)} {darts dartsStar : Array Dart}
     {ufV ufD : Unionfind} {q : Queue (Nat × Nat)}
     (hinv : GlueInv pt darts ufV ufD q)
     (hcoh : GlueCoherent pt dartPairs darts ufV ufD q)
-    (hri : RenumberInv darts ufV ufD ufD.allRoots.size dartsStar)
+    (hri : RenumberSpec darts ufV ufD dartsStar)
     (hq : q.isEmpty = true) :
     let vMap := composeMap (ufV.eachRoot.map OptIdx.some) ufV.indexRoots
     let dMap := composeMap (ufD.eachRoot.map OptIdx.some) ufD.indexRoots
@@ -2007,36 +2009,51 @@ private structure FreeHomomorphismSpec (pt : PseudoTriangulation)
     DartGraph.QuotientConn (pt.dartGraph hwf)
       (fun d : Fin pt.darts.size => maps.dmap.idx? d.val) a b
 
-private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
+/-- The phase-one contract: the gluing closure's exit state satisfies the
+structural (`GlueInv`) and semantic (`GlueCoherent`, `GlueConnected`)
+invariants at a drained queue. The queue is a proof-only ghost witness of the
+exhausted worklist; it is not part of the runtime result. -/
+private inductive GlueClosureSpec (pt : PseudoTriangulation) (hpt : pt.WF)
+    (dartPairs : Array (Nat × Nat)) (c : HomomorphismClosure) : Prop where
+  | intro (queue : Queue (Nat × Nat))
+      (inv : GlueInv pt c.darts c.ufV c.ufD queue)
+      (coherent : GlueCoherent pt dartPairs c.darts c.ufV c.ufD queue)
+      (connected : (pt.dartGraph hpt).Rotational →
+        GlueConnected pt c.ufV c.ufD queue)
+      (drained : queue.isEmpty = true)
+
+/-- Phase-one soundness: running the gluing worklist meets its contract. -/
+private theorem glueClosure_spec {pt : PseudoTriangulation} (hpt : pt.WF)
     {dartPairs : Array (Nat × Nat)}
     (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
-    {ptStar : PseudoTriangulation} {maps : Mappings}
-    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps)) :
-    FreeHomomorphismSpec pt dartPairs ptStar maps := by
-  apply Id.of_wp_run_eq hrun fun (ptOut, mapsOut) =>
-    FreeHomomorphismSpec pt dartPairs ptOut mapsOut
-  mvcgen
-  case inv1 => exact fun s => ⟨glueMeasure s⟩
-  case inv2 => exact ⇓s => ⌜GlueSpecSum pt hpt dartPairs s⌝
-  case inv3 =>
-    rename_i r _s1 ufV _s ufD _q _vMap _dMap _dartsStar _h
-    exact ⇓⟨xs, dartsStar⟩ =>
-      ⌜RenumberInv r.1 ufV ufD xs.prefix.length dartsStar⌝
-  all_goals mleave
+    {c : HomomorphismClosure} (hrun : pt.glueClosure dartPairs = c) :
+    GlueClosureSpec pt hpt dartPairs c := by
+  apply Std.Internal.Do.Id.of_wp_run_eq hrun (GlueClosureSpec pt hpt dartPairs)
+  vcgen invariants
+    | inv1 => GlueSpecSum pt hpt dartPairs
+    | inv2 => glueMeasure
+  -- Seed state: fresh forests, the input graph, the seeded queue.
+  case vc1 =>
+    exact ⟨GlueInv.mk rfl rfl rfl (Unionfind.wf_new _) (Unionfind.wf_new _) hpt
+        (fun p hp => hpairs p (Queue.active_ofArray hp)),
+      GlueCoherent.init hpt hpairs,
+      fun hr => GlueConnected.init hpt hr dartPairs⟩
+  -- Exit: the break-side invariant is the claim, at the loop's final queue.
+  case vc2 =>
+    obtain ⟨hinv, hcoh, hcm, hqempty⟩ :
+        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ ∧ _ := ‹_›
+    exact ⟨_, hinv, hcoh, hcm, hqempty⟩
   -- Continue branch: the popped pair is already merged; only the queue shrinks.
-  case vc1.step.h_1.isTrue =>
-    obtain ⟨hm, hspec⟩ := ‹_ ∧ _›
-    obtain ⟨hinv, hcoh, hcm⟩ :
-        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := hspec
-    exact ⟨_, rfl, by grind [glueMeasure, Queue.live_pop],
-      GlueInv.pop ‹_› hinv, GlueCoherent.pop_same ‹_› ‹_› hcoh,
-      fun hr => GlueConnected.pop_same ‹_› ‹_› (hcm hr)⟩
+  case vc3 =>
+    simp_all +zetaDelta
+    grind only [GlueSpecSum, glueMeasure, !GlueInv.pop,
+      !GlueCoherent.pop_same, !GlueConnected.pop_same, !Queue.live_pop]
   -- Glue branches (with and without the vertex unite): the shared core covers
   -- pop + dart-unite + reverse push, then the two adjacency steps compose.
-  case vc2.step.h_1.isFalse.isTrue =>
-    obtain ⟨hm, hspec⟩ := ‹_ ∧ _›
+  case vc4 =>
+    simp
     obtain ⟨hinv, hcoh, hcm⟩ :
-        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := hspec
+        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := ‹_›
     obtain ⟨h1, ⟨hhe, hhf⟩, ⟨hre, hrf⟩, hdec⟩ :=
       GlueInv.glue ‹_› ‹_› hinv
     obtain ⟨h4, hq⟩ := glueBoth_spec (h1.uniteV hhe hhf) hre hrf
@@ -2053,12 +2070,12 @@ private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
         (hinv.ufV_n.symm ▸ hhe) (hinv.ufV_n.symm ▸ hhf) ha hb
         (by grind [Unionfind.same]) hab)
       (hcm hr)
-    exact ⟨_, rfl, by grind [glueMeasure, Queue.live_pop, Queue.live_push],
+    exact ⟨by grind [glueMeasure, Queue.live_pop, Queue.live_push],
       h4, hcoh4, hcm4⟩
-  case vc3.step.h_1.isFalse.isFalse =>
-    obtain ⟨hm, hspec⟩ := ‹_ ∧ _›
+  case vc5 =>
+    simp
     obtain ⟨hinv, hcoh, hcm⟩ :
-        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := hspec
+        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := ‹_›
     obtain ⟨h1, _, ⟨hre, hrf⟩, hdec⟩ :=
       GlueInv.glue ‹_› ‹_› hinv
     obtain ⟨h4, hq⟩ := glueBoth_spec h1 hre hrf
@@ -2066,97 +2083,87 @@ private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
       hinv.ufV_n hinv.ufV_wf (fun _ _ hab => hab) (by grind [Unionfind.same])
     have hcm4 := fun hr => GlueConnected.glue_step hpt ‹_› ‹_› hinv hcoh.head_eq
       (fun a b _ _ hab => Or.inl hab) (hcm hr)
-    exact ⟨_, rfl, by grind [glueMeasure, Queue.live_pop, Queue.live_push],
+    exact ⟨by grind [glueMeasure, Queue.live_pop, Queue.live_push],
       h4, hcoh4, hcm4⟩
   -- Exhausted queue: the break-side invariant is the continue-side one.
-  case vc4.step.h_2 =>
-    have hspec : GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ :=
-      ‹_ ∧ _›.2
+  case vc6 =>
+    have hspec : GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := ‹_›
     exact ⟨hspec.1, hspec.2.1, hspec.2.2,
       Queue.pop?_none (Queue.pop?_eq_none_of_no_pair ‹_› ‹_›)⟩
-  -- Seed state: fresh forests, the input graph, the seeded queue.
-  case vc5.pre =>
-    exact ⟨GlueInv.mk rfl rfl rfl (Unionfind.wf_new _) (Unionfind.wf_new _) hpt
-        (fun p hp => hpairs p (Queue.active_ofArray hp)),
-      GlueCoherent.init hpt hpairs,
-      fun hr => GlueConnected.init hpt hr dartPairs⟩
-  -- Renumber loop: one push per root, so the size tracks the processed
-  -- prefix; the pushed dart is in bounds for the quotient.
-  case vc6.step =>
-    rename_i _s1 _ufV _s ufD _q _vMap _dMap _dS0 _hspec pref cur suff hcursor b
-      _dd hd rv succ pred _dS _h
-    have hri : RenumberInv _ _ _ _ _ := ‹_›
-    obtain ⟨hinv', -, -⟩ :
-        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ := ‹_›
-    have hcur := getElem!_of_toList_eq_append_cons
-      (xs := ufD.allRoots) hcursor
-    have hpush := hri.push
-      (d := { head := hd, rev := rv, succ := succ, pred := pred })
-      (renumber_push_inBounds hinv'
-        (hinv'.ufD_n ▸ Unionfind.mem_allRoots_lt
-          (Array.mem_toList_iff.mp (by grind))))
-      (by unfold renumberDart; rw [hcur]; rfl)
-    exact ⟨by grind [RenumberInv], hpush.dart_wf, hpush.value_eq⟩
-  case vc7.post.success.pre => exact ⟨rfl, by grind, by grind⟩
-  -- Exit: the maps are the union-find relabellings, total and well-formed by
-  -- `relabel_wf`; the invariant pins the domain sizes and carries the quotient
-  -- graph's bounds, the renumber size invariant pins the dart codomain.
-  case vc8.post.success.post.success =>
-    obtain ⟨hinv', hcoh, hcm, hqempty⟩ :
-        GlueInv pt _ _ _ _ ∧ GlueCoherent pt dartPairs _ _ _ _ ∧ _ ∧ _ := ‹_›
-    obtain ⟨hVwf, hVtot⟩ := Unionfind.relabel_wf _ hinv'.ufV_wf
-    obtain ⟨hDwf, hDtot⟩ := Unionfind.relabel_wf _ hinv'.ufD_wf
-    have hri : RenumberInv _ _ _ _ _ := ‹_›
-    obtain ⟨hcoherent, hseeds, hfrom⟩ :=
-      GlueCoherent.finish hpt hinv' hcoh
-        (by simpa only [Array.length_toList] using hri) hqempty
-    have hri' : RenumberInv _ _ _ _ _ := ‹_›
-    refine
-      { graph_wf :=
-          fun i hi => by grind [RenumberInv, Unionfind.numRoots, Array.length_toList]
-        maps_wf := ⟨by grind [GlueInv],
-          by grind [RenumberInv, GlueInv, Unionfind.numRoots, Array.length_toList]⟩
-        vmap_total := hVtot
-        dmap_total := hDtot
-        coherent := hcoherent
-        seeds := hseeds
-        vmap_surj := ?_
-        dmap_surj := ?_
-        link_from := hfrom
-        conn := ?_ }
-    · intro j hj
-      obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufV_wf hj
-      exact ⟨i, hinv'.ufV_n ▸ hi, hidx⟩
-    · intro j hj
-      obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufD_wf (j := j)
-        (by grind [RenumberInv, Unionfind.numRoots, Array.length_toList])
-      exact ⟨i, hinv'.ufD_n ▸ hi, hidx⟩
-    · intro hwf hr a b hidx
-      have hcg := hcm hr
-      have hha : (pt.darts[a.val]!).head < pt.n := (hpt.read_inBounds a.isLt).head_lt
-      have hhb : (pt.darts[b.val]!).head < pt.n := (hpt.read_inBounds b.isLt).head_lt
-      have hha' := hinv'.ufV_n.symm ▸ hha
-      have hhb' := hinv'.ufV_n.symm ▸ hhb
-      have hia := Unionfind.relabel_idx? _ hinv'.ufV_wf hha'
-      have hib := Unionfind.relabel_idx? _ hinv'.ufV_wf hhb'
-      have hrank := Option.some.inj ((hia.symm.trans hidx).trans hib)
-      have hrs_a := hinv'.ufV_wf.root_spec hha'
-      have hrs_b := hinv'.ufV_wf.root_spec hhb'
-      have hall_a := Unionfind.getElem!_allRoots_rootRank hrs_a.2
-        (by rw [hrs_a.1]; rfl)
-      have hall_b := Unionfind.getElem!_allRoots_rootRank hrs_b.2
-        (by rw [hrs_b.1]; rfl)
-      have hgie := hcg a.val b.val a.isLt b.isLt
-        (by rw [← hall_a, ← hall_b, hrank])
-      have hqc := hgie.to_quotientConn hwf hinv'.ufD_n hqempty a.isLt b.isLt
-      refine hqc.mono ?_
-      intro x y hxy
-      have h1 := Unionfind.relabel_idx? _ hinv'.ufD_wf
-        (Nat.lt_of_lt_of_eq x.isLt hinv'.ufD_n.symm)
-      have h2 := Unionfind.relabel_idx? _ hinv'.ufD_wf
-        (Nat.lt_of_lt_of_eq y.isLt hinv'.ufD_n.symm)
-      exact h1.trans
-        ((congrArg (fun r => Option.some (Unionfind.rootRank _ r)) hxy).trans h2.symm)
+
+/-- Phase-two soundness: materialising the quotient from any state meeting
+the phase-one contract yields the combined A.3 specification. The maps are
+the union-find relabellings, total and well-formed by `relabel_wf`;
+`GlueInv` pins the domain sizes and carries the quotient graph's bounds, the
+renumber size specification pins the dart codomain. -/
+private theorem materialiseQuotient_spec {pt : PseudoTriangulation}
+    {hpt : pt.WF} {dartPairs : Array (Nat × Nat)} {c : HomomorphismClosure}
+    (hspec : GlueClosureSpec pt hpt dartPairs c)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : materialiseQuotient c = (ptStar, maps)) :
+    FreeHomomorphismSpec pt dartPairs ptStar maps := by
+  obtain ⟨q, hinv', hcoh, hcm, hqempty⟩ := hspec
+  obtain ⟨rfl, rfl⟩ := Prod.mk.inj hrun
+  have hri := RenumberSpec.of_map (pt := pt) (q := q) hinv'
+  obtain ⟨hVwf, hVtot⟩ := Unionfind.relabel_wf _ hinv'.ufV_wf
+  obtain ⟨hDwf, hDtot⟩ := Unionfind.relabel_wf _ hinv'.ufD_wf
+  obtain ⟨hcoherent, hseeds, hfrom⟩ :=
+    GlueCoherent.finish hpt hinv' hcoh hri hqempty
+  refine
+    { graph_wf :=
+        fun i hi => by grind [RenumberSpec, Unionfind.numRoots]
+      maps_wf := ⟨by grind [GlueInv],
+        by grind [RenumberSpec, GlueInv, Unionfind.numRoots]⟩
+      vmap_total := hVtot
+      dmap_total := hDtot
+      coherent := hcoherent
+      seeds := hseeds
+      vmap_surj := ?_
+      dmap_surj := ?_
+      link_from := hfrom
+      conn := ?_ }
+  · intro j hj
+    obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufV_wf hj
+    exact ⟨i, hinv'.ufV_n ▸ hi, hidx⟩
+  · intro j hj
+    obtain ⟨i, hi, hidx⟩ := Unionfind.relabel_surjective _ hinv'.ufD_wf (j := j)
+      (by grind [RenumberSpec, Unionfind.numRoots])
+    exact ⟨i, hinv'.ufD_n ▸ hi, hidx⟩
+  · intro hwf hr a b hidx
+    have hcg := hcm hr
+    have hha : (pt.darts[a.val]!).head < pt.n := (hpt.read_inBounds a.isLt).head_lt
+    have hhb : (pt.darts[b.val]!).head < pt.n := (hpt.read_inBounds b.isLt).head_lt
+    have hha' := hinv'.ufV_n.symm ▸ hha
+    have hhb' := hinv'.ufV_n.symm ▸ hhb
+    have hia := Unionfind.relabel_idx? _ hinv'.ufV_wf hha'
+    have hib := Unionfind.relabel_idx? _ hinv'.ufV_wf hhb'
+    have hrank := Option.some.inj ((hia.symm.trans hidx).trans hib)
+    have hrs_a := hinv'.ufV_wf.root_spec hha'
+    have hrs_b := hinv'.ufV_wf.root_spec hhb'
+    have hall_a := Unionfind.getElem!_allRoots_rootRank hrs_a.2
+      (by rw [hrs_a.1]; rfl)
+    have hall_b := Unionfind.getElem!_allRoots_rootRank hrs_b.2
+      (by rw [hrs_b.1]; rfl)
+    have hgie := hcg a.val b.val a.isLt b.isLt
+      (by rw [← hall_a, ← hall_b, hrank])
+    have hqc := hgie.to_quotientConn hwf hinv'.ufD_n hqempty a.isLt b.isLt
+    refine hqc.mono ?_
+    intro x y hxy
+    have h1 := Unionfind.relabel_idx? _ hinv'.ufD_wf
+      (Nat.lt_of_lt_of_eq x.isLt hinv'.ufD_n.symm)
+    have h2 := Unionfind.relabel_idx? _ hinv'.ufD_wf
+      (Nat.lt_of_lt_of_eq y.isLt hinv'.ufD_n.symm)
+    exact h1.trans
+      ((congrArg (fun r => Option.some (Unionfind.rootRank _ r)) hxy).trans h2.symm)
+
+/-- The A.3 contract for `freeHomomorphism`: the two phase contracts compose. -/
+private theorem freeHomomorphism_spec {pt : PseudoTriangulation} (hpt : pt.WF)
+    {dartPairs : Array (Nat × Nat)}
+    (hpairs : ∀ p ∈ dartPairs, p.1 < pt.darts.size ∧ p.2 < pt.darts.size)
+    {ptStar : PseudoTriangulation} {maps : Mappings}
+    (hrun : pt.freeHomomorphism dartPairs = (ptStar, maps)) :
+    FreeHomomorphismSpec pt dartPairs ptStar maps :=
+  materialiseQuotient_spec (glueClosure_spec hpt hpairs rfl) hrun
 end
 
 /-- **`freeHomomorphism` produces a well-formed quotient**: the graph is `WF`

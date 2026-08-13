@@ -58,6 +58,14 @@ and parallelism differences are documented below.
   has a three-case specification lemma. Byte-exact tests are unchanged, and
   compiler IR confirms that inlining adds no calls or allocations.
 
+- **A.3 closure/materialisation split.** The paper presents `freeHomomorphism`
+  as one routine: a gluing worklist followed by survivor renumbering. The port
+  names these phases `glueClosure` and `materialiseQuotient`;
+  `freeHomomorphism` composes them once, in the same order. Materialisation
+  expresses the order-preserving rebuild as `Array.map` over `allRoots` rather
+  than an accumulator loop. Byte-exact tests are unchanged; compiler inspection
+  confirms a specialised map loop with `renumberDart` inlined.
+
 - **Panics vs. proof obligations.** The spec's `assert` lines split by kind:
   genuine invariants (`assert C = 0`, `d ∈ {7, 8}`) become `proofAssert`;
   input well-formedness failures (malformed parse, unreachable `assert false`
