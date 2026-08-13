@@ -17,7 +17,7 @@ Specification vocabulary is `Nat`-with-bounds (`idx?`, `Bounded`); `Fin`
 appears only in the decode. `Bounded` is factored out of `WF` because the hot
 discharge (`composeMap`'s internal `map2[j.idx!]!`) needs only
 `map1.Bounded map2.size` -- `idx?_composeMap` proves that read's panic branch
-dead. Note `idx?_composeMap` is *stated* under `Bounded` deliberately: the
+dead. Note `idx?_composeMap` is *stated* under `Bounded` because the
 equation would hold vacuously without it (an out-of-range `!` read yields the
 default `OptIdx.none`, which `bind` absorbs), but the `Bounded` form is the
 one that carries the panic-branch-dead content -- do not "generalise" it away.
@@ -51,7 +51,7 @@ def Total (m : IndexMap) : Prop := ∀ i (h : i < m.size), (m[i]'h).isSome
 def wfCheck (m : IndexMap) (dom codom : Nat) : Bool :=
   m.size == dom && m.all (fun o => o.boundedBy codom)
 
-/-! ### Plumbing -/
+/-! ### Basic specification lemmas -/
 
 /-- The in-range `idx?` read, folded. -/
 theorem idx?_pos {m : IndexMap} {i : Nat} (h : i < m.size) :

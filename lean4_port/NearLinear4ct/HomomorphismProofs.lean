@@ -21,7 +21,7 @@ step** and lifted through the driver loop:
 The driver `homCoreGo` is a `partial_fixpoint`, so it exposes
 `homCoreGo.partial_correctness` -- a partial-correctness (Scott) induction
 principle needing no termination proof; `Bounded` and `Sound` lift through it
-in a few lines each. Completeness needs the BFS to actually return, so
+in a few lines each. Completeness needs the BFS to terminate and return, so
 `Agrees` folds over `homCoreGoImp`, a fuel-bounded driver of the *same*
 `homStep`; `homCoreGo_eq_imp` -- the unconditional totality theorem, riding
 the strict `measure` decrease of every continuing step -- equates the two
@@ -617,7 +617,7 @@ theorem homCore_sound {src dst : WFConfig} {degreeTest : Degree → Degree → B
     exact nomatch hrun
 
 /-- **`homomorphismExists` is sound**: if the `.isSome` fast path reports a
-homomorphism, one genuinely exists. (The converse is `homomorphismExists_complete`.) -/
+homomorphism, one exists. (The converse is `homomorphismExists_complete`.) -/
 theorem homomorphismExists_sound {src dst : WFConfig}
     {degreeTest : Degree → Degree → Bool} {dartFrom dartTo : Nat}
     (h : homomorphismExists src dartFrom dst dartTo degreeTest = true) :
@@ -625,7 +625,7 @@ theorem homomorphismExists_sound {src dst : WFConfig}
   obtain ⟨⟨vmap, dmap⟩, hr⟩ := Option.isSome_iff_exists.mp h
   exact ⟨vmap, dmap, homCore_sound hr⟩
 
-/-! ### Completeness scaffolding: a fuel-based total twin of `homCoreGo`
+/-! ### Fuel-based completeness model
 
 `homCoreGo` is a `partial_fixpoint`, so proving it *returns* `some` (needed for
 completeness -- no false negatives) requires a termination argument. The fuel

@@ -2061,8 +2061,8 @@ private theorem mem_failureReports {n : Nat} {ck : Chunking n}
 
 /-- High-level model of a failed parallel region. Claimed chunks form
 `[0, claimed)`; every report is an actual failure in that prefix, and
-every failing claimed chunk is reported. Report order, multiplicity, and
-worker placement are deliberately absent from the invariants. -/
+every failing claimed chunk is reported. The invariants omit report order,
+multiplicity, and worker placement. -/
 private structure FailedRun {n : Nat}
     (outcome : Fin n → Except ε β) (ck : Chunking n) where
   claimed : Fin (ck.count + 1)

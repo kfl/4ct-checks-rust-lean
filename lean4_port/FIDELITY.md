@@ -209,8 +209,8 @@ and parallelism differences are documented below.
   Separately, the *proofs* reformulate the imperative loops as functional models
   throughout -- see "Functional models in the proofs" below.
 
-- **Data parallelism only as obviously-correct combinators.** The reference
-  parallelises exactly one stage: the per-cartwheel `check_*` sweeps (a C++
+- **Data parallelism only through proved order-preserving combinators.** The
+  reference parallelises exactly one stage: the per-cartwheel `check_*` sweeps (a C++
   thread pool), ported as `Util.parForEach`. The port found further
   data-parallel opportunities the reference runs serially -- the
   wheel-enumeration filter (each candidate wheel is tested independently,
@@ -338,7 +338,7 @@ These reduce a representation or algorithm claim to theorems rather than tests:
   The structural half of well-formedness (one slot per node, parent pointers in
   range) is carried by the type itself (`unionfind_invariant`, erased at
   runtime), so `WF` is exactly the acyclicity content; maintaining the bound in
-  `unite` adds a range guard whose skipped write is precisely the one that
+  `unite` adds a range guard whose skipped write is the one that
   would corrupt the forest (unreachable on in-range inputs -- behaviour is
   unchanged, as the byte-exact oracles confirm).
 

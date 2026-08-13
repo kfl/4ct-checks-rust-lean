@@ -6,7 +6,7 @@ Exactness of the port's `Nat` degree arithmetic.
 `Degree.lower`/`upper` are `Nat`, so subtraction truncates at `0`. This module
 proves each degree subtraction agrees with the paper's integer arithmetic:
 the loaded-degree site (`refineNever`, gated at I/O), the literal site
-(`deleteDegreeFromKTo9`), and the one deliberately-signed count
+(`deleteDegreeFromKTo9`), and the signed count
 (`representativeDegree`).
 
 Exactly one subtraction on a *loaded* degree exists in the port:
@@ -54,7 +54,7 @@ theorem deleteDegreeFromKTo9_sub_exact {k : Nat} (h : 1 ≤ k) :
 
 end CombineCartwheel
 
-/-- **The one deliberately-signed degree computation is equivalent to clamped
+/-- **The signed degree computation is equivalent to clamped
 `Nat` arithmetic**: `representativeDegree`'s choice count is computed as
 `((upper : Int) - lower + 1).toNat` so that an empty range (`upper < lower`)
 yields `0` -- plain `Nat` `upper - lower + 1` would truncate to one spurious

@@ -263,7 +263,7 @@ private def benchCaseIO (reps : Nat) (label : String) (xs : Array Nat)
 `mapReduce`, using the same claim sizes for the two Linen paths. -/
 private def benchCaseReduce (reps : Nat) (label : String) (xs : Array Nat)
     (f : Nat → Nat) : IO Unit := do
-  -- Reductions produce one value; a singleton array reuses the timing plumbing.
+  -- Reductions produce one value; a singleton array reuses the timing helper.
   let serial ← timed reps s!"{label}, reduce serial map+fold"
     (blackBox fun _ => #[(xs.map f).foldl (· + ·) 0])
   let eager ← timed reps s!"{label}, reduce eager+fold"

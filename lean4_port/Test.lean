@@ -609,8 +609,8 @@ def getObjectsTest (c : Counter) : IO Unit :=
 -- `NearLinear4ct/Degree.lean` (stronger than the finite grid they replaced).
 
 /-- Option-safe degree fixes: absent boundary or rotation darts answer `none`
-instead of `get!`-defaulting into arbitrary darts. These inputs are
-deliberately malformed; the tests pin the defensive behaviour only. -/
+instead of `get!`-defaulting into arbitrary darts. These inputs are malformed;
+the tests pin the defensive behaviour only. -/
 def malformedInputTests (c : Counter) : IO Unit := do
   -- `v = 0` has a `succ`-open dart but no `pred`-open one: `firstDart` is
   -- absent, so both the fan close and the boundary-guided fix refuse.
@@ -720,7 +720,7 @@ def rotationLawTests (c : Counter) : IO Unit := do
         unless (← report s!"fan i={i} v={v}" z.toPseudoTriangulation) do
           fanBad := fanBad + 1
   expect c s!"rotation laws on {fanCount} boundary-fan edits" (fanBad == 0)
-  -- Checker sanity: the deliberately malformed inputs must be rejected.
+  -- Checker sanity: the malformed inputs must be rejected.
   let noFirst := PseudoConfiguration.new 1
     #[⟨0, 1, OptIdx.none, OptIdx.some 1⟩, ⟨0, 0, OptIdx.some 0, OptIdx.some 0⟩]
     #[⟨1, 1⟩]

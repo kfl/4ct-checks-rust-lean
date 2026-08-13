@@ -115,9 +115,10 @@ samples only):
   A/B against the pre-change binary: enum_wheels d7 faster on every rep,
   medians pre-change 77.98 s vs post-change 75.64 s (~1.03x); combine_rules
   medians pre-change 3.62 s vs post-change 3.59 s;
-  outputs byte-identical on both workloads (671 + 5439 files). The
-  2026-07-10 `sorry`-backed probe forecast ~1.05x against its older
-  baseline; the honest version confirms the direction on the current one.
+  outputs byte-identical on both workloads (671 + 5439 files). The 2026-07-10
+  `sorry`-backed probe forecast ~1.05x against its older baseline; after
+  replacing the `sorry`, the result confirms the direction against the current
+  baseline.
 
 - **An erased-invariant wrapper type compiles away (measured 2026-07-17).**
   Moving the homomorphism pipeline onto `WFConfig` (a `PseudoConfiguration`
@@ -138,19 +139,19 @@ samples only):
   sweep and its kernel were split into mutually recursive functions.
 
 - **`Id.run do` / `while` lowering is expensive in hot loops.** It compiles via
-  `whileM` -- closure body, monadic state threading, per-iteration heartbeat --
-  which Perceus cannot analyse cleanly. Rewriting the hottest loop (`homCoreGo`)
-  as an explicit tail-recursive function threading its state as arguments
-  measured 1.21x on its own. For fixed-size scans, a short-circuiting `Array`
-  combinator (`any`/`find?`/`foldl`) achieves the same without manual recursion.
+  `whileM`; the closure body, monadic state threading, and per-iteration
+  heartbeat remain in the hot loop. Rewriting the hottest loop (`homCoreGo`) as
+  an explicit tail-recursive function threading its state as arguments measured
+  1.21x on its own. For fixed-size scans, a short-circuiting `Array` combinator
+  (`any`/`find?`/`foldl`) achieves the same without manual recursion.
 
 - **One result constructor per iteration eats a buffer-reuse win.** Handing
   scratch buffers back through even a single flat constructor per trial measured
   break-even against per-trial allocation.
 
-- **`ST.Ref` plumbing is free at per-call granularity** (the world token is
-  erased; take/set compile to direct calls), so `runST`-scoped ambient scratch
-  is the parallel-safe pattern when scratch is ever revisited.
+- **`ST.Ref` adds no per-call abstraction overhead** (the world token is erased;
+  take/set compile to direct calls), so `runST`-scoped ambient scratch is the
+  parallel-safe pattern when scratch is ever revisited.
 
 - **Buffer reuse pays only while the buffers never cross a function boundary
   (prototyped, then backed out).** The containment sweep (`containConf`,
@@ -191,7 +192,8 @@ samples only):
   parameters.
 
 - **Sharing sometimes beats copying, which beats computing (small sequences).**
-  Six byte-identical variants of the wheel-tuple enumeration ranked cleanly:
+  Six byte-identical variants of the wheel-tuple enumeration had a consistent
+  performance ordering:
   `List` cons with structurally shared suffixes -- arrays realised once, at the
   consumer boundary -- was fastest at every degree measured; the block-copy
   shapes (`Array ++` prepend, copy-on-write `set!` buffer) sat a few percent
@@ -234,7 +236,7 @@ samples only):
   were 1178.1, 705.6, 628.0, and 581.3 s respectively; 128 workers was the
   wall-time optimum, while 64 was the physical-core efficiency knee.
 
-## Levers deliberately not pulled
+## Rejected and deferred levers
 
 - **Fused zero-alloc BFS + epoch scratch** (the loop-fusion prototype from the
   codegen lessons) -- measured a further ~1.21x on top of the tail-rec rewrite;

@@ -263,7 +263,7 @@ theorem succWalk_open {V D : Type} {G : DartGraph V D} {v : V} {l : List D}
 /-- **The paper's page-32 walk argument (M6 core):** a successful walk of
 `0 < k < ` list length steps leaves its start dart. In the cyclic case the
 index shift is nonzero modulo the length; in the open case the indices
-simply differ. -/
+differ. -/
 theorem succWalk_ne {V D : Type} {G : DartGraph V D} {v : V} {l : List D}
     (hl : IncidenceList G v l) {d e : D} {k : Nat}
     (hd : d ∈ l) (h0 : 0 < k) (hk : k < l.length)

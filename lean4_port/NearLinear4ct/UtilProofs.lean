@@ -21,13 +21,13 @@ The proofs live here, not in `Util.lean`, so the port files keep reading like
 the paper; this module is the verification layer (imported by the library
 root, so `lake build` checks it).
 
-Reusable machinery: `forIn_range_eq_range'` is the *single* point of
+Loop reductions: `forIn_range_eq_range'` is the *single* point of
 `Std.Legacy.Range` coupling -- the loop reductions factor through it, taking
 the loop body as a *hypothesis*, so nothing here depends on the exact
 elaborated shape of a `do` block. Accumulator (`yield`-only) loops go straight
-to `List.foldl` via core's `forIn_pure_yield_eq_foldl`
-(`forIn_range_eq_foldl`); early-return scans use the bespoke `loopGo`
-recursion (`forIn_range_eq_loopGo`).
+to `List.foldl` or `Array.foldl` (`forIn_range_eq_foldl`,
+`forIn_array_eq_foldl`); early-return scans use the local `loopGo` recursion
+(`forIn_range_eq_loopGo`).
 -/
 
 namespace NearLinear4ct
@@ -83,13 +83,54 @@ theorem forIn_range_eq_loopGo {σ : Type _} (n : Nat)
 
 /-- Accumulator (`yield`-only) loops go straight to `List.foldl` via core's
 `forIn_pure_yield_eq_foldl` -- no `loopGo` detour. Only the early-return scans
-(below) need the bespoke recursion. -/
+(below) need `loopGo`. -/
 theorem forIn_range_eq_foldl {σ : Type _} (n : Nat)
     (body : Nat → σ → Id (ForInStep σ)) (g : Nat → σ → σ)
     (hbody : ∀ i s, body i s = pure (.yield (g i s))) (init : σ) :
     forIn [0:n] init body = pure ((List.range' 0 n 1).foldl (fun s i => g i s) init) := by
   have hb : body = fun i s => pure (.yield (g i s)) := by funext i s; exact hbody i s
   rw [forIn_range_eq_range', hb, List.forIn_pure_yield_eq_foldl]
+
+/-- An accumulator-only array loop is its `Array.foldl`; the body is supplied
+as an equation so callers do not depend on its elaborated `do` syntax. -/
+theorem forIn_array_eq_foldl {α σ : Type _} (xs : Array α)
+    (body : α → σ → Id (ForInStep σ)) (g : α → σ → σ)
+    (hbody : ∀ a s, body a s = pure (.yield (g a s))) (init : σ) :
+    forIn xs init body = pure (xs.foldl (fun s a => g a s) init) := by
+  have hb : body = fun a s => pure (.yield (g a s)) := by funext a s; exact hbody a s
+  rw [hb, Array.forIn_pure_yield_eq_foldl]
+
+/-- Functional model of an early-return scan: the counted Kleisli iterate of
+the step `g` in `Option` -- a failing step fails the whole scan. -/
+def scanGo {σ : Type _} (g : Nat → σ → Option σ) : Nat → Nat → σ → Option σ
+  | 0, _, s => some s
+  | n + 1, i, s => g i s >>= scanGo g n (i + 1)
+
+/-- The `ForInStep` lowering of a `scanGo` step: a failing step is the
+`do`-elaborator's early `return none` (the nested option is its early-return
+state). -/
+def scanStep {σ ρ : Type _} (g : Nat → σ → Option σ) (i : Nat)
+    (s : Option (Option ρ) × σ) : ForInStep (Option (Option ρ) × σ) :=
+  match g i s.snd with
+  | none => .done (some none, s.snd)
+  | some t => .yield (none, t)
+
+/-- The lowered loop, consumed as the elaborated `do` consumes it, computes
+the scan: an early return is the `none` outcome by construction. `f` is the
+total success continuation the executable applies after the loop. -/
+theorem loopGo_scanStep_eq {σ ρ : Type _} (g : Nat → σ → Option σ)
+    (f : σ → ρ) :
+    ∀ (n i : Nat) (s : σ),
+      (match loopGo (scanStep g) i n (none, s) with
+        | (some r, _) => r
+        | (none, t) => some (f t)) =
+      (scanGo g n i s).map f
+  | 0, _, _ => rfl
+  | n + 1, i, s => by
+    unfold loopGo scanStep scanGo
+    cases g i s with
+    | none => rfl
+    | some t => exact loopGo_scanStep_eq g f n (i + 1) t
 
 /-! ### `lexMin` decides "no rotation is smaller"
 
@@ -295,7 +336,7 @@ private theorem get?_indexRoots (uf : Unionfind) {i : Nat}
   split <;> simp
 
 /-- **`indexRoots` is a well-formed relabelling map** `uf.n → uf.numRoots`
-(the compact codomain of the quotient renumbering; genuinely *not* `Total` --
+(the compact codomain of the quotient renumbering; not `Total` --
 non-roots are unmapped by design). -/
 theorem indexRoots_wf (uf : Unionfind) :
     IndexMap.WF uf.indexRoots uf.n uf.numRoots := by
