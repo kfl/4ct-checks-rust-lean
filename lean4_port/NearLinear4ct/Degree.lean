@@ -60,7 +60,7 @@ def intersection (a b : Degree) : Degree :=
   ⟨max a.lower b.lower, min a.upper b.upper⟩
 
 /-- Whether `outer` contains `inner`. -/
-def includes (outer inner : Degree) : Bool :=
+@[inline] def includes (outer inner : Degree) : Bool :=
   decide (outer.lower ≤ inner.lower) && decide (inner.upper ≤ outer.upper)
 
 /-- Lexicographic `<` / `≤` from the derived `Ord`. -/
