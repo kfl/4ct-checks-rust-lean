@@ -62,6 +62,11 @@ def ofOption : Option Nat → OptIdx
   | Option.none => .none
   | Option.some i => .some i
 
+/-- Rebuild the compact representation from a raw 32-bit field. This is the
+low-level codec boundary used by packed stores; ordinary clients should use
+`none`, `some`, or `ofOption`. -/
+@[inline] def ofRaw32 (raw : UInt32) : OptIdx := ⟨raw.toNat⟩
+
 /-- Map the index if present, staying unboxed (mirrors `Option.map`; `map f ∘ get? =
 get? ∘ Option.map f`). -/
 @[inline] def map (f : Nat → Nat) (o : OptIdx) : OptIdx :=

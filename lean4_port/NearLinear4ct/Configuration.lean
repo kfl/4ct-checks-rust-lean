@@ -70,7 +70,7 @@ once per parsed configuration. -/
 def mirror (conf : Configuration) : Configuration :=
   let darts := conf.darts.map fun d => { d with succ := d.pred, pred := d.succ }
   let wfc : WFConfig :=
-    ⟨⟨⟨conf.n, darts⟩, conf.degrees⟩,
+    ⟨⟨⟨conf.n, darts⟩, conf.degrees⟩, DartArray.ofDarts darts,
       by exact ⟨mirror_graph_wf conf.wf.1, conf.wf.2⟩,
       by simpa [darts] using conf.packable⟩
   let rc : RotConfig :=

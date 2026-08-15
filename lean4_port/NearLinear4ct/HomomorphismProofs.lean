@@ -459,8 +459,10 @@ theorem homStep_next_sound
     have hfb := hs.queued_bd packed (Queue.active_head heq)
     have hfsz : packed.fst < dmap.size := by
       simpa only [hs.dmap_wf.size_eq] using hfb.1
-    -- move the state's reads to the spec's total-read (`!`) vocabulary once;
-    -- the proof-carrying writes keep their `set` form (the `_set_` lemmas)
+    -- move the reads off the packed store first, then
+    -- to the spec's total-read (`!`) vocabulary once; the proof-carrying
+    -- writes keep their `set` form (the `_set_` lemmas)
+    simp only [WFConfig.packedDart_eq] at hst
     simp only [← getElem!_pos] at hst
     split at hst
     · -- already mapped; the consistency guard passes, then re-pop
@@ -877,8 +879,10 @@ theorem homStep_agrees {src dst : WFConfig}
     have hfsz : packed.fst < dmap.size := by
       simpa only [ha.toBounded.dmap_wf.size_eq] using hf
     have hagr1 : Agrees src dst vm dm q1 vmap dmap := agrees_pop ha hpq
-    -- move the state's reads to the spec's total-read (`!`) vocabulary once;
-    -- the proof-carrying writes keep their `set` form (the `_set_` lemmas)
+    -- move the reads off the packed store first, then
+    -- to the spec's total-read (`!`) vocabulary once; the proof-carrying
+    -- writes keep their `set` form (the `_set_` lemmas)
+    simp only [WFConfig.packedDart_eq]
     simp only [← getElem!_pos]
     split
     · -- already mapped, and correctly (`hcorrect`)
@@ -1060,6 +1064,7 @@ theorem homStep_eq_a2 {src dst : WFConfig} {degreeTest : Degree → Degree → B
   · rename_i hpq
     simp only [hpq]
   · rename_i packed q1 hpq
+    simp only [WFConfig.packedDart_eq]
     simp only [hpq, ← getElem!_pos, IndexMap.set_eq_set!]
     -- The two bodies' read-match and guards; `pushLink_eq_ite` aligns the
     -- conditional pushes with the paper's spelling. The deepest path currently

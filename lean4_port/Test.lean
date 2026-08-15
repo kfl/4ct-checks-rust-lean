@@ -727,6 +727,35 @@ def rotationLawTests (c : Counter) : IO Unit := do
   expect c "checkers reject malformed links"
     (!noFirst.toPseudoTriangulation.rotationLawsCheck)
 
+/-- Experiment 3b tripwire: on `c`, every packed whole-dart read equals its
+semantic `Array Dart` read. -/
+def packedScanOK (c : WFConfig) : Bool := Id.run do
+  let darts := c.darts
+  for hi : i in [0:darts.size] do
+    have h : i < darts.size := hi.upper
+    unless c.packedDart i h == darts[i]'h do
+      return false
+  return true
+
+/-- Scan the packed dart store of every configuration the other tests build:
+the two homomorphism fixtures, the parsed configurations of both containment
+suites, and their mirrors. -/
+def packedDartTests (c : Counter) : IO Unit := do
+  let fh0 := PseudoConfiguration.fromVRotations 5
+    #[#[1, 2, 3, 4, -1], #[2, 0, -1], #[3, 0, 1, -1], #[4, 0, 2, -1], #[0, 3, -1]]
+    #[dgx 6, dgx 5, dgx 6, dgx 6, dgx 5]
+  expect c "packed scan fh0" (packedScanOK (WFConfig.attach! fh0))
+  let cf1 ← tempFile conf1
+  let confs1 ← Configuration.fromFile cf1
+  IO.FS.removeFile cf1
+  let cf2 ← tempFile conf2
+  let confs2 ← Configuration.fromFile cf2
+  IO.FS.removeFile cf2
+  let cw := setDeg (CartWheel.generateCartwheel 7 #[6, 6, 6, 6, 6, 6, 6]) [(9, 5)]
+  let scanned := ((confs1 ++ confs2).map fun conf => packedScanOK conf.toWFConfig)
+    |>.push (packedScanOK cw.toWFConfig)
+  expect c s!"packed scan {scanned.size} parsed configs + cartwheel" (scanned.all id)
+
 def main : IO UInt32 := do
   let c ← IO.mkRef 0
   degreeTests c
@@ -741,6 +770,7 @@ def main : IO UInt32 := do
   getObjectsTest c
   malformedInputTests c
   rotationLawTests c
+  packedDartTests c
   let failures ← c.get
   if failures == 0 then
     IO.println "all tests passed"

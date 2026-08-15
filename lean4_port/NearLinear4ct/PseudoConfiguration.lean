@@ -46,6 +46,65 @@ theorem wfCheck_iff {pc : PseudoConfiguration} : pc.wfCheck = true ↔ pc.WF := 
 
 end PseudoConfiguration
 
+/-- EXPERIMENT 3b v2 (scratch_notes/cart-attribution.md): pure-Lean packed
+array-of-structs dart store. One `ByteArray`, 16 little-endian bytes per dart:
+word 0 holds `head`/`rev`, word 1 the raw `OptIdx` encodings of `succ`/`pred`.
+The semantic relation to `darts` is temporarily backed by the scan test and
+the byte-exact differential rather than a codec proof. -/
+structure DartArray (darts : Array Dart) where
+  bytes : ByteArray
+
+namespace DartArray
+
+/-- The raw `OptIdx` encoding (`0 = none`, `i+1 = some i`), rebuilt through
+the public API. Truncation edge: a raw value of exactly `2^32` (an index of
+`2^32 - 1`) would not fit the 32-bit slot; unreachable while the I/O gates
+assert `darts.size ≤ 2^31`, and the scan test would catch it. -/
+private def rawOf (o : OptIdx) : Nat :=
+  match o.get? with
+  | .none => 0
+  | .some i => i + 1
+
+/-- Append `w % 2^32` as four little-endian bytes. -/
+private def pushW32 (b : ByteArray) (w : Nat) : ByteArray :=
+  (((b.push w.toUInt8).push
+    (w >>> 8).toUInt8).push
+    (w >>> 16).toUInt8).push
+    (w >>> 24).toUInt8
+
+/-- Pack the darts, 16 bytes each. Runs where `WFConfig`s are certified
+(`attach!`), never per BFS root. -/
+def ofDarts (darts : Array Dart) : DartArray darts :=
+  ⟨darts.foldl (init := ByteArray.emptyWithCapacity (16 * darts.size))
+    fun b d =>
+      pushW32 (pushW32 (pushW32 (pushW32 b d.head) d.rev)
+        (rawOf d.succ)) (rawOf d.pred)⟩
+
+/-- Read one little-endian 64-bit word. Keeping this boundary out of Lean's
+source-level inliner lets the release C compiler fuse the eight adjacent
+`uget`s into one wide load. -/
+private unsafe def readW64LE (b : @& ByteArray) (off : USize) : UInt64 :=
+  (b.uget off lcProof).toUInt64
+    ||| (b.uget (off + 1) lcProof).toUInt64 <<< 8
+    ||| (b.uget (off + 2) lcProof).toUInt64 <<< 16
+    ||| (b.uget (off + 3) lcProof).toUInt64 <<< 24
+    ||| (b.uget (off + 4) lcProof).toUInt64 <<< 32
+    ||| (b.uget (off + 5) lcProof).toUInt64 <<< 40
+    ||| (b.uget (off + 6) lcProof).toUInt64 <<< 48
+    ||| (b.uget (off + 7) lcProof).toUInt64 <<< 56
+
+instance {darts : Array Dart} : DecidableEq (DartArray darts) :=
+  fun a b =>
+    if h : a.bytes.data = b.bytes.data then
+      isTrue (by cases a; cases b; simp_all [ByteArray.ext_iff])
+    else
+      isFalse (by intro he; cases he; exact h rfl)
+
+instance {darts : Array Dart} : Repr (DartArray darts) where
+  reprPrec _ _ := "DartArray.ofDarts _"
+
+end DartArray
+
 /-- A configuration certified at the boundary: the graph and degree array
 are well-formed and the dart count fits the packed-pair encoding (erased at
 runtime). Certification happens once per object -- `attach!` runs the
@@ -53,8 +112,12 @@ executable checks where combined objects are built, and loaded objects come
 through `RotConfig.attach!` below -- and the homomorphism BFS and its
 lemmas read both facts off the type instead of threading well-formedness
 premises. The resolution pipeline's intermediate states stay raw and keep
-their proof-side preservation theorems. -/
+their proof-side preservation theorems.
+
+`packed` caches the 16-byte-record dart store (`DartArray`, experiment 3b)
+beside the certificate; every proof still speaks about `darts`. -/
 structure WFConfig extends PseudoConfiguration where
+  packed : DartArray toPseudoConfiguration.darts
   wfconfig_invariant :
     toPseudoConfiguration.WF
       ∧ toPseudoConfiguration.darts.size ≤ SmallNatPair.pairBase
@@ -72,9 +135,33 @@ theorem wf (c : WFConfig) : c.toPseudoConfiguration.WF :=
 theorem packable (c : WFConfig) : c.darts.size ≤ SmallNatPair.pairBase :=
   c.wfconfig_invariant.2
 
+/-- Pure-Lean packed-dart implementation for experiment 3b v2. It loads the
+two words once and decodes all four fields. The unchecked byte reads rely on
+`DartArray.ofDarts`'s 16-byte-per-dart construction; the semantic wrapper and
+scan test keep that temporary trust claim explicit. -/
+@[inline] private unsafe def packedDartImpl (c : @& WFConfig) (i : @& Nat)
+    (_h : i < c.darts.size) : Dart :=
+  let off := i.toUSize * 16
+  let w0 := DartArray.readW64LE c.packed.bytes off
+  let w1 := DartArray.readW64LE c.packed.bytes (off + 8)
+  { head := (w0 &&& 0xffff_ffff).toNat
+    rev := (w0 >>> 32).toNat
+    succ := OptIdx.ofRaw32 w1.toUInt32
+    pred := OptIdx.ofRaw32 (w1 >>> 32).toUInt32 }
+
+/-- Read one certified dart. Proofs see the semantic array read; compiled code
+uses the pure-Lean packed decoder above. -/
+@[implemented_by packedDartImpl, implicit_reducible]
+def packedDart (c : @& WFConfig) (i : @& Nat) (h : i < c.darts.size) : Dart :=
+  c.darts[i]'h
+
+@[simp, grind =] theorem packedDart_eq (c : WFConfig) (i : Nat)
+    (h : i < c.darts.size) : c.packedDart i h = c.darts[i]'h := rfl
+
 /-- Literal fields: no panicking reads in the initialiser. -/
 instance : Inhabited WFConfig :=
-  ⟨⟨⟨0, #[]⟩, #[]⟩, ⟨⟨fun i h => absurd h (by simp), rfl⟩, Nat.zero_le _⟩⟩
+  ⟨⟨⟨0, #[]⟩, #[]⟩, ⟨ByteArray.empty⟩,
+    ⟨⟨fun i h => absurd h (by simp), rfl⟩, Nat.zero_le _⟩⟩
 
 /-- Check-and-attach at a construction boundary: certify by the executable
 checks, or print a `panic!` message and answer the default. The panic branch
@@ -82,7 +169,8 @@ is malformed input only -- every corpus object passes, and the I/O gates
 additionally assert the stronger `darts.size ≤ 2^31`. -/
 def attach! (pc : PseudoConfiguration) : WFConfig :=
   if h : pc.wfCheck && decide (pc.darts.size ≤ SmallNatPair.pairBase) then
-    ⟨pc, PseudoConfiguration.wfCheck_iff.mp (by grind), by grind⟩
+    ⟨pc, DartArray.ofDarts pc.darts,
+      PseudoConfiguration.wfCheck_iff.mp (by grind), by grind⟩
   else
     panic! "WFConfig.attach!: malformed configuration"
 
@@ -91,7 +179,7 @@ certification transports (the size clause rewrites along `h`). The
 degrees-only refinements use this instead of a re-check. -/
 def withDegrees (c : WFConfig) (degrees : Array Degree)
     (h : degrees.size = c.degrees.size) : WFConfig :=
-  ⟨{ c.toPseudoConfiguration with degrees := degrees },
+  ⟨{ c.toPseudoConfiguration with degrees := degrees }, c.packed,
    ⟨⟨c.wf.1, h.trans c.wf.2⟩, c.packable⟩⟩
 
 end WFConfig
@@ -122,7 +210,8 @@ default. Runs once per loaded, parsed, or seeded object. -/
 def attach! (pc : PseudoConfiguration) : RotConfig :=
   if h : pc.wfCheck && (decide (pc.darts.size ≤ SmallNatPair.pairBase)
       && pc.rotationLawsCertify) then
-    ⟨⟨pc, PseudoConfiguration.wfCheck_iff.mp (by grind), by grind⟩, by grind⟩
+    ⟨⟨pc, DartArray.ofDarts pc.darts,
+      PseudoConfiguration.wfCheck_iff.mp (by grind), by grind⟩, by grind⟩
   else
     panic! "RotConfig.attach!: malformed or non-rotational configuration"
 
@@ -298,10 +387,10 @@ so `homCoreGo`'s loop is exactly the unfactored code. -/
       else .next q vmap dmap
     | .none =>
       let dmap := dmap.set f (OptIdx.some fStar) hfd
-      -- bind each dart once (read 4×: head/rev/succ/pred); the reads carry
-      -- their bounds, so no `!` panic branches survive in the loop
-      let srcD := src.darts[f]'hf
-      let dstD := dst.darts[fStar]'hfs
+      -- Bind each packed dart once. The runtime implementation performs two
+      -- pure-Lean wide-word reads; proofs see the semantic `Array Dart` read.
+      let srcD := src.packedDart f hf
+      let dstD := dst.packedDart fStar hfs
       have hsrcD := src.wf.1 f hf
       have hdstD := dst.wf.1 fStar hfs
       let h := srcD.head
@@ -347,7 +436,8 @@ theorem homStep_next_safe {src dst : WFConfig}
     -- `splits` bounds proof-search case analysis, not state updates. Five
     -- covers the `dmap` match and the four rejection guards on the fresh path;
     -- the already-mapped path is shallower.
-    grind (splits := 5) only [HomIndexSafe, = Array.size_set]
+    grind (splits := 5) only [HomIndexSafe, = Array.size_set,
+      = WFConfig.packedDart_eq]
 
 /-- The worklist loop of the homomorphism BFS: drive `homStep` until it
 answers -- the hottest loop in the program, kept as a bare tail call with the
